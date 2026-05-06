@@ -1581,6 +1581,189 @@ async def admin_auction_control_panel(
 
 
 # ============================================================
+# Settlement Pipeline — operator Kanban data feed.
+# Returns auctions in any settlement-relevant state (post-live)
+# with operator-focused enrichment (age, overdue flag, dealer
+# trust, suspended flag, dispute marker, notes, high-value flag).
+# ============================================================
+
+class SettlementNoteReq(BaseModel):
+    note: str
+
+
+SETTLEMENT_STATES = (
+    "ended_pending_payment",
+    "payment_received",
+    "vehicle_released",
+    "settled",
+    "dispute",
+    "cancelled",
+)
+
+# Payment SLA — auctions in ended_pending_payment for longer than this
+# are flagged as overdue on the operator console.
+PAYMENT_SLA_HOURS = 48
+HIGH_VALUE_THRESHOLD = 1000000  # ₹10L+ flagged as high-value-unsettled
+
+
+@api.get("/admin/settlements/pipeline")
+async def admin_settlement_pipeline(
+    window_days: int = 30,
+    admin = Depends(get_current_admin),
+):
+    """Settlement Kanban data. Returns one row per auction currently in
+    a settlement-relevant state, plus terminal states (settled / cancelled)
+    within the recent window. Designed for the operator pipeline tracker.
+
+    Highlights:
+      • settlement_age_h — hours elapsed since the auction entered the
+        current state (or end_time for ended_pending_payment).
+      • payment_overdue — bool, true if status==ended_pending_payment AND
+        age > PAYMENT_SLA_HOURS.
+      • high_value_unsettled — bool, current_bid >= HIGH_VALUE_THRESHOLD AND
+        status not in {settled, cancelled}.
+      • dispute_flag — bool, status==dispute OR auction has any
+        settlement_state_change → dispute audit log.
+      • suspended_dealer — bool, top_bidder is currently suspended.
+    """
+    now = now_utc()
+    window_start = now - timedelta(days=max(1, min(window_days, 90)))
+
+    # Non-terminal states: always include regardless of age.
+    nonterminal = ["ended_pending_payment", "payment_received", "vehicle_released", "dispute"]
+    # Terminal states: only within window.
+    terminal = ["settled", "cancelled"]
+
+    cursor = db.auctions.find(
+        {
+            "$or": [
+                {"status": {"$in": nonterminal}},
+                {"status": {"$in": terminal}, "$or": [
+                    {"settled_at": {"$gte": window_start}},
+                    {"cancelled_at": {"$gte": window_start}},
+                    {"ended_at": {"$gte": window_start}},
+                ]},
+            ],
+        },
+        {"_id": 0},
+    ).sort("ended_at", -1).limit(300)
+
+    items: List[Dict[str, Any]] = []
+    counts = {s: 0 for s in SETTLEMENT_STATES}
+    async for a in cursor:
+        status = a.get("status")
+        if status not in SETTLEMENT_STATES:
+            continue
+        car = await db.cars.find_one({"id": a["car_id"]}, {"_id": 0,
+            "make": 1, "model": 1, "year": 1, "registration_number": 1}) or {}
+        bidder = None
+        suspended_dealer = False
+        if a.get("top_bidder_id"):
+            b = await db.dealers.find_one({"id": a["top_bidder_id"]}, {"_id": 0,
+                "id": 1, "dealership_name": 1, "full_name": 1, "trust_score": 1,
+                "city": 1, "phone": 1, "max_bid_limit": 1, "suspended": 1})
+            if b:
+                suspended_dealer = bool(b.get("suspended"))
+                bidder = {
+                    "id": b["id"],
+                    "dealership_name": b.get("dealership_name", ""),
+                    "full_name": b.get("full_name", ""),
+                    "trust_score": b.get("trust_score", 4.5),
+                    "city": b.get("city", ""),
+                    "phone": b.get("phone", ""),
+                    "max_bid_limit": b.get("max_bid_limit"),
+                    "suspended": suspended_dealer,
+                }
+
+        # Determine the timestamp anchor for "settlement_age" — the time
+        # the auction entered its current state. For ended_pending_payment,
+        # use ended_at; for paid/released/settled/dispute/cancelled, use
+        # their respective ts fields.
+        anchor_field = SETTLEMENT_TS_FIELD.get(status, "ended_at")
+        anchor = a.get(anchor_field) or a.get("ended_at") or a.get("end_time")
+        if isinstance(anchor, str):
+            try:
+                anchor = datetime.fromisoformat(anchor.replace("Z", "+00:00"))
+            except Exception:
+                anchor = None
+        if anchor and anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=timezone.utc)
+        age_h = int((now - anchor).total_seconds() / 3600) if anchor else 0
+
+        current_bid = a.get("current_bid", 0) or 0
+        payment_overdue = (status == "ended_pending_payment" and age_h > PAYMENT_SLA_HOURS)
+        high_value_unsettled = (current_bid >= HIGH_VALUE_THRESHOLD
+                                and status not in ("settled", "cancelled"))
+
+        counts[status] += 1
+        items.append({
+            "id": a["id"],
+            "status": status,
+            "car": {**car, "id": a["car_id"]},
+            "final_bid": current_bid,
+            "starting_bid": a.get("starting_bid", 0),
+            "reserve_price": a.get("reserve_price"),
+            "reserve_met": (current_bid >= (a.get("reserve_price") or 0)) if a.get("reserve_price") else None,
+            "top_bidder": bidder,
+            "suspended_dealer": suspended_dealer,
+            "total_bids": a.get("total_bids", 0),
+            "ended_at": iso(a.get("ended_at")) if isinstance(a.get("ended_at"), datetime) else a.get("ended_at"),
+            "payment_received_at": iso(a.get("payment_received_at")) if isinstance(a.get("payment_received_at"), datetime) else a.get("payment_received_at"),
+            "released_at": iso(a.get("released_at")) if isinstance(a.get("released_at"), datetime) else a.get("released_at"),
+            "settled_at": iso(a.get("settled_at")) if isinstance(a.get("settled_at"), datetime) else a.get("settled_at"),
+            "cancelled_at": iso(a.get("cancelled_at")) if isinstance(a.get("cancelled_at"), datetime) else a.get("cancelled_at"),
+            "dispute_opened_at": iso(a.get("dispute_opened_at")) if isinstance(a.get("dispute_opened_at"), datetime) else a.get("dispute_opened_at"),
+            "settlement_age_h": age_h,
+            "payment_overdue": payment_overdue,
+            "high_value_unsettled": high_value_unsettled,
+            "dispute_flag": status == "dispute",
+            "settlement_notes": a.get("settlement_notes", []) or [],
+            "cancelled_reason": a.get("cancelled_reason"),
+        })
+
+    return {
+        "items": items,
+        "by_state": counts,
+        "ts": iso(now),
+        "sla_hours": PAYMENT_SLA_HOURS,
+        "high_value_threshold": HIGH_VALUE_THRESHOLD,
+    }
+
+
+@api.post("/admin/auctions/{auction_id}/settlement/note")
+async def admin_settlement_add_note(
+    auction_id: str, req: SettlementNoteReq,
+    admin = Depends(require_permission("manage_inventory")),
+):
+    """Append an immutable operator note to an auction's settlement_notes
+    array. Each note carries operator_id, ts and text. Audited."""
+    note = (req.note or "").strip()
+    if len(note) < 5:
+        raise HTTPException(status_code=400, detail="Note must be at least 5 characters")
+    a = await db.auctions.find_one({"id": auction_id}, {"_id": 0, "id": 1, "status": 1})
+    if not a:
+        raise HTTPException(status_code=404, detail="Auction not found")
+    entry = {
+        "id": str(uuid.uuid4()),
+        "text": note,
+        "operator_id": admin["id"],
+        "operator_name": admin.get("full_name") or admin.get("dealership_name") or "Operator",
+        "created_at": now_utc(),
+    }
+    await db.auctions.update_one({"id": auction_id}, {"$push": {"settlement_notes": entry}})
+    asyncio.create_task(audit(db, "settlement_note_add", admin["id"], auction_id, {
+        "note_id": entry["id"], "text": note[:200],
+    }))
+    # Broadcast to live ops listeners so the kanban can refresh in-place.
+    try:
+        await manager.broadcast(auction_id, {"type": "settlement_note", "note": {**entry, "created_at": iso(entry["created_at"])}})
+    except Exception:
+        pass
+    return {"ok": True, "note": {**entry, "created_at": iso(entry["created_at"])}}
+
+
+
+# ============================================================
 # Dealer Risk Visibility feed
 # ============================================================
 

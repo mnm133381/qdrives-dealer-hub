@@ -171,6 +171,14 @@ export const api = {
       method: 'POST', body: JSON.stringify({ target_state, note: note || '' }),
     }),
   adminRiskDealers: () => request<any>('/admin/risk/dealers'),
+  adminSettlementPipeline: (window_days = 30) =>
+    request<{ items: any[]; by_state: Record<string, number>; ts: string; sla_hours: number; high_value_threshold: number }>(
+      `/admin/settlements/pipeline?window_days=${window_days}`,
+    ),
+  adminSettlementAddNote: (id: string, note: string) =>
+    request<{ ok: boolean; note: any }>(`/admin/auctions/${id}/settlement/note`, {
+      method: 'POST', body: JSON.stringify({ note }),
+    }),
 
   // ---- Allow-list (closed-network dealer onboarding) ----
   adminApprovedDealers: (params?: { q?: string; status_filter?: string }) => {

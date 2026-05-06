@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, ActivityIndicator, StyleSheet, Platform } from 'react-native';
 import { Tabs, Redirect } from 'expo-router';
-import { LayoutDashboard, Package, PlusCircle, Users, ShieldAlert, ScrollText } from 'lucide-react-native';
+import { LayoutDashboard, Package, PlusCircle, Users, ShieldAlert, ScrollText, Truck } from 'lucide-react-native';
 import { colors } from '../../src/theme';
 import { useAuth } from '../../src/auth';
 
@@ -56,6 +56,7 @@ export default function AdminLayout() {
         ),
       }} />
       <Tabs.Screen name="dealers" options={{ title: 'Dealers', tabBarIcon: ({ color, size }) => <Users size={size - 2} color={color} strokeWidth={2.2} /> }} />
+      <Tabs.Screen name="settlement" options={{ title: 'Settle', tabBarIcon: ({ color, size }) => <Truck size={size - 2} color={color} strokeWidth={2.2} /> }} />
       <Tabs.Screen name="security" options={{ title: 'Audit', tabBarIcon: ({ color, size }) => <ShieldAlert size={size - 2} color={color} strokeWidth={2.2} /> }} />
       <Tabs.Screen name="profile" options={{ title: 'Admin', tabBarIcon: ({ color, size }) => <ScrollText size={size - 2} color={color} strokeWidth={2.2} /> }} />
       {/* Broadcast is now reached via Ops dashboard quick-action; route remains. */}

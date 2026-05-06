@@ -1111,6 +1111,125 @@ backend:
           + denied-login aggregation work), but it's a real backend
           regression that breaks the operator console search UX.
 
+  - task: "Phase 2B+ Settlement Pipeline backend (GET /admin/settlements/pipeline + POST /admin/auctions/{id}/settlement/note)"
+    implemented: true
+    working: false
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: |
+          [Phase 2B+ Settlement Pipeline — 40/42 PASS, 1 real backend bug found]
+          Test script: /app/backend_test_settlement_pipeline.py
+          Run target: http://localhost:8001/api
+
+          A) AUTH GATING — ✅ 5/5
+            • A.1 anon GET /admin/settlements/pipeline → 401
+            • A.2 dealer JWT GET → 403
+            • A.3 operator JWT GET → 200
+            • A.4 anon POST note → 401
+            • A.5 dealer JWT POST note → 403
+            • A.6 operator JWT POST note → 200 (covered in C.4)
+
+          B) PIPELINE PAYLOAD — ✅ 11/11
+            • B.1 by_state counts match item.status counts
+            • B.2 items <= 300 (observed 2)
+            • B.3 sample item has exactly the documented keys
+                  {id, status, car{id,make,model,year,registration_number},
+                   final_bid, starting_bid, reserve_price, reserve_met,
+                   top_bidder, suspended_dealer, total_bids, ended_at,
+                   payment_received_at, released_at, settled_at, cancelled_at,
+                   dispute_opened_at, settlement_age_h, payment_overdue,
+                   high_value_unsettled, dispute_flag, settlement_notes,
+                   cancelled_reason}
+            • B.4 payment_overdue iff status=='ended_pending_payment' AND
+                  settlement_age_h > 48 — no violations
+            • B.5 high_value_unsettled iff final_bid >= 10,00,000 AND status
+                  not in (settled, cancelled) — no violations
+            • B.6 suspended_dealer mirrors top_bidder.suspended — no violations
+            • B.7 dispute_flag iff status == 'dispute' — no violations
+            • B.8 settlement_age_h is non-negative int — no violations
+            • B.9 ts is RFC3339 UTC (2026-05-06T17:23:33.801831+00:00),
+                  sla_hours == 48, high_value_threshold == 1000000
+            • B.10 terminal items (settled/cancelled) only included if
+                   anchor ts within 30d — no violations
+
+          C) NOTE APPEND — ✅ 11/11
+            • C.1 note="" → 400 "Note must be at least 5 characters"
+            • C.2 note="hi" → 400
+            • C.3 note="     " (whitespace) → 400
+            • C.4 valid note "Buyer requested 24h delay on payment, escalated."
+                  → 200 {ok:true, note:{id,text,operator_id,operator_name,created_at}}
+            • C.5 pipeline reflects the note in matching item's
+                  settlement_notes[]: text matches exactly; operator_id ==
+                  operator's id (7a739d7e-…); operator_name = "Q Drives Admin"
+                  (full_name fallback to dealership_name); created_at present.
+            • C.6 second note appended; both present in settlement_notes[] and
+                  ordered by created_at ascending.
+            • C.7 POST with non-existent auction id → 404 "Auction not found"
+            • C.8 No DELETE /admin/auctions/{id}/settlement/note/{nid}
+                  No PATCH on same — both return 404 (append-only honored)
+
+          D) AUDIT INTEGRATION — ❌ 1/2 (BUG)
+            ✅ D.1a GET /admin/audit-logs?action=settlement_note_add → 200 shape
+            ❌ D.1b settlement_note_add entries are NOT returned via the
+               /admin/audit-logs endpoint, even though they ARE being written
+               correctly to MongoDB.
+               ROOT CAUSE (server.py:2148 SECURITY_AUDIT_ACTIONS set):
+               The action name "settlement_note_add" is absent from the
+               whitelist. /admin/audit-logs enforces
+               {"action": {"$in": list(SECURITY_AUDIT_ACTIONS)}} as the base
+               query AND also ignores ?action=X when X is not in the
+               whitelist (server.py:2171). Net effect:
+               ?action=settlement_note_add returns zero items.
+               Verified the audit IS written correctly by direct MongoDB
+               inspection (db.audit_logs):
+                 • count(action=settlement_note_add) == 7 after the test run
+                 • each row has actor_id=<operator id>, target_id=<auction id>,
+                   meta={note_id, text}, ts (proper datetime) — EXACTLY the
+                   shape the review requires.
+               FIX (one-line): Add "settlement_note_add" to
+               SECURITY_AUDIT_ACTIONS at server.py:2148 (grouped with
+               the other settlement_/auction_ actions).
+
+          E) IDEMPOTENCY / SEQUENTIAL APPEND — ✅ 3/3
+            • 3 sequential note appends on same auction all returned 200
+            • 3 returned note ids all unique
+            • settlement_notes length grew by exactly 3 (before=2 → after=5)
+
+          F) WS BROADCAST (SMOKE) — ⚠️  NOT EXERCISED (pre-existing bug, OUT-OF-SCOPE)
+            Per review, F is optional. Attempted test failed because the
+            WS endpoint closes the connection immediately on snapshot send.
+            Backend log: "WARNING - WS error: Object of type datetime is
+            not JSON serializable" at server.py:2817 send_json({"auction":
+            ea}). _enrich_auction returns nested dicts (car, seller,
+            inspection_pdf) whose datetime fields aren't recursively ISO'd
+            because serialize() only iterates top-level keys. The WS auth
+            (Phase 2A) still gates correctly — this is purely a snapshot
+            serialization bug. Affects every new WS subscriber, so any
+            broadcast frame (settlement_note, new_bid, auction_extend,
+            etc.) never reaches a fresh client. Recommend a pass to
+            recursively serialize nested datetimes before send_json, or
+            use FastAPI jsonable_encoder. Flagged for follow-up — NOT
+            caused by Phase 2B+ changes.
+
+          ===== SUMMARY =====
+          40/42 assertions PASS.
+          1 real backend bug introduced in Phase 2B+:
+            • settlement_note_add audit events not surfaced via
+              /admin/audit-logs (D.1b — one-line fix in
+              SECURITY_AUDIT_ACTIONS set at server.py:2148).
+          1 pre-existing WS snapshot serialization bug surfaced while
+          exercising F.1 — out of scope for Phase 2B+, documented for
+          follow-up.
+
+          working=false set because D.1b is an in-scope regression the
+          review explicitly required; everything else in the Phase 2B+
+          surface is green and matches the spec.
+
   - task: "Admin broadcast notifications"
     implemented: true
     working: true
@@ -1626,6 +1745,107 @@ frontend_phase1_operator_console_audit:
                actions on suspend/reinstate to avoid toast overlap (7f).
 
 phase_2b_frontend:
+  - task: "P1 polish: ReasonModal min 5-char + load-lock + WS auth re-validation"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/components/ReasonModal.tsx, frontend/src/auth.tsx, frontend/app/(admin)/index.tsx, frontend/app/(admin)/auction/[id].tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          P1 polish applied (no test re-run needed; backend untouched):
+            • ReasonModal — bumped min length to 5 chars; resets state on
+              re-open; shows live char-count helper (warning → success
+              once threshold met).
+            • Load-lock — useRef-debounced load() in (admin)/index.tsx and
+              (admin)/auction/[id].tsx so 6s polling + RefreshControl +
+              focus events do not double-fire.
+            • Empty-state — Live Ops dashboard now renders a dashed empty
+              card with "+ LAUNCH AUCTION" CTA when grid is empty.
+            • WS auth re-validation on tv-change — auth.tsx now polls
+              /auth/me every 30s while signed in. If the operator bumps a
+              dealer's token_version, the next /me returns 401
+              SESSION_INVALIDATED → existing onSessionKilled hook clears
+              the dealer state → all WS-using screens unmount and drop
+              their sockets. Closes Phase 2A WS-auth gap (#d).
+
+  - task: "Phase 2B+ Settlement Pipeline backend (GET /admin/settlements/pipeline + POST /admin/auctions/{id}/settlement/note)"
+    implemented: true
+    working: "NA"
+    file: "backend/server.py (lines ~1582-1745)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          New backend endpoints to power the Settlement Pipeline UI:
+          • GET /api/admin/settlements/pipeline?window_days=30 → returns
+            items[] in any settlement-relevant state (ended_pending_payment,
+            payment_received, vehicle_released, settled, dispute, cancelled
+            within window) plus by_state counts. Each item has
+            settlement_age_h, payment_overdue (>48h SLA), high_value_unsettled
+            (>=₹10L not terminal), suspended_dealer (top_bidder.suspended),
+            dispute_flag, settlement_notes[], plus full settlement timestamps.
+          • POST /api/admin/auctions/{id}/settlement/note → operator-only,
+            require_permission("manage_inventory"). Validates note length
+            (>=5 chars), appends immutable {id, text, operator_id,
+            operator_name, created_at} to auctions.settlement_notes[].
+            Audited as `settlement_note_add`. Broadcasts WS event
+            `settlement_note` for live ops to refresh.
+          Manual smoke tests pass: pipeline returns 2 items (1 paid + 1
+          cancelled) with by_state counts; note add: <5 chars → 400; ok →
+          200 with timestamped immutable entry.
+
+  - task: "Phase 2B+ Settlement Pipeline Tracker UI"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/(admin)/settlement.tsx, frontend/app/(admin)/_layout.tsx, frontend/src/api.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          New trading-terminal Kanban for operators:
+            • 6-column horizontal Kanban: PENDING $, PAID, RELEASED,
+              SETTLED, DISPUTE, CANCELLED. Each column = settlement state.
+            • Risk KPIs at top: OVERDUE / DISPUTE / HIGH-VAL / SUSP DLR.
+            • Pipeline value bar (open GMV) + payment SLA badge.
+            • Dense settlement cards (<110px) — vehicle, dealer name +
+              trust + suspended dot, final bid, reserve_met, age,
+              note-count pill, high-val pill, OVERDUE/DISPUTE strip on
+              top of risk-flagged cards.
+            • One-tap forward action button per card (Mark paid / Mark
+              released / Settle / Resolve→Settle).
+            • Detail bottom sheet with full timeline, dealer block,
+              cancellation reason, append-only notes feed + add-note
+              input, action toolbar (forward action + open dispute +
+              jump to Control Panel).
+            • 6s polling with load-lock; WS settlement_note events also
+              picked up via the 6s reconcile (no flicker).
+          Wired into /(admin)/_layout as 7th tab "Settle" using Truck
+          icon. Live Ops Dashboard's pipeline strip is now tappable and
+          opens the Settlement screen (also has explicit OPEN › link).
+          NEEDS frontend testing for:
+            • Operator can reach /(admin)/settlement.
+            • Pipeline loads with by_state counts.
+            • Tapping a card opens the bottom-sheet detail.
+            • Forward-action one-tap moves auction state with toast +
+              optimistic refresh (current_bid/etc unchanged).
+            • Add-note flow validates >=5 chars, appends to notes feed.
+            • Open-dispute action transitions to dispute and reflects in
+              the Dispute column.
+            • Jump-to-control-panel link works.
+            • Risk flags render correctly (OVERDUE strip, dispute border,
+              suspended dot, high-val pill).
+
+phase_2b_complete_marker:
   - task: "Phase 2B Live Ops Dashboard UI"
     implemented: true
     working: "NA"
@@ -1699,9 +1919,9 @@ phase_2b_frontend:
 
 test_plan:
   current_focus:
-    - "Phase 2B Live Ops Dashboard UI"
-    - "Phase 2B Auction Control Panel UI"
-    - "Multi-tier admin role check refactor (isAdmin)"
+    - "Phase 2B+ Settlement Pipeline backend (GET /admin/settlements/pipeline + POST /admin/auctions/{id}/settlement/note)"
+    - "Phase 2B+ Settlement Pipeline Tracker UI"
+    - "P1 polish: ReasonModal min 5-char + load-lock + WS auth re-validation"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -2462,3 +2682,52 @@ agent_communication:
 
       Phase 2B frontend is GREEN at the user-flow level. Please summarise
       and finish — do NOT re-fix.
+
+  - agent: "testing"
+    message: |
+      [PHASE 2B+ SETTLEMENT PIPELINE BACKEND VALIDATION]
+      40/42 passes against http://localhost:8001/api using operator
+      +919900000099 + dealer +919900000002. Test runner:
+      /app/backend_test_settlement_pipeline.py
+
+      ✅ GET  /api/admin/settlements/pipeline — auth gating, payload
+         shape, by_state counts, payment_overdue / high_value_unsettled /
+         dispute_flag / suspended_dealer invariants, terminal-in-window
+         filter, sla_hours==48, high_value_threshold==1,000,000, RFC3339
+         ts — ALL GREEN.
+      ✅ POST /api/admin/auctions/{id}/settlement/note — auth gating,
+         5-char validation, whitespace-strip, 404 on unknown auction,
+         note shape (id, text, operator_id, operator_name, created_at),
+         settlement_notes[] ordering ascending, 3× sequential append
+         monotonic growth, no DELETE/PATCH route — ALL GREEN.
+
+      ❌ REAL BUG (in-scope, one-line fix):
+         GET /api/admin/audit-logs?action=settlement_note_add returns
+         zero items even though the audit event IS written correctly
+         to MongoDB (verified direct: 7 rows with proper actor_id,
+         target_id, meta.note_id, meta.text).
+         Root cause: "settlement_note_add" is missing from the
+         SECURITY_AUDIT_ACTIONS whitelist at server.py:2148.
+         Fix: add "settlement_note_add" to that set (grouped with the
+         other settlement_/auction_ actions).
+
+      ⚠️  PRE-EXISTING (out-of-scope, flagged for follow-up):
+         F.1 WS broadcast smoke test could not be exercised because
+         the /api/ws/auction/{id} endpoint dies immediately on the
+         initial snapshot send with
+           "WS error: Object of type datetime is not JSON serializable"
+         The snapshot builder (_enrich_auction) returns nested dicts
+         (car / seller / inspection_pdf) whose datetime fields are
+         not recursively ISO-serialized because serialize() only
+         iterates top-level keys. Every new WS subscriber (dealer or
+         operator) gets disconnected before any subsequent broadcast
+         frame (settlement_note, new_bid, auction_extend, bid_cancel)
+         can land. Phase 2A WS auth gating still works — this is
+         purely a serialization bug. Recommend using FastAPI's
+         jsonable_encoder or making serialize() recursive.
+
+      RECOMMENDATION: add "settlement_note_add" to
+      SECURITY_AUDIT_ACTIONS and we're green on the Phase 2B+ surface.
+      WS serialization bug should be tracked as a separate P1 —
+      it will also bite the frontend's live-ops WS hooks the moment
+      they try to receive the initial snapshot.

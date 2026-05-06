@@ -10,7 +10,7 @@
  * Built for operator-grade speed: monospace numerics, no oversized cards,
  * primary actions live in one tap.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator,
   RefreshControl,
@@ -42,7 +42,13 @@ export default function AdminOpsDashboard() {
   } | null>(null);
   const [reasonBusy, setReasonBusy] = useState(false);
 
+  // Track whether a load is currently in flight so 6s polling and pull-to-
+  // refresh don't double-fire and create flicker.
+  const loadingRef = useRef(false);
+
   const load = useCallback(async () => {
+    if (loadingRef.current) return; // debounce: skip if a load is already in flight
+    loadingRef.current = true;
     setLoading(true);
     try {
       const [g, r] = await Promise.all([api.adminLiveGrid(), api.adminRiskDealers()]);
@@ -50,7 +56,7 @@ export default function AdminOpsDashboard() {
       setRisk(r);
     } catch (e: any) {
       toast.show(e.message || 'Failed to load ops', 'error');
-    } finally { setLoading(false); }
+    } finally { setLoading(false); loadingRef.current = false; }
   }, []);
 
   useFocusEffect(useCallback(() => {
@@ -147,7 +153,14 @@ export default function AdminOpsDashboard() {
         {loading && grid.length === 0 ? (
           <View style={styles.loader}><ActivityIndicator color={colors.red} /></View>
         ) : grid.length === 0 ? (
-          <Text style={styles.empty}>No active auctions.</Text>
+          <View style={styles.emptyCard} testID="live-grid-empty">
+            <View style={styles.emptyIcon}><Inbox size={20} color={colors.textChrome} /></View>
+            <Text style={styles.emptyTitle}>No live auctions</Text>
+            <Text style={styles.emptyBody}>Pipeline is idle. Launch a new auction from the Inventory tab or pull-to-refresh to re-poll.</Text>
+            <TouchableOpacity onPress={() => router.push('/(admin)/launch' as any)} style={styles.emptyCta} testID="live-grid-empty-cta">
+              <Text style={styles.emptyCtaText}>+ LAUNCH AUCTION</Text>
+            </TouchableOpacity>
+          </View>
         ) : (
           grid.map((a) => (
             <AuctionRow
@@ -166,16 +179,21 @@ export default function AdminOpsDashboard() {
         <View style={[styles.sectionHead, { marginTop: 24 }]}>
           <Activity size={13} color={colors.textChrome} />
           <Text style={styles.sectionTitle}>SETTLEMENT PIPELINE</Text>
+          <TouchableOpacity onPress={() => router.push('/(admin)/settlement' as any)} style={styles.linkBtn} testID="open-settlement-pipeline">
+            <Text style={styles.linkBtnText}>OPEN ›</Text>
+          </TouchableOpacity>
         </View>
-        <View style={styles.pipeline}>
-          <PipeStage label="PENDING $" count={counts.pending} icon={<Inbox size={12} color={colors.warning} />} tint={colors.warning} />
-          <PipeArrow />
-          <PipeStage label="PAID" count={counts.payment} icon={<CheckCircle2 size={12} color={colors.silver} />} />
-          <PipeArrow />
-          <PipeStage label="RELEASED" count={counts.released} icon={<Truck size={12} color={colors.success} />} tint={colors.success} />
-          <PipeArrow />
-          <PipeStage label="DISPUTE" count={counts.dispute} icon={<FileWarning size={12} color={colors.red} />} tint={counts.dispute > 0 ? colors.red : undefined} />
-        </View>
+        <TouchableOpacity activeOpacity={0.85} onPress={() => router.push('/(admin)/settlement' as any)}>
+          <View style={styles.pipeline}>
+            <PipeStage label="PENDING $" count={counts.pending} icon={<Inbox size={12} color={colors.warning} />} tint={colors.warning} />
+            <PipeArrow />
+            <PipeStage label="PAID" count={counts.payment} icon={<CheckCircle2 size={12} color={colors.silver} />} />
+            <PipeArrow />
+            <PipeStage label="RELEASED" count={counts.released} icon={<Truck size={12} color={colors.success} />} tint={colors.success} />
+            <PipeArrow />
+            <PipeStage label="DISPUTE" count={counts.dispute} icon={<FileWarning size={12} color={colors.red} />} tint={counts.dispute > 0 ? colors.red : undefined} />
+          </View>
+        </TouchableOpacity>
 
         {/* RISK STRIP */}
         <View style={[styles.sectionHead, { marginTop: 24 }]}>
@@ -361,9 +379,17 @@ const styles = StyleSheet.create({
   sectionHead: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 10 },
   sectionTitle: { color: colors.textChrome, fontSize: 11, fontWeight: '900', letterSpacing: 1.4 },
   sectionCount: { color: colors.red, fontSize: 11, fontWeight: '900', marginLeft: 'auto', fontVariant: ['tabular-nums'] },
+  linkBtn: { marginLeft: 'auto', paddingHorizontal: 9, paddingVertical: 4, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(185,28,28,0.45)', backgroundColor: 'rgba(185,28,28,0.06)' },
+  linkBtnText: { color: colors.red, fontSize: 9.5, fontWeight: '900', letterSpacing: 1 },
 
   loader: { paddingVertical: 30, alignItems: 'center' },
   empty: { color: colors.textMuted, fontSize: 12, fontWeight: '600', textAlign: 'center', paddingVertical: 30 },
+  emptyCard: { padding: 22, alignItems: 'center', borderRadius: radii.lg, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border, borderStyle: 'dashed', marginBottom: 14 },
+  emptyIcon: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, marginBottom: 10 },
+  emptyTitle: { color: colors.textPrimary, fontSize: 14, fontWeight: '900', letterSpacing: 0.4 },
+  emptyBody: { color: colors.textChrome, fontSize: 11.5, fontWeight: '600', textAlign: 'center', marginTop: 4, marginBottom: 12, lineHeight: 16 },
+  emptyCta: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 999, backgroundColor: 'rgba(185,28,28,0.10)', borderWidth: 1, borderColor: 'rgba(185,28,28,0.45)' },
+  emptyCtaText: { color: colors.red, fontSize: 11, fontWeight: '900', letterSpacing: 1 },
 
   row: { padding: 13, borderRadius: radii.lg, backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: 1, marginBottom: 10 },
   rowHead: { flexDirection: 'row', alignItems: 'center', gap: 10 },

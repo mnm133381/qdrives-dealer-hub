@@ -90,6 +90,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; setOnSessionKilled(null); };
   }, [refresh]);
 
+  // Periodic /auth/me re-poll. If the operator bumps a dealer's
+  // token_version (suspend / role change / max-bid update), the next /me
+  // returns 401 SESSION_INVALIDATED → the api layer fires onSessionKilled
+  // → setDealer(null) → all WS-using screens unmount and disconnect.
+  // This closes the Phase 2A WS-auth gap (#d): re-validate WS auth on
+  // tv-change. Polled every 30s while dealer is signed in.
+  useEffect(() => {
+    if (!dealer) return;
+    const t = setInterval(() => { refresh().catch(() => {}); }, 30000);
+    return () => clearInterval(t);
+  }, [dealer?.id, refresh]);
+
   // After we have a dealer, register for push (best-effort, non-blocking)
   useEffect(() => {
     if (!dealer) return;

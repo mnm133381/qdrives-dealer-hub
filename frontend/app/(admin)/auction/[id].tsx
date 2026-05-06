@@ -5,7 +5,7 @@
  * (including cancelled bids with reversal trail), timestamps, settlement
  * timeline, and the complete operator action toolbar.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator,
   Platform, RefreshControl,
@@ -43,16 +43,19 @@ export default function AuctionControlPanel() {
     | null
   >(null);
   const [busy, setBusy] = useState(false);
+  const loadingRef = useRef(false);
 
   const load = useCallback(async () => {
     if (!id) return;
+    if (loadingRef.current) return;
+    loadingRef.current = true;
     setLoading(true);
     try {
       const d = await api.adminAuctionControlPanel(String(id));
       setData(d);
     } catch (e: any) {
       toast.show(e.message || 'Failed to load', 'error');
-    } finally { setLoading(false); }
+    } finally { setLoading(false); loadingRef.current = false; }
   }, [id]);
 
   useFocusEffect(useCallback(() => {

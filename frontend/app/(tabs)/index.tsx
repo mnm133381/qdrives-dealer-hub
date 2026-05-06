@@ -34,21 +34,24 @@ export default function Home() {
   const [auctions, setAuctions] = useState<any[]>([]);
   const [activeFilter, setActiveFilter] = useState('all');
   const [loaded, setLoaded] = useState(false);
+  const [unread, setUnread] = useState(0);
 
   const load = useCallback(async () => {
     try {
-      const [s, p, act, live, all] = await Promise.all([
+      const [s, p, act, live, all, uc] = await Promise.all([
         api.dashboard().catch(() => null),
         api.marketPulse().catch(() => null),
         api.networkActivity().catch(() => []),
         api.auctions('live').catch(() => []),
         api.auctions().catch(() => []),
+        api.unreadCount().catch(() => ({ unread: 0 })),
       ]);
       setStats(s);
       setPulse(p);
       setActivity(act as any[]);
       const upcoming = (all as any[]).filter((a) => a.status === 'upcoming');
       setAuctions([...(live as any[]), ...upcoming]);
+      setUnread(((uc as any)?.unread as number) || 0);
     } catch {}
     setLoaded(true);
   }, []);
@@ -98,7 +101,11 @@ export default function Home() {
         </View>
         <TouchableOpacity onPress={() => router.push('/notifications')} style={styles.iconBtn} testID="home-notifications-btn">
           <Bell size={18} color={colors.textChrome} />
-          <View style={styles.notifDot} />
+          {unread > 0 && (
+            <View style={styles.notifBadge}>
+              <Text style={styles.notifBadgeText}>{unread > 9 ? '9+' : String(unread)}</Text>
+            </View>
+          )}
         </TouchableOpacity>
       </View>
 
@@ -279,6 +286,12 @@ const styles = StyleSheet.create({
   dealerName: { color: colors.textPrimary, fontSize: 20, fontWeight: '800', letterSpacing: -0.4 },
   iconBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   notifDot: { position: 'absolute', top: 11, right: 11, width: 8, height: 8, borderRadius: 4, backgroundColor: colors.red, borderWidth: 1.5, borderColor: colors.bg },
+  notifBadge: {
+    position: 'absolute', top: -2, right: -2, minWidth: 18, height: 18, paddingHorizontal: 4,
+    borderRadius: 9, backgroundColor: colors.red, borderWidth: 2, borderColor: colors.bg,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  notifBadgeText: { color: '#fff', fontSize: 10, fontWeight: '900' },
 
   search: {
     marginHorizontal: 20, marginBottom: 16,

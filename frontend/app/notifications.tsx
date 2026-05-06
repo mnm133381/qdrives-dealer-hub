@@ -2,7 +2,7 @@ import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Bell, Trophy, AlertTriangle, ShieldCheck, Wallet } from 'lucide-react-native';
+import { ArrowLeft, Bell, Trophy, AlertTriangle, ShieldCheck, Wallet, Clock4, Flag } from 'lucide-react-native';
 import { colors, radii } from '../src/theme';
 import { api } from '../src/api';
 
@@ -11,6 +11,9 @@ const ICON_MAP: Record<string, any> = {
   win: { icon: Trophy, color: colors.success },
   payment: { icon: Wallet, color: colors.warning },
   verification: { icon: ShieldCheck, color: colors.success },
+  ending_soon: { icon: Clock4, color: colors.warning },
+  ended: { icon: Flag, color: colors.textChrome },
+  auction_closed: { icon: Flag, color: colors.textChrome },
 };
 
 export default function Notifications() {

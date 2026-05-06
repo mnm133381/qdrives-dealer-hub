@@ -1,6 +1,11 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { storage } from './storage';
 import { api, TOKEN_KEY } from './api';
+import {
+  registerForPushNotifications,
+  unregisterFromPushNotifications,
+  attachListeners as attachPushListeners,
+} from './notifications';
 
 type Dealer = {
   id: string;
@@ -72,8 +77,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!cancelled) setLoading(false);
       }
     })();
+    // Attach listeners early so deep-link from a cold-start tap fires
+    try { attachPushListeners(); } catch {}
     return () => { cancelled = true; };
   }, [refresh]);
+
+  // After we have a dealer, register for push (best-effort, non-blocking)
+  useEffect(() => {
+    if (!dealer) return;
+    registerForPushNotifications().catch(() => {});
+  }, [dealer?.id]);
 
   const signIn = useCallback(async (token: string, d: Dealer) => {
     try {
@@ -83,9 +96,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.warn('[auth] storage write failed (using in-memory):', e);
     }
     setDealer(d);
+    // fire-and-forget
+    registerForPushNotifications().catch(() => {});
   }, []);
 
   const signOut = useCallback(async () => {
+    try { await unregisterFromPushNotifications(); } catch {}
     try {
       await storage.removeItem(TOKEN_KEY);
     } catch {}

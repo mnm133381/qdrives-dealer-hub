@@ -46,6 +46,13 @@ export const api = {
 
   notifications: () => request('/notifications'),
   markNotificationsRead: () => request('/notifications/mark-read', { method: 'POST' }),
+  unreadCount: () => request<{ unread: number }>('/notifications/unread-count'),
+  registerPushToken: (token: string, platform?: string) =>
+    request('/notifications/register-token', { method: 'POST', body: JSON.stringify({ token, platform }) }),
+  unregisterPushToken: (token: string) =>
+    request('/notifications/unregister-token', { method: 'POST', body: JSON.stringify({ token }) }),
+  testPush: (title?: string, body?: string) =>
+    request('/notifications/test', { method: 'POST', body: JSON.stringify({ title, body }) }),
 
   dashboard: () => request('/dashboard/stats'),
   marketPulse: () => request('/market/pulse'),

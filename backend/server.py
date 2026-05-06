@@ -21,6 +21,8 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from pydantic import BaseModel, Field
 
+from push import send_to_dealer, send_to_dealers, is_valid_expo_token
+
 # ---------- Setup ----------
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -136,6 +138,16 @@ class PriceEstimateReq(BaseModel):
     condition_score: float
 
 
+class RegisterPushTokenReq(BaseModel):
+    token: str
+    platform: Optional[str] = None  # "ios" | "android" | "web"
+
+
+class TestPushReq(BaseModel):
+    title: Optional[str] = "Q Drives"
+    body: Optional[str] = "Test notification"
+
+
 # ---------- WebSocket Manager ----------
 class ConnectionManager:
     def __init__(self):
@@ -228,6 +240,23 @@ async def submit_kyc(req: KycReq, dealer = Depends(get_current_dealer)):
     }
     await db.dealers.update_one({"id": dealer["id"]}, {"$set": update})
     updated = await db.dealers.find_one({"id": dealer["id"]}, {"_id": 0})
+
+    # KYC verification notification (DB + push)
+    await db.notifications.insert_one({
+        "id": str(uuid.uuid4()),
+        "dealer_id": dealer["id"],
+        "type": "verification",
+        "title": "Verification approved",
+        "body": f"Welcome aboard, {req.dealership_name}. You can now bid and list cars.",
+        "auction_id": None,
+        "read": False,
+        "created_at": now_utc(),
+    })
+    asyncio.create_task(send_to_dealer(
+        db, dealer["id"], "Verification approved",
+        f"Welcome to Q Drives, {req.dealership_name}. You can now bid & list.",
+        data={"type": "verification"},
+    ))
     return serialize(updated)
 
 
@@ -321,16 +350,25 @@ async def place_bid(auction_id: str, req: BidReq, dealer = Depends(get_current_d
 
     # Notify previous top bidder (outbid)
     if prev_top and prev_top != dealer["id"]:
+        car = await db.cars.find_one({"id": a["car_id"]}, {"_id": 0}) or {}
+        car_label = f"{car.get('year', '')} {car.get('make', '')} {car.get('model', '')}".strip() or "your watched auction"
+        push_title = "You've been outbid"
+        push_body = f"{bid['dealer_name']} bid ₹{req.amount:,} on {car_label}"
         await db.notifications.insert_one({
             "id": str(uuid.uuid4()),
             "dealer_id": prev_top,
             "type": "outbid",
-            "title": "You've been outbid",
-            "body": f"Someone outbid you on auction. New bid: ₹{req.amount:,}",
+            "title": push_title,
+            "body": push_body,
             "auction_id": auction_id,
             "read": False,
             "created_at": now_utc(),
         })
+        # Fire-and-forget Expo push (don't block bid response)
+        asyncio.create_task(send_to_dealer(
+            db, prev_top, push_title, push_body,
+            data={"type": "outbid", "auction_id": auction_id},
+        ))
 
     # Broadcast to room
     await manager.broadcast(auction_id, {
@@ -453,6 +491,204 @@ async def get_notifications(dealer = Depends(get_current_dealer)):
 async def mark_read(dealer = Depends(get_current_dealer)):
     await db.notifications.update_many({"dealer_id": dealer["id"], "read": False}, {"$set": {"read": True}})
     return {"success": True}
+
+
+@api.get("/notifications/unread-count")
+async def unread_count(dealer = Depends(get_current_dealer)):
+    n = await db.notifications.count_documents({"dealer_id": dealer["id"], "read": False})
+    return {"unread": n}
+
+
+@api.post("/notifications/register-token")
+async def register_push_token(req: RegisterPushTokenReq, dealer = Depends(get_current_dealer)):
+    token = (req.token or "").strip()
+    if not is_valid_expo_token(token):
+        raise HTTPException(status_code=400, detail="Invalid Expo push token")
+    # addToSet keeps tokens unique. Track a small per-token meta doc separately
+    # in case we want to know platform/last-seen later.
+    await db.dealers.update_one(
+        {"id": dealer["id"]},
+        {"$addToSet": {"push_tokens": token}},
+    )
+    await db.push_tokens.update_one(
+        {"token": token},
+        {"$set": {
+            "token": token,
+            "dealer_id": dealer["id"],
+            "platform": (req.platform or "unknown"),
+            "updated_at": now_utc(),
+        }},
+        upsert=True,
+    )
+    return {"success": True}
+
+
+@api.post("/notifications/unregister-token")
+async def unregister_push_token(req: RegisterPushTokenReq, dealer = Depends(get_current_dealer)):
+    token = (req.token or "").strip()
+    if not token:
+        return {"success": True}
+    await db.dealers.update_one(
+        {"id": dealer["id"]},
+        {"$pull": {"push_tokens": token}},
+    )
+    await db.push_tokens.delete_one({"token": token})
+    return {"success": True}
+
+
+@api.post("/notifications/test")
+async def test_push(req: TestPushReq, dealer = Depends(get_current_dealer)):
+    """Dev/diagnostic helper — sends a test notification to the current dealer's devices."""
+    asyncio.create_task(send_to_dealer(
+        db, dealer["id"], req.title or "Q Drives", req.body or "Test notification",
+        data={"type": "test"},
+    ))
+    return {"success": True}
+
+
+# ---------- Auction Lifecycle Scheduler (ending-soon / ended winner) ----------
+async def _push_ending_soon(auction: dict, minutes_left: int) -> None:
+    car = await db.cars.find_one({"id": auction["car_id"]}, {"_id": 0}) or {}
+    label = f"{car.get('year', '')} {car.get('make', '')} {car.get('model', '')}".strip() or "an auction"
+    title = f"Closing in {minutes_left} min"
+    body = f"{label} is ending soon at ₹{auction.get('current_bid', 0):,}."
+
+    # Top bidder + watchers
+    recipients: set = set()
+    if auction.get("top_bidder_id"):
+        recipients.add(auction["top_bidder_id"])
+    watchers = await db.watchlist.find(
+        {"auction_id": auction["id"]}, {"_id": 0, "dealer_id": 1}
+    ).to_list(500)
+    for w in watchers:
+        recipients.add(w["dealer_id"])
+    # Don't notify the seller about their own auction closing (keeps focus on bidders)
+    recipients.discard(auction.get("seller_id"))
+    if not recipients:
+        return
+
+    # Persist DB notif for each + send pushes
+    docs = []
+    now = now_utc()
+    for did in recipients:
+        docs.append({
+            "id": str(uuid.uuid4()),
+            "dealer_id": did,
+            "type": "ending_soon",
+            "title": title,
+            "body": body,
+            "auction_id": auction["id"],
+            "read": False,
+            "created_at": now,
+        })
+    if docs:
+        await db.notifications.insert_many(docs)
+    await send_to_dealers(
+        db, list(recipients), title, body,
+        data={"type": "ending_soon", "auction_id": auction["id"]},
+    )
+
+
+async def _push_auction_ended(auction: dict) -> None:
+    car = await db.cars.find_one({"id": auction["car_id"]}, {"_id": 0}) or {}
+    label = f"{car.get('year', '')} {car.get('make', '')} {car.get('model', '')}".strip() or "your auction"
+    final_bid = auction.get("current_bid", 0) or 0
+    reserve = auction.get("reserve_price", 0) or 0
+    won = bool(auction.get("top_bidder_id")) and final_bid >= reserve
+    now = now_utc()
+    docs: List[Dict[str, Any]] = []
+
+    # Winner / loser
+    top = auction.get("top_bidder_id")
+    if top:
+        if won:
+            t = "You won!"
+            b = f"{label} sold to you for ₹{final_bid:,}. Payment instructions next."
+        else:
+            t = "Auction ended below reserve"
+            b = f"{label} closed at ₹{final_bid:,} — reserve not met. Seller will review."
+        docs.append({
+            "id": str(uuid.uuid4()), "dealer_id": top, "type": "win" if won else "ended",
+            "title": t, "body": b, "auction_id": auction["id"],
+            "read": False, "created_at": now,
+        })
+        asyncio.create_task(send_to_dealer(
+            db, top, t, b, data={"type": "win" if won else "ended", "auction_id": auction["id"]},
+        ))
+
+    # Seller
+    seller = auction.get("seller_id")
+    if seller:
+        if won:
+            t = "Your car sold"
+            b = f"{label} sold for ₹{final_bid:,}. Buyer details inside."
+        elif final_bid > 0:
+            t = "Reserve not met"
+            b = f"{label} closed at ₹{final_bid:,}. Choose to relist or accept best offer."
+        else:
+            t = "Auction ended"
+            b = f"{label} ended with no bids. Try relisting with a fresh inspection."
+        docs.append({
+            "id": str(uuid.uuid4()), "dealer_id": seller, "type": "auction_closed",
+            "title": t, "body": b, "auction_id": auction["id"],
+            "read": False, "created_at": now,
+        })
+        asyncio.create_task(send_to_dealer(
+            db, seller, t, b, data={"type": "auction_closed", "auction_id": auction["id"]},
+        ))
+
+    if docs:
+        await db.notifications.insert_many(docs)
+
+
+async def auction_scheduler() -> None:
+    """
+    Background loop that runs every ~30s and dispatches:
+      • "ending_soon" pushes ~5 min before close (one-shot per auction)
+      • "auction ended" pushes when an auction crosses end_time (one-shot)
+    Idempotent via flags written back onto the auction doc.
+    """
+    await asyncio.sleep(15)  # let the app warm up + finish seeding
+    while True:
+        try:
+            now = now_utc()
+            soon_window_low = now + timedelta(minutes=4)
+            soon_window_high = now + timedelta(minutes=6)
+
+            # Ending-soon (one shot per auction, only for those still live)
+            soon_cursor = db.auctions.find({
+                "ending_soon_notified": {"$ne": True},
+                "end_time": {"$gte": soon_window_low, "$lte": soon_window_high},
+                "start_time": {"$lte": now},
+            }, {"_id": 0})
+            async for a in soon_cursor:
+                try:
+                    await _push_ending_soon(a, 5)
+                    await db.auctions.update_one(
+                        {"id": a["id"]},
+                        {"$set": {"ending_soon_notified": True}},
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("ending_soon push failed for %s: %s", a.get("id"), exc)
+
+            # Ended (one-shot)
+            ended_cursor = db.auctions.find({
+                "ended_notified": {"$ne": True},
+                "end_time": {"$lte": now},
+            }, {"_id": 0})
+            async for a in ended_cursor:
+                try:
+                    await _push_auction_ended(a)
+                    await db.auctions.update_one(
+                        {"id": a["id"]},
+                        {"$set": {"ended_notified": True}},
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("auction_ended push failed for %s: %s", a.get("id"), exc)
+
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("auction_scheduler tick failed: %s", exc)
+        await asyncio.sleep(30)
 
 
 # ---------- Dashboard ----------
@@ -894,7 +1130,11 @@ async def on_startup():
     await db.bids.create_index([("auction_id", 1), ("created_at", -1)])
     await db.inspections.create_index("car_id")
     await db.inspections.create_index("id", unique=True)
+    await db.notifications.create_index([("dealer_id", 1), ("created_at", -1)])
+    await db.push_tokens.create_index("token", unique=True)
     await seed_data()
+    # background loops
+    asyncio.create_task(auction_scheduler())
 
 
 @app.on_event("shutdown")

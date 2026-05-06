@@ -15,13 +15,15 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, status, UploadFile, File, Form, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from pydantic import BaseModel, Field
 
 from push import send_to_dealer, send_to_dealers, is_valid_expo_token
+import storage_service
+import media as media_svc
 
 # ---------- Setup ----------
 mongo_url = os.environ['MONGO_URL']
@@ -163,6 +165,19 @@ class RegisterPushTokenReq(BaseModel):
 class TestPushReq(BaseModel):
     title: Optional[str] = "Q Drives"
     body: Optional[str] = "Test notification"
+
+
+class ReorderMediaReq(BaseModel):
+    ordered_ids: List[str]
+
+
+class UpdateMediaReq(BaseModel):
+    section: Optional[str] = None
+    subsection: Optional[str] = None
+
+
+class AttestNoDamageReq(BaseModel):
+    no_damage_attested: bool
 
 
 # ---------- WebSocket Manager ----------
@@ -942,6 +957,156 @@ async def download_inspection_pdf(
     return StreamingResponse(iterator(), media_type="application/pdf", headers=headers)
 
 
+# ---------- Vehicle Media (provider-agnostic) ----------
+@api.get("/cars/{car_id}/media")
+async def list_car_media(car_id: str, section: Optional[str] = None):
+    """Public — returns ordered media records for the car (with `url` + `thumb_url`).
+    Includes external/legacy URLs as well as GridFS-stored uploads."""
+    items = await media_svc.list_for_car(db, car_id, section=section)
+    return items
+
+
+@api.get("/cars/{car_id}/media/completeness")
+async def media_completeness(car_id: str, dealer = Depends(get_current_dealer)):
+    """Returns counts per section + missing items + valid flag."""
+    return await media_svc.completeness(db, car_id)
+
+
+@api.post("/media/upload")
+async def upload_media(
+    car_id: str = Form(...),
+    section: str = Form(...),
+    subsection: Optional[str] = Form(None),
+    width: Optional[int] = Form(None),
+    height: Optional[int] = Form(None),
+    file: UploadFile = File(...),
+    thumb: Optional[UploadFile] = File(None),
+    dealer = Depends(get_current_admin),
+):
+    """Admin-only multi-image upload. The client compresses each photo to
+    1920px JPEG q≈80% before posting; an optional 400px thumbnail is sent
+    in the same multipart request to avoid a second round-trip."""
+    car = await db.cars.find_one({"id": car_id}, {"_id": 0})
+    if not car:
+        raise HTTPException(status_code=404, detail="Car not found")
+    if section not in media_svc.SECTIONS:
+        raise HTTPException(status_code=400, detail=f"Unknown section: {section}")
+
+    full_bytes = await file.read()
+    full_ct = (file.content_type or "image/jpeg").lower()
+    thumb_bytes = None
+    thumb_ct = None
+    if thumb is not None:
+        thumb_bytes = await thumb.read()
+        thumb_ct = (thumb.content_type or "image/jpeg").lower()
+
+    try:
+        record = await media_svc.create_uploaded(
+            db,
+            car_id=car_id,
+            section=section,
+            full_bytes=full_bytes,
+            full_content_type=full_ct,
+            full_filename=file.filename or "upload.jpg",
+            thumb_bytes=thumb_bytes,
+            thumb_content_type=thumb_ct,
+            width=width,
+            height=height,
+            subsection=subsection,
+            created_by=dealer["id"],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return record
+
+
+@api.delete("/media/{media_id}")
+async def delete_car_media(media_id: str, dealer = Depends(get_current_admin)):
+    ok = await media_svc.delete_media(db, media_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Media not found")
+    return {"success": True}
+
+
+@api.patch("/media/{media_id}")
+async def patch_media(media_id: str, req: UpdateMediaReq, dealer = Depends(get_current_admin)):
+    try:
+        return await media_svc.update_section(db, media_id, req.section, req.subsection)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.post("/cars/{car_id}/media/reorder")
+async def reorder_media(car_id: str, req: ReorderMediaReq, dealer = Depends(get_current_admin)):
+    await media_svc.reorder(db, car_id, req.ordered_ids)
+    return {"success": True}
+
+
+@api.post("/cars/{car_id}/media/featured/{media_id}")
+async def set_featured_media(car_id: str, media_id: str, dealer = Depends(get_current_admin)):
+    ok = await media_svc.set_featured(db, car_id, media_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Media not found for this car")
+    # Reflect featured into car.images[0] for backwards compat (if non-external)
+    feat = await db.media.find_one({"id": media_id}, {"_id": 0})
+    if feat and feat.get("provider") == "external" and feat.get("external_url"):
+        await db.cars.update_one({"id": car_id}, {"$set": {"images.0": feat["external_url"]}})
+    return {"success": True}
+
+
+@api.post("/cars/{car_id}/attest-no-damage")
+async def attest_no_damage(car_id: str, req: AttestNoDamageReq, dealer = Depends(get_current_admin)):
+    await db.cars.update_one(
+        {"id": car_id}, {"$set": {"no_damage_attested": req.no_damage_attested}}
+    )
+    return {"success": True}
+
+
+@api.get("/media/{media_id}/file")
+async def media_file(media_id: str):
+    m = await media_svc.get(db, media_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Media not found")
+    if m.get("provider") == "external" and m.get("external_url"):
+        # 302 to external URL
+        return RedirectResponse(url=m["external_url"], status_code=302)
+    storage = storage_service.get_default_storage()
+    sid = m.get("storage_id")
+    if not sid:
+        raise HTTPException(status_code=404, detail="Storage object missing")
+    meta = await storage.get_meta(sid)
+    if not meta:
+        raise HTTPException(status_code=404, detail="File not found in storage")
+    headers = {"Cache-Control": "public, max-age=86400"}
+    return StreamingResponse(
+        storage.stream(sid),
+        media_type=meta.get("content_type", "image/jpeg"),
+        headers=headers,
+    )
+
+
+@api.get("/media/{media_id}/thumb")
+async def media_thumb(media_id: str):
+    m = await media_svc.get(db, media_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Media not found")
+    if m.get("provider") == "external" and m.get("external_url"):
+        return RedirectResponse(url=m["external_url"], status_code=302)
+    storage = storage_service.get_default_storage()
+    sid = m.get("thumb_storage_id") or m.get("storage_id")
+    if not sid:
+        raise HTTPException(status_code=404, detail="Storage object missing")
+    meta = await storage.get_meta(sid)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Thumbnail not found")
+    headers = {"Cache-Control": "public, max-age=86400"}
+    return StreamingResponse(
+        storage.stream(sid),
+        media_type=meta.get("content_type", "image/jpeg"),
+        headers=headers,
+    )
+
+
 # ---------- Network activity (public ticker) ----------
 @api.get("/network/activity")
 async def network_activity(limit: int = 12):
@@ -1201,6 +1366,7 @@ async def seed_data():
 
 @app.on_event("startup")
 async def on_startup():
+    storage_service.init_default_storage(db)
     await db.dealers.create_index("phone", unique=True)
     await db.cars.create_index("id", unique=True)
     await db.auctions.create_index("id", unique=True)
@@ -1209,6 +1375,8 @@ async def on_startup():
     await db.inspections.create_index("id", unique=True)
     await db.notifications.create_index([("dealer_id", 1), ("created_at", -1)])
     await db.push_tokens.create_index("token", unique=True)
+    await db.media.create_index([("car_id", 1), ("order", 1)])
+    await db.media.create_index("id", unique=True)
     await seed_data()
     # background loops
     asyncio.create_task(auction_scheduler())

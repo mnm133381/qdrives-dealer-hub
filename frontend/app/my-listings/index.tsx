@@ -119,6 +119,24 @@ export default function MyListings() {
 
                 <View style={styles.divider} />
 
+                <TouchableOpacity
+                  onPress={() => router.push(`/inventory/${car.id}/media`)}
+                  style={styles.mediaRow}
+                  activeOpacity={0.85}
+                  testID={`my-listing-${a.id}-media`}
+                >
+                  <View style={styles.mediaIcon}>
+                    <FileText size={14} color={colors.red} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.mediaLabel}>VEHICLE PHOTOS</Text>
+                    <Text style={styles.mediaSub}>Manage gallery, sections, featured & ordering</Text>
+                  </View>
+                  <ChevronRight size={14} color={colors.textMuted} />
+                </TouchableOpacity>
+
+                <View style={styles.divider} />
+
                 <View style={styles.pdfBlock}>
                   <View style={styles.pdfLeft}>
                     <View style={[styles.pdfIcon, insp ? { backgroundColor: 'rgba(16,185,129,0.12)', borderColor: 'rgba(16,185,129,0.4)' } : { backgroundColor: colors.bg, borderColor: colors.border }]}>
@@ -195,4 +213,9 @@ const styles = StyleSheet.create({
   pdfBtnPrimary: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 8, backgroundColor: colors.red },
   pdfBtnPrimaryAttach: { backgroundColor: colors.red },
   pdfBtnText: { color: '#fff', fontSize: 11, fontWeight: '800', letterSpacing: 0.4 },
+
+  mediaRow: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 10 },
+  mediaIcon: { width: 32, height: 32, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(185,28,28,0.4)', backgroundColor: 'rgba(185,28,28,0.08)', alignItems: 'center', justifyContent: 'center' },
+  mediaLabel: { color: colors.red, fontSize: 9, fontWeight: '900', letterSpacing: 1.2 },
+  mediaSub: { color: colors.textChrome, fontSize: 11, fontWeight: '600', marginTop: 2 },
 });

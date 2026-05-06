@@ -45,6 +45,24 @@ export const api = {
   removeWatch: (id: string) => request(`/watchlist/${id}`, { method: 'DELETE' }),
   purchases: () => request<{ won: any[]; active: any[] }>('/purchases'),
 
+  // ---- Media ----
+  carMedia: (carId: string, section?: string) =>
+    request<any[]>(`/cars/${carId}/media${section ? `?section=${section}` : ''}`),
+  mediaCompleteness: (carId: string) =>
+    request<any>(`/cars/${carId}/media/completeness`),
+  deleteMedia: (id: string) => request(`/media/${id}`, { method: 'DELETE' }),
+  reorderMedia: (carId: string, ordered_ids: string[]) =>
+    request(`/cars/${carId}/media/reorder`, { method: 'POST', body: JSON.stringify({ ordered_ids }) }),
+  setFeaturedMedia: (carId: string, mediaId: string) =>
+    request(`/cars/${carId}/media/featured/${mediaId}`, { method: 'POST' }),
+  patchMedia: (id: string, payload: { section?: string; subsection?: string }) =>
+    request(`/media/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  attestNoDamage: (carId: string, val: boolean) =>
+    request(`/cars/${carId}/attest-no-damage`, {
+      method: 'POST',
+      body: JSON.stringify({ no_damage_attested: val }),
+    }),
+
   notifications: () => request('/notifications'),
   markNotificationsRead: () => request('/notifications/mark-read', { method: 'POST' }),
   unreadCount: () => request<{ unread: number }>('/notifications/unread-count'),

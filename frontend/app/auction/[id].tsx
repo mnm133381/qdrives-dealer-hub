@@ -1,15 +1,19 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, Dimensions,
-  ActivityIndicator,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions,
+  ActivityIndicator, Modal, Platform,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import Animated, { useSharedValue, useAnimatedStyle, withSequence, withTiming, withDelay } from 'react-native-reanimated';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { ZoomGallery } from '../../src/components/ZoomGallery';
 import {
   ArrowLeft, Heart, Share2, Trophy, ShieldCheck, AlertTriangle, Activity,
   Calendar, Gauge, Fuel, Settings2, Users, ChevronRight, Eye, Lock, Sparkles,
+  X, ImageIcon,
 } from 'lucide-react-native';
 import { colors, formatINR, formatINRFull, radii } from '../../src/theme';
 import { api, wsUrl } from '../../src/api';
@@ -18,6 +22,7 @@ import { CountdownTimer } from '../../src/components/CountdownTimer';
 import { LivePulse } from '../../src/components/LivePulse';
 import { InspectionPdfCard } from '../../src/components/InspectionPdfCard';
 import { useToast } from '../../src/toast';
+import { SECTIONS, SECTION_LABELS, SectionKey, absUrl } from '../../src/media';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 const HERO_H = 360;
@@ -34,6 +39,10 @@ export default function AuctionScreen() {
   const [feedToast, setFeedToast] = useState<string | null>(null);
   const [imgIdx, setImgIdx] = useState(0);
   const [watching, setWatching] = useState(false);
+  const [media, setMedia] = useState<any[]>([]);
+  const [galleryFilter, setGalleryFilter] = useState<SectionKey | 'all'>('all');
+  const [zoomOpen, setZoomOpen] = useState(false);
+  const [zoomStartIdx, setZoomStartIdx] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
 
   const bidPulse = useSharedValue(1);
@@ -45,6 +54,13 @@ export default function AuctionScreen() {
       const a: any = await api.auction(id as string);
       setAuction(a);
       setBids(a.recent_bids || []);
+      // Fetch sectioned media (uses GridFS or external auto-migration)
+      if (a?.car?.id) {
+        try {
+          const mm = await api.carMedia(a.car.id);
+          setMedia(mm as any[]);
+        } catch {}
+      }
       // Check watchlist
       const w: any[] = await api.watchlist().catch(() => []);
       setWatching(!!w.find((x) => x.id === a.id));
@@ -53,7 +69,35 @@ export default function AuctionScreen() {
     }
   }, [id, toast]);
 
-  useEffect(() => { load(); }, [load]);
+  // Derived gallery (filtered by section). Falls back to legacy car.images if
+  // /media is empty (e.g. very fresh install before auto-migration ran).
+  const galleryItems = useMemo(() => {
+    const list = (media && media.length > 0) ? media : [];
+    if (list.length === 0 && auction?.car?.images) {
+      return (auction.car.images as string[]).map((url, i) => ({ id: `legacy_${i}`, section: 'exterior', url, thumb_url: url }));
+    }
+    return galleryFilter === 'all' ? list : list.filter((m: any) => m.section === galleryFilter);
+  }, [media, auction?.car?.images, galleryFilter]);
+
+  const galleryUrls = useMemo(
+    () => galleryItems.map((m: any) => absUrl(m.url || m.thumb_url)),
+    [galleryItems],
+  );
+
+  const heroUri = galleryUrls[Math.min(imgIdx, Math.max(0, galleryUrls.length - 1))];
+
+  // Reset image index when filter changes
+  useEffect(() => { setImgIdx(0); }, [galleryFilter]);
+
+  const sectionsAvailable = useMemo(() => {
+    const set = new Set<string>(media.map((m: any) => m.section));
+    return SECTIONS.filter((s) => set.has(s));
+  }, [media]);
+
+  const openZoom = (idx: number) => {
+    setZoomStartIdx(idx);
+    setZoomOpen(true);
+  };
 
   // WebSocket
   useEffect(() => {
@@ -159,7 +203,9 @@ export default function AuctionScreen() {
       <ScrollView contentContainerStyle={{ paddingBottom: 220 }}>
         {/* Hero gallery */}
         <View style={styles.hero}>
-          <Image source={{ uri: car.images?.[imgIdx] || car.images?.[0] }} style={styles.heroImg} />
+          <TouchableOpacity activeOpacity={0.95} onPress={() => galleryUrls.length > 0 && openZoom(imgIdx)}>
+            <Image source={{ uri: heroUri }} style={styles.heroImg} contentFit="cover" transition={180} cachePolicy="memory-disk" />
+          </TouchableOpacity>
           <View style={styles.heroGradient} />
 
           <View style={[styles.heroTop, { paddingTop: 8 }]}>
@@ -189,13 +235,12 @@ export default function AuctionScreen() {
                 <Text style={styles.heroViewersText}>{auction.interested_dealers || 0} dealers watching</Text>
               </View>
             )}
-          </View>
-
-          {/* Image dots */}
-          <View style={styles.dots}>
-            {(car.images || []).slice(0, 5).map((_: any, i: number) => (
-              <TouchableOpacity key={i} onPress={() => setImgIdx(i)} style={[styles.dot, imgIdx === i && styles.dotActive]} />
-            ))}
+            {galleryUrls.length > 0 && (
+              <View style={styles.heroPhotoCount}>
+                <ImageIcon size={11} color={colors.textChrome} />
+                <Text style={styles.heroPhotoCountText}>{imgIdx + 1}/{galleryUrls.length}</Text>
+              </View>
+            )}
           </View>
 
           {/* Title overlay */}
@@ -207,6 +252,57 @@ export default function AuctionScreen() {
             </View>
           </View>
         </View>
+
+        {/* Section filter tabs */}
+        {sectionsAvailable.length > 1 && (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.galleryTabs}>
+            <TouchableOpacity
+              onPress={() => setGalleryFilter('all')}
+              style={[styles.gTab, galleryFilter === 'all' && styles.gTabActive]}
+            >
+              <Text style={[styles.gTabText, galleryFilter === 'all' && styles.gTabTextActive]}>
+                All · {media.length || (auction?.car?.images?.length || 0)}
+              </Text>
+            </TouchableOpacity>
+            {sectionsAvailable.map((s) => {
+              const count = media.filter((m: any) => m.section === s).length;
+              const active = galleryFilter === s;
+              return (
+                <TouchableOpacity
+                  key={s}
+                  onPress={() => setGalleryFilter(s)}
+                  style={[styles.gTab, active && styles.gTabActive]}
+                  testID={`gallery-tab-${s}`}
+                >
+                  <Text style={[styles.gTabText, active && styles.gTabTextActive]}>
+                    {SECTION_LABELS[s]} · {count}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        )}
+
+        {/* Thumbnail strip — lazy via expo-image */}
+        {galleryItems.length > 1 && (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.thumbStrip}>
+            {galleryItems.map((m: any, i: number) => (
+              <TouchableOpacity
+                key={m.id || i}
+                onPress={() => setImgIdx(i)}
+                onLongPress={() => openZoom(i)}
+                style={[styles.thumbBox, imgIdx === i && styles.thumbBoxActive]}
+              >
+                <Image
+                  source={{ uri: absUrl(m.thumb_url || m.url) }}
+                  style={styles.thumb}
+                  contentFit="cover"
+                  cachePolicy="memory-disk"
+                />
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
 
         {/* Status banner */}
         {isWinning && (
@@ -370,6 +466,29 @@ export default function AuctionScreen() {
           </View>
         )}
       </View>
+
+      {/* Fullscreen pinch-zoom gallery */}
+      <Modal visible={zoomOpen} transparent={false} animationType="fade" onRequestClose={() => setZoomOpen(false)}>
+        <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#000' }}>
+          <View style={styles.zoomTopBar}>
+            <TouchableOpacity onPress={() => setZoomOpen(false)} style={styles.zoomCloseBtn}>
+              <X size={22} color="#fff" />
+            </TouchableOpacity>
+            <View style={{ flex: 1 }} />
+            <View style={styles.zoomCounter}>
+              <Text style={styles.zoomCounterText}>{(zoomStartIdx + 1)} / {galleryUrls.length}</Text>
+            </View>
+          </View>
+          {galleryUrls.length > 0 && (
+            <ZoomGallery
+              uris={galleryUrls}
+              initialIndex={zoomStartIdx}
+              onIndexChange={(i) => setZoomStartIdx(i)}
+              onClose={() => setZoomOpen(false)}
+            />
+          )}
+        </GestureHandlerRootView>
+      </Modal>
     </View>
   );
 }
@@ -521,4 +640,24 @@ const styles = StyleSheet.create({
 
   disabledCta: { backgroundColor: colors.bgCard, paddingVertical: 14, borderRadius: radii.md, alignItems: 'center' },
   disabledCtaText: { color: colors.textMuted, fontSize: 13, fontWeight: '700' },
+
+  // Gallery additions
+  heroPhotoCount: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  heroPhotoCountText: { color: colors.textChrome, fontSize: 10, fontWeight: '900', letterSpacing: 0.6 },
+
+  galleryTabs: { gap: 8, paddingHorizontal: 20, paddingTop: 12, paddingBottom: 4 },
+  gTab: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: 1 },
+  gTabActive: { backgroundColor: 'rgba(185,28,28,0.10)', borderColor: colors.red },
+  gTabText: { color: colors.textChrome, fontSize: 11, fontWeight: '700', letterSpacing: 0.4 },
+  gTabTextActive: { color: colors.red },
+
+  thumbStrip: { gap: 8, paddingHorizontal: 20, paddingVertical: 10 },
+  thumbBox: { width: 70, height: 50, borderRadius: 6, overflow: 'hidden', borderWidth: 2, borderColor: 'transparent' },
+  thumbBoxActive: { borderColor: colors.red },
+  thumb: { width: '100%', height: '100%', backgroundColor: '#000' },
+
+  zoomTopBar: { position: 'absolute', top: Platform.OS === 'ios' ? 50 : 20, left: 0, right: 0, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', zIndex: 10 },
+  zoomCloseBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.12)', alignItems: 'center', justifyContent: 'center' },
+  zoomCounter: { paddingHorizontal: 12, paddingVertical: 6, backgroundColor: 'rgba(255,255,255,0.10)', borderRadius: 999 },
+  zoomCounterText: { color: '#fff', fontSize: 12, fontWeight: '800', letterSpacing: 1.4 },
 });

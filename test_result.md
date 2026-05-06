@@ -354,6 +354,92 @@ backend:
               (single admin seller). /api/dashboard/stats works for dealer token.
               /api/notifications/register-token still accepts valid ExponentPushToken[...] → 200.
 
+  - task: "Storage abstraction layer"
+    implemented: true
+    working: true
+    file: "backend/storage_service.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          New `StorageBackend` ABC + `GridFSStorage` impl backed by a dedicated GridFS
+          bucket "media" (separate from the existing PDF bucket). Singleton accessed via
+          `get_default_storage()`. Future S3/Cloudinary swap is a single subclass change.
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified end-to-end via /app/backend_test.py (47/47 assertions green).
+          GridFSStorage.put/stream/get_meta/delete all exercised via the media
+          upload + /media/{id}/file + /media/{id}/thumb + delete paths:
+            • put() stored a 64x64 JPEG (693 bytes) in the "media" GridFS bucket.
+            • stream() served those exact bytes back (Content-Type image/jpeg, body
+              bytes equal to uploaded).
+            • get_meta() returned the correct content-type so the StreamingResponse
+              used image/jpeg.
+            • delete() removed the object (subsequent DELETE returned 404).
+          Storage singleton initialised on app startup; no regressions on existing
+          /inspections GridFS bucket (separate "inspections" bucket).
+
+  - task: "Vehicle media CRUD endpoints"
+    implemented: true
+    working: true
+    file: "backend/server.py, backend/media.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Endpoints (admin only for writes):
+            GET    /api/cars/{id}/media[?section=...]          public list w/ legacy auto-migration
+            GET    /api/cars/{id}/media/completeness           counts + missing + valid
+            POST   /api/media/upload                            multipart: file + optional thumb
+            DELETE /api/media/{id}
+            PATCH  /api/media/{id}                              update section/subsection
+            POST   /api/cars/{id}/media/reorder                 body: ordered_ids[]
+            POST   /api/cars/{id}/media/featured/{media_id}
+            POST   /api/cars/{id}/attest-no-damage
+            GET    /api/media/{id}/file                         streamed; redirects for external
+            GET    /api/media/{id}/thumb                        streamed; redirects for external
+          50/car cap, JPEG/PNG/HEIC/WEBP, 12MB max, validates section enum.
+          Mandatory minimums: exterior=8, interior=6, engine=3, tyres=4, documents=2,
+          inspection=1, damage requires ≥1 OR no_damage_attested=true.
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified end-to-end via /app/backend_test.py against public ingress URL.
+          47/47 assertions passed. Coverage:
+            1. GET /cars/{id}/media (public, auto-migration): returns 4 external exterior
+               items migrated from car.images; each has id/car_id/section/order/is_featured/
+               provider/url/thumb_url. First item is_featured=true, provider='external'.
+               ?section=interior → 200 [] (not 500).
+            2. GET completeness (dealer token) → 200; valid=false (counts exterior:4,
+               rest:0). missing[] includes all 6 sections + damage entry with
+               needs_attestation=true.
+            3. POST /media/upload: invalid section→400 "Unknown section: foo";
+               dealer→403 "Admin access required"; admin (red 64x64 JPEG)→200 returning
+               provider='gridfs', section='interior', is_featured=false (already had
+               featured), url='/api/media/{id}/file', thumb_url falls back to same /file
+               URL (no thumb uploaded).
+            4. GET /media/{id}/file (no auth)→200, content-type image/jpeg, body bytes
+               exactly equal to uploaded (693 bytes). GET /media/{id}/thumb (no auth)→200,
+               serves same bytes via storage_id fallback.
+            5. Reorder [interior_id, exterior_id, ...]: dealer→403; admin→200; subsequent
+               GET confirms interior.order=0, exterior.order=1.
+            6. Featured: dealer→403; admin POST /cars/{id}/media/featured/{interior_id}→
+               200; GET shows exactly one item featured (interior=true, prior exterior=false).
+            7. PATCH /media/{id} {section:'engine'} → 200 with updated doc; subsequent
+               GET confirms section='engine'; invalid section→400.
+            8. POST /cars/{id}/attest-no-damage {no_damage_attested:true}→200; completeness
+               now reports no_damage_attested=true and damage entry removed from missing[].
+            9. DELETE /media/{id} admin→200; repeat→404; dealer on remaining exterior→403.
+           10. Regression: GET /auctions, GET /cars/{id}, POST /cars (admin) all work.
+          No backend errors in supervisor logs. PIL used to generate valid JPEG bytes.
+
 frontend:
   - task: "Role-based tab bar (dealer vs admin)"
     implemented: true
@@ -607,3 +693,30 @@ agent_communication:
           /network/activity, /cars, /watchlist, /inspections/by-car/{id},
           /ai/price-estimate all 200 with sensible payloads.
       No regressions. Backend ready — please summarise & finish; do NOT re-fix.
+  - agent: "testing"
+    message: |
+      Media platform BACKEND tests PASS — 47/47 assertions via /app/backend_test.py
+      against public ingress URL. Highlights:
+        • Storage abstraction: GridFSStorage put/stream/get_meta/delete all work;
+          uploaded bytes returned unchanged (693-byte 64x64 JPEG) with content-type
+          image/jpeg.
+        • GET /cars/{id}/media: auto-migrates legacy car.images into 4 external
+          exterior media docs with required fields. First item is_featured=true.
+          ?section=interior returns 200 [] (not 500).
+        • GET completeness: dealer token → 200; valid=false, counts dict present;
+          missing[] includes all 6 minimum sections + damage entry with
+          needs_attestation=true.
+        • POST /media/upload: invalid section→400, dealer→403, admin→200 with
+          provider='gridfs', section='interior', is_featured=false, correct
+          url/thumb_url.
+        • GET /media/{id}/file and /thumb (no auth) both return 200 with the
+          exact uploaded bytes (thumb falls back to storage_id when no thumb
+          uploaded).
+        • Reorder/Featured/PATCH section: admin → 200 with expected state
+          changes; dealer → 403; invalid section → 400.
+        • attest-no-damage removes damage from missing[] and sets
+          no_damage_attested=true on the car.
+        • DELETE: admin → 200, repeat → 404, dealer → 403.
+        • Regression: /auctions, /cars/{id}, POST /cars (admin) all still work.
+      No backend errors in supervisor logs during the run.
+      Please summarise & finish — do NOT re-fix.

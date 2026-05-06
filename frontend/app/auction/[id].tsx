@@ -171,8 +171,12 @@ export default function AuctionScreen() {
       const msg = String(e?.message || '');
       if (msg.includes('BID_EXCEEDS_DEALER_LIMIT')) {
         toast.show('Bid exceeds approved dealer limit.', 'error');
+      } else if (msg.includes('DEALER_PENDING_APPROVAL')) {
+        toast.show('Bidding activates after Q Drives approves your account.', 'error');
       } else if (msg.includes('DEALER_ACCOUNT_SUSPENDED')) {
         toast.show('Account suspended. Contact Q Drives support.', 'error');
+      } else if (msg.includes('DEALER_ACCOUNT_REVOKED')) {
+        toast.show('Account access has been revoked.', 'error');
       } else {
         toast.show(msg || 'Bid failed', 'error');
       }
@@ -479,11 +483,30 @@ export default function AuctionScreen() {
           )}
         </View>
 
-        {isLive && !isOwn && (
+        {isLive && !isOwn && dealer?.status === 'approved' && (
           <View style={styles.bidButtons}>
             <BidButton amount={nextBid1} onPress={() => placeBid(nextBid1)} testID="bid-min" />
             <BidButton amount={nextBid2} onPress={() => placeBid(nextBid2)} highlighted testID="bid-mid" />
             <BidButton amount={nextBid3} onPress={() => placeBid(nextBid3)} testID="bid-max" />
+          </View>
+        )}
+        {isLive && !isOwn && dealer && dealer.status !== 'approved' && (
+          <View style={styles.lockedCta} testID="bid-locked-pending">
+            <View style={styles.lockedRow}>
+              <Lock size={13} color={colors.warning} strokeWidth={2.4} />
+              <Text style={styles.lockedKicker}>
+                {dealer.status === 'pending' ? 'PENDING APPROVAL'
+                  : dealer.status === 'suspended' ? 'ACCOUNT SUSPENDED'
+                  : 'ACCESS RESTRICTED'}
+              </Text>
+            </View>
+            <Text style={styles.lockedBody}>
+              {dealer.status === 'pending'
+                ? 'Bidding activates once Q Drives approves your account. You can browse and watchlist in the meantime.'
+                : dealer.status === 'suspended'
+                ? 'Your account is suspended. Contact Q Drives support to restore bidding.'
+                : 'Bidding is currently restricted on your account.'}
+            </Text>
           </View>
         )}
         {!isLive && (
@@ -666,6 +689,10 @@ const styles = StyleSheet.create({
 
   disabledCta: { backgroundColor: colors.bgCard, paddingVertical: 14, borderRadius: radii.md, alignItems: 'center' },
   disabledCtaText: { color: colors.textMuted, fontSize: 13, fontWeight: '700' },
+  lockedCta: { backgroundColor: 'rgba(245,158,11,0.06)', borderWidth: 1, borderColor: 'rgba(245,158,11,0.40)', paddingVertical: 12, paddingHorizontal: 14, borderRadius: radii.md },
+  lockedRow: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 6 },
+  lockedKicker: { color: colors.warning, fontSize: 11, fontWeight: '900', letterSpacing: 1.4 },
+  lockedBody: { color: colors.textChrome, fontSize: 12, fontWeight: '600', lineHeight: 16 },
 
   // Gallery additions
   heroPhotoCount: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },

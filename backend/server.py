@@ -150,12 +150,47 @@ async def get_current_dealer(creds: Optional[HTTPAuthorizationCredentials] = Dep
     if token_tv != current_tv:
         raise HTTPException(status_code=401, detail="SESSION_INVALIDATED")
 
-    # Defense in depth — hard block any access by suspended dealers, even
-    # if their token somehow survived a tv bump (e.g. edge race).
-    if dealer.get("suspended") and (dealer.get("role") or "dealer") == "dealer":
-        raise HTTPException(status_code=403, detail="DEALER_ACCOUNT_SUSPENDED")
+    # Defense in depth — hard block any access by suspended/revoked dealers
+    # at the auth layer EXCEPT login surfaces. Login is allowed (handled by
+    # /auth/dealer/verify-otp not depending on this guard); this guard runs
+    # on authenticated API calls only. We allow read-only access (GET) for
+    # suspended/revoked so they can see their restriction state, but
+    # require_approved_dealer enforces write-action blocks.
+    role = dealer.get("role") or "dealer"
+    if role == "dealer":
+        # Backfill `status` for legacy docs missing it (extra safety in
+        # addition to the verify-otp backfill).
+        if not dealer.get("status"):
+            dealer["status"] = "approved" if not dealer.get("suspended") else "suspended"
 
     return dealer
+
+
+async def require_approved_dealer(dealer = Depends(get_current_dealer)) -> Dict[str, Any]:
+    """Strict guard for any action that requires an approved dealer (bid,
+    purchases, settlement participation). Returns 403 with explicit error
+    code so the frontend can surface the right copy.
+
+      • status='pending'   → 403 DEALER_PENDING_APPROVAL
+      • status='suspended' → 403 DEALER_ACCOUNT_SUSPENDED
+      • status='revoked'   → 403 DEALER_ACCOUNT_REVOKED
+
+    Operators (non-dealer roles) bypass this gate (they have their own
+    require_permission/require_admin guards).
+    """
+    role = dealer.get("role") or "dealer"
+    if role != "dealer":
+        return dealer
+    status = dealer.get("status") or ("approved" if not dealer.get("suspended") else "suspended")
+    if status == "approved":
+        return dealer
+    if status == "pending":
+        raise HTTPException(status_code=403, detail="DEALER_PENDING_APPROVAL")
+    if status == "suspended":
+        raise HTTPException(status_code=403, detail="DEALER_ACCOUNT_SUSPENDED")
+    if status == "revoked":
+        raise HTTPException(status_code=403, detail="DEALER_ACCOUNT_REVOKED")
+    raise HTTPException(status_code=403, detail="DEALER_ACCESS_RESTRICTED")
 
 
 async def get_current_admin(dealer = Depends(get_current_dealer)) -> Dict[str, Any]:
@@ -439,48 +474,63 @@ manager = ConnectionManager()
 # A phone that is not on the relevant allow-list gets 403 with a stable
 # error code that the frontend maps to a premium error message.
 
-# ---- Dealer auth (closed network — approved_dealers allow-list) ----
+# ---- Dealer auth (open onboarding — anyone can sign up; capabilities gated by `status`) ----
+# Business model: dealer access is open to any phone number. New dealers
+# enter as `status='pending'` and can browse/watch but cannot bid until an
+# operator approves them. Phones present in the legacy `approved_dealers`
+# preset collection are auto-promoted to `status='approved'` on first
+# verification (preserving dealership name, trust_score, max_bid_limit).
 @api.post("/auth/dealer/send-otp")
 async def dealer_send_otp(req: SendOtpReq):
     phone = req.phone.strip()
     if len(phone) < 10:
         raise HTTPException(status_code=400, detail="Invalid phone number")
-    approved = await db.approved_dealers.find_one({"phone": phone})
-    if not approved or approved.get("status") not in (None, "active"):
-        # Off-list OR explicitly paused/revoked → same denial copy (don't leak state).
-        asyncio.create_task(audit(db, "dealer_access_denied", None, None, {
-            "phone": phone, "reason": "not_active" if approved else "not_on_list",
-        }))
-        raise HTTPException(status_code=403, detail="DEALER_ACCESS_NOT_APPROVED")
+    # Hard barrier: operator phones must NEVER use the dealer flow. This
+    # prevents accidental role confusion if an operator types into the
+    # dealer login screen.
+    if await db.operators.find_one({"phone": phone}):
+        asyncio.create_task(audit(db, "dealer_send_otp_blocked_operator", None, None, {"phone": phone}))
+        raise HTTPException(status_code=403, detail="USE_OPERATOR_LOGIN")
+    # Open onboarding — OTP delivered for any valid Indian phone.
     return {"success": True, "message": "OTP sent", "dev_otp": MOCK_OTP}
 
 
 @api.post("/auth/dealer/verify-otp")
 async def dealer_verify_otp(req: VerifyOtpReq):
     phone = req.phone.strip()
-    approved = await db.approved_dealers.find_one({"phone": phone})
-    if not approved or approved.get("status") not in (None, "active"):
-        asyncio.create_task(audit(db, "dealer_access_denied", None, None, {
-            "phone": phone, "stage": "verify",
-            "reason": "not_active" if approved else "not_on_list",
-        }))
-        raise HTTPException(status_code=403, detail="DEALER_ACCESS_NOT_APPROVED")
+    # Operator phones still blocked from dealer flow at verify too.
+    if await db.operators.find_one({"phone": phone}):
+        asyncio.create_task(audit(db, "dealer_verify_blocked_operator", None, None, {"phone": phone}))
+        raise HTTPException(status_code=403, detail="USE_OPERATOR_LOGIN")
     if req.otp != MOCK_OTP:
         raise HTTPException(status_code=400, detail="Invalid OTP. Use 123456 for dev.")
 
     dealer = await db.dealers.find_one({"phone": phone}, {"_id": 0})
     is_new = False
+    # `approved_dealers` is now an OPTIONAL "auto-approve preset" layer.
+    # Phone present + status=active → auto-promote to approved on first
+    # verification with the seeded dealership profile applied.
+    preset = await db.approved_dealers.find_one({"phone": phone})
+    auto_approve = bool(preset) and preset.get("status") in (None, "active")
+
     if not dealer:
         is_new = True
+        # Default new signup: pending status, no bid power, browse-only.
+        initial_status = "approved" if auto_approve else "pending"
         dealer = {
             "id": str(uuid.uuid4()), "phone": phone,
-            "full_name": approved.get("seed_full_name", ""),
-            "dealership_name": approved.get("seed_dealership_name", ""),
-            "city": approved.get("seed_city", ""),
+            "full_name": (preset or {}).get("seed_full_name", ""),
+            "dealership_name": (preset or {}).get("seed_dealership_name", ""),
+            "city": (preset or {}).get("seed_city", ""),
             "gst_number": "", "pan_number": "",
-            "kyc_completed": False, "verified": False, "suspended": False,
-            "trust_score": float(approved.get("trust_score", 4.5)),
-            "max_bid_limit": approved.get("max_bid_limit"),
+            "kyc_completed": False, "verified": (initial_status == "approved"),
+            "suspended": False,
+            "status": initial_status,
+            "previous_status": None,
+            "approved_at": now_utc() if initial_status == "approved" else None,
+            "approved_by": "system_preset" if initial_status == "approved" else None,
+            "trust_score": float((preset or {}).get("trust_score", 4.5)),
+            "max_bid_limit": (preset or {}).get("max_bid_limit"),
             "bid_success_rate": 0,
             "total_purchases": 0, "total_listed": 0,
             "role": "dealer",
@@ -488,22 +538,45 @@ async def dealer_verify_otp(req: VerifyOtpReq):
             "created_at": now_utc(),
         }
         await db.dealers.insert_one(dict(dealer))
+        asyncio.create_task(audit(db, "dealer_signup", dealer["id"], None, {
+            "phone": phone, "auto_approved": auto_approve, "preset": bool(preset),
+        }))
     else:
+        # Existing dealer login.
         # Operator role can only be assigned via the operator endpoint.
         if dealer.get("role") != "dealer":
             await db.dealers.update_one({"id": dealer["id"]}, {"$set": {"role": "dealer"}})
             dealer["role"] = "dealer"
-        if dealer.get("suspended"):
-            raise HTTPException(status_code=403, detail="DEALER_ACCOUNT_SUSPENDED")
-        # Sync max_bid_limit from allow-list (operator may have updated it).
-        if approved.get("max_bid_limit") != dealer.get("max_bid_limit"):
+        # Backfill `status` for legacy docs that pre-date this refactor.
+        # Heuristic: not-suspended + not-revoked → 'approved' (they were
+        # implicitly approved under the old allow-list gate).
+        if not dealer.get("status"):
+            backfilled = "approved" if not dealer.get("suspended") else "suspended"
             await db.dealers.update_one(
                 {"id": dealer["id"]},
-                {"$set": {"max_bid_limit": approved.get("max_bid_limit")}},
+                {"$set": {
+                    "status": backfilled,
+                    "approved_at": dealer.get("created_at") or now_utc(),
+                    "approved_by": "system_backfill",
+                }},
             )
-            dealer["max_bid_limit"] = approved.get("max_bid_limit")
+            dealer["status"] = backfilled
+        # Suspended / revoked dealers can still log in (operationally useful
+        # so they see their restriction state) but are blocked from
+        # bidding/settlement at the API gate. Login is allowed.
+        # Sync max_bid_limit from preset (operator may have updated it).
+        if preset and preset.get("max_bid_limit") != dealer.get("max_bid_limit"):
+            await db.dealers.update_one(
+                {"id": dealer["id"]},
+                {"$set": {"max_bid_limit": preset.get("max_bid_limit")}},
+            )
+            dealer["max_bid_limit"] = preset.get("max_bid_limit")
 
-    asyncio.create_task(audit(db, "dealer_login", dealer["id"], None, {"phone": phone}))
+    # Re-fetch to surface backfilled / synced values to the JWT issuer & client.
+    dealer = await db.dealers.find_one({"id": dealer["id"]}, {"_id": 0}) or dealer
+    asyncio.create_task(audit(db, "dealer_login", dealer["id"], None, {
+        "phone": phone, "status": dealer.get("status"),
+    }))
     pair = issue_token_pair(dealer)
     return {**pair, "is_new": is_new, "dealer": serialize(dealer)}
 
@@ -657,7 +730,7 @@ async def get_auction(auction_id: str):
 
 
 @api.post("/auctions/{auction_id}/bid")
-async def place_bid(auction_id: str, req: BidReq, dealer = Depends(get_current_dealer)):
+async def place_bid(auction_id: str, req: BidReq, dealer = Depends(require_approved_dealer)):
     a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
     if not a:
         raise HTTPException(status_code=404, detail="Auction not found")
@@ -847,7 +920,7 @@ async def remove_watchlist(auction_id: str, dealer = Depends(get_current_dealer)
 
 # ---------- Purchases (won auctions) ----------
 @api.get("/purchases")
-async def get_purchases(dealer = Depends(get_current_dealer)):
+async def get_purchases(dealer = Depends(require_approved_dealer)):
     """
     Returns auctions where the current dealer is the top bidder. Splits into
     `won` (auction ended + reserve met) and `active` (still live, currently winning).
@@ -1025,13 +1098,26 @@ async def admin_dealers(
 ):
     """List dealers (excluding other admins) with filters for the approval queue."""
     query: Dict[str, Any] = {"role": {"$ne": "admin"}}
-    if status_filter == "verified":
-        query["verified"] = True
-        query["suspended"] = {"$ne": True}
+    if status_filter == "verified" or status_filter == "approved":
+        # Approved dealers — supports both legacy `verified` lookups and
+        # the new `status='approved'` open-onboarding model.
+        query["$or"] = [
+            {"status": "approved"},
+            {"status": {"$exists": False}, "verified": True, "suspended": {"$ne": True}},
+        ]
     elif status_filter == "pending":
-        query["verified"] = {"$ne": True}
+        # Pending = newly signed-up dealer awaiting operator approval.
+        query["$or"] = [
+            {"status": "pending"},
+            {"status": {"$exists": False}, "verified": {"$ne": True}, "suspended": {"$ne": True}},
+        ]
     elif status_filter == "suspended":
-        query["suspended"] = True
+        query["$or"] = [
+            {"status": "suspended"},
+            {"status": {"$exists": False}, "suspended": True},
+        ]
+    elif status_filter == "revoked":
+        query["status"] = "revoked"
     if q:
         safe = re.escape(q)
         query["$or"] = [
@@ -1072,6 +1158,23 @@ async def admin_verify_dealer(
         update["suspended"] = bool(req.suspended)
     if not update:
         return serialize(target)
+
+    # Mirror legacy verified/suspended changes onto the new `status` field
+    # so the open-onboarding gate stays in sync with the legacy verify
+    # endpoint. Order matters: suspended dominates.
+    new_status = target.get("status") or ("approved" if target.get("verified") else "pending")
+    prev_status = new_status
+    if update.get("suspended") is True:
+        new_status = "suspended"
+    elif update.get("verified") is True:
+        new_status = "approved"
+        update["approved_at"] = now_utc()
+        update["approved_by"] = admin["id"]
+        update["previous_status"] = prev_status
+    elif update.get("verified") is False:
+        new_status = "pending"
+    update["status"] = new_status
+
     await db.dealers.update_one({"id": dealer_id}, {"$set": update})
     updated = await db.dealers.find_one({"id": dealer_id}, {"_id": 0})
 
@@ -1101,6 +1204,82 @@ async def admin_verify_dealer(
             "read": False, "created_at": now_utc(),
         })
         asyncio.create_task(send_to_dealer(db, dealer_id, title, body, data={"type": "suspended"}))
+    return serialize(updated)
+
+
+# ============================================================
+# Operator-driven dealer approval (NEW canonical surface for the
+# pending → approved transition under the open-onboarding model).
+# /verify is retained for legacy callers and continues to mirror status.
+# ============================================================
+class DealerApproveReq(BaseModel):
+    note: Optional[str] = None
+    max_bid_limit: Optional[int] = None  # operator can set/override at approval time
+
+
+@api.post("/admin/dealers/{dealer_id}/approve")
+async def admin_approve_dealer(
+    request: Request,
+    dealer_id: str, req: DealerApproveReq,
+    admin = Depends(require_permission("approve_dealers")),
+):
+    """Approve a dealer. Pending → approved transition. Audited with
+    operator id, ip, user-agent (when available), previous_status. Sends
+    push + creates a notification entry.
+    Idempotent: re-approving an already-approved dealer is a no-op."""
+    target = await db.dealers.find_one({"id": dealer_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    if target.get("role") != "dealer":
+        raise HTTPException(status_code=400, detail="Cannot approve non-dealer accounts")
+
+    prev_status = target.get("status") or ("approved" if target.get("verified") else "pending")
+    if prev_status == "approved":
+        # Idempotent — return current snapshot.
+        return serialize(target)
+
+    update: Dict[str, Any] = {
+        "status": "approved",
+        "previous_status": prev_status,
+        "verified": True,            # keep legacy field in sync
+        "suspended": False,           # approval clears suspension
+        "approved_at": now_utc(),
+        "approved_by": admin["id"],
+    }
+    if req.max_bid_limit is not None:
+        if req.max_bid_limit <= 0:
+            raise HTTPException(status_code=400, detail="max_bid_limit must be positive")
+        update["max_bid_limit"] = int(req.max_bid_limit)
+
+    await db.dealers.update_one({"id": dealer_id}, {"$set": update})
+    updated = await db.dealers.find_one({"id": dealer_id}, {"_id": 0})
+
+    # Audit with full operational context.
+    asyncio.create_task(audit(db, "dealer_approved", admin["id"], dealer_id, {
+        "previous_status": prev_status,
+        "approved_by": admin["id"],
+        "approved_by_name": admin.get("full_name") or admin.get("dealership_name") or "Operator",
+        "ip": (request.client.host if request and request.client else None),
+        "user_agent": (request.headers.get("user-agent") if request else None),
+        "max_bid_limit": update.get("max_bid_limit"),
+        "note": (req.note or None),
+    }))
+
+    # Notify dealer
+    title = "Account approved"
+    body = f"Welcome aboard. Bidding is now active on your Q Drives account."
+    await db.notifications.insert_one({
+        "id": str(uuid.uuid4()), "dealer_id": dealer_id, "type": "verification",
+        "title": title, "body": body, "auction_id": None,
+        "read": False, "created_at": now_utc(),
+    })
+    asyncio.create_task(send_to_dealer(db, dealer_id, title, body, data={"type": "verification"}))
+
+    # Bump token_version so the dealer's existing JWT is invalidated and
+    # the next /auth/me re-poll picks up the new status (approved). The
+    # dealer's app will re-issue a fresh token via /auth/refresh next tick.
+    asyncio.create_task(bump_token_version(dealer_id, reason="dealer_approved", actor_id=admin["id"]))
+
     return serialize(updated)
 
 
@@ -2159,7 +2338,7 @@ SECURITY_AUDIT_ACTIONS = {
     "dealer_status_change", "max_bid_change",
     "auction_pause", "auction_resume", "auction_extend",
     "auction_cancel", "force_close", "settlement_state_change",
-    "settlement_note_add",
+    "settlement_note_add", "dealer_approved", "dealer_signup",
     "bid_cancel", "admin_broadcast", "operator_promotion",
     "token_invalidation", "suspicious_activity_flag",
 }
@@ -3153,6 +3332,30 @@ async def seed_allow_lists() -> None:
         await db.approved_dealers.update_one(
             {"phone": d["phone"], "status": {"$exists": False}},
             {"$set": {"status": "active"}},
+        )
+
+    # Migration: backfill `status` on existing dealer docs (one-shot per
+    # boot, idempotent). Heuristic: not-suspended → 'approved' (legacy
+    # dealers were implicitly approved under the closed-network gate);
+    # suspended → 'suspended'. Dealers without a status field at all are
+    # the targets — touched once and then skipped on subsequent boots.
+    legacy_active = await db.dealers.update_many(
+        {"role": "dealer", "status": {"$exists": False}, "suspended": {"$ne": True}},
+        {"$set": {
+            "status": "approved",
+            "approved_at": now_utc(),
+            "approved_by": "system_backfill",
+            "previous_status": None,
+        }},
+    )
+    legacy_suspended = await db.dealers.update_many(
+        {"role": "dealer", "status": {"$exists": False}, "suspended": True},
+        {"$set": {"status": "suspended", "previous_status": None}},
+    )
+    if legacy_active.modified_count or legacy_suspended.modified_count:
+        logger.info(
+            "[migration] dealer.status backfill — approved=%s suspended=%s",
+            legacy_active.modified_count, legacy_suspended.modified_count,
         )
 
 

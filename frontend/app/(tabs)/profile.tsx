@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BadgeCheck, ShieldCheck, TrendingUp, Award, LogOut, Settings, ChevronRight, Star, Bell, FileText, Send } from 'lucide-react-native';
 import { colors, radii, formatINR } from '../../src/theme';
 import { useAuth } from '../../src/auth';
+import { PendingApprovalCard } from '../../src/components/PendingApprovalCard';
 import { api } from '../../src/api';
 import { useToast } from '../../src/toast';
 import { Platform } from 'react-native';
@@ -91,6 +92,9 @@ export default function Profile() {
           <Stat label="Total Deals" value={`${dealer.total_purchases}`} icon={<Award size={16} color={colors.silver} />} />
         </View>
 
+        {/* Pending / suspended state — operator-side gating surface */}
+        {!isAdmin && <PendingApprovalCard status={dealer.status} />}
+
         <View style={styles.statsRow}>
           <BigStat label="LIVE BIDS" value={`${stats?.your_bids ?? 0}`} />
           <BigStat label="WINS" value={`${stats?.your_wins ?? 0}`} />
@@ -102,6 +106,22 @@ export default function Profile() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Account</Text>
           <Row label="Role" value={isAdmin ? 'Q Drives Admin' : 'Dealer'} valueColor={isAdmin ? colors.red : colors.textPrimary} />
+          {!isAdmin && (
+            <Row
+              label="Account status"
+              value={
+                dealer.status === 'approved' ? 'Approved' :
+                dealer.status === 'pending' ? 'Pending approval' :
+                dealer.status === 'suspended' ? 'Suspended' :
+                dealer.status === 'revoked' ? 'Revoked' : '—'
+              }
+              valueColor={
+                dealer.status === 'approved' ? colors.success :
+                dealer.status === 'pending' ? colors.warning :
+                colors.red
+              }
+            />
+          )}
           <Row label="Verification" value={dealer.kyc_completed ? 'Verified' : 'Pending'} valueColor={dealer.kyc_completed ? colors.success : colors.warning} />
           <Row label="Phone" value={dealer.phone} />
           <Row label="GST" value={(dealer as any).gst_number || 'Not provided'} />

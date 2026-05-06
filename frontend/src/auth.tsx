@@ -23,6 +23,10 @@ type Dealer = {
   avatar_url?: string;
   max_bid_limit?: number | null;
   suspended?: boolean;
+  status?: 'pending' | 'approved' | 'suspended' | 'revoked';
+  approved_at?: string | null;
+  approved_by?: string | null;
+  previous_status?: string | null;
   token_version?: number;
 };
 

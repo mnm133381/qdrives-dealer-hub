@@ -7,6 +7,7 @@ import { Bell, Activity, TrendingUp, ShieldCheck, ChevronRight, Search, BadgeChe
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, formatINR, radii } from '../../src/theme';
 import { useAuth } from '../../src/auth';
+import { PendingApprovalCard } from '../../src/components/PendingApprovalCard';
 import { api } from '../../src/api';
 import { AuctionCard } from '../../src/components/AuctionCard';
 import { LivePulse } from '../../src/components/LivePulse';
@@ -122,6 +123,9 @@ export default function Home() {
           <Text style={styles.searchPlaceholder}>Browse {pulse?.live ?? 0} live · {pulse?.upcoming ?? 0} upcoming</Text>
           <View style={styles.searchKbd}><Text style={styles.searchKbdText}>BROWSE</Text></View>
         </TouchableOpacity>
+
+        {/* Pending / Suspended dealer state — premium blocked-state card */}
+        <PendingApprovalCard status={dealer?.status} />
 
         {/* Market pulse strip */}
         <View style={styles.pulseStrip}>

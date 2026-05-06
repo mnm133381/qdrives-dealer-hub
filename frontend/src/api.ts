@@ -135,6 +135,8 @@ export const api = {
   adminDealerDetail: (id: string) => request<any>(`/admin/dealers/${id}`),
   adminVerifyDealer: (id: string, payload: { verified?: boolean; suspended?: boolean; kyc_completed?: boolean }) =>
     request(`/admin/dealers/${id}/verify`, { method: 'POST', body: JSON.stringify(payload) }),
+  adminApproveDealer: (id: string, payload?: { note?: string; max_bid_limit?: number }) =>
+    request<any>(`/admin/dealers/${id}/approve`, { method: 'POST', body: JSON.stringify(payload || {}) }),
   adminSetMaxBid: (id: string, max_bid_limit: number | null) =>
     request<any>(`/admin/dealers/${id}/max-bid`, { method: 'POST', body: JSON.stringify({ max_bid_limit }) }),
   adminBroadcast: (payload: { title: string; body: string; audience?: string }) =>

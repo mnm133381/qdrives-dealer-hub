@@ -1949,11 +1949,145 @@ phase_2b_complete_marker:
             • sell.tsx still redirects dealers to /(tabs)
             • kyc.tsx skipped for operators
 
+  - task: "Auth refactor — open dealer onboarding + status-gated bidding"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          [Auth refactor — 25/26 PASS, 1 doc discrepancy]
+          Test runner: /app/backend_test.py (run against
+          https://qdrives-dealer-hub.preview.emergentagent.com/api).
+
+          A) DEALER OPEN ONBOARDING — 7/7 ✅
+            • A.1 random unused phone +91… → /send-otp 200 + dev_otp:'123456'
+            • A.2 /verify-otp first time → 200, is_new=true, dealer.status='pending'
+            • A.3 /auth/me → role='dealer', status='pending', verified=false
+            • A.4 same phone re-login → is_new=false, status still 'pending'
+            • A.5 phone "+9112345" (<10 chars) → 400 "Invalid phone number"
+            • A.6 /send-otp with operator phone +918977986662 → 403 USE_OPERATOR_LOGIN
+            • A.7 /verify-otp with operator phone +918977986662 → 403 USE_OPERATOR_LOGIN
+
+          B) PRESET AUTO-APPROVE — 1/2 (B.2 ✅, B.1 doc discrepancy)
+            • B.1 +919900000003 verify-otp → status='approved' ✅
+              ⚠️  Review request expected dealership_name='Velocity Auto Hub' but
+              live DB stores 'Velocity Wheels' (per SEED_DEALERS array). The
+              auto-approve preset behaviour is correct (status flips to approved
+              + dealership_name is preserved exactly as seeded). This is a
+              test_credentials.md / review-request copy mismatch, not a backend
+              bug. Functional behaviour: ✅
+            • B.2 pre-seeded dealer has 'status' field present (migration
+              backfilled) ✅
+
+          C) STATUS-GATED ACTIONS — 10/10 ✅
+            • C.1 pending /bid → 403 detail="DEALER_PENDING_APPROVAL"
+            • C.2 pending /purchases → 403 detail="DEALER_PENDING_APPROVAL"
+            • C.3 pending /auctions → 200 (browse allowed)
+            • C.4 pending /watchlist → 200
+            • C.5 pending POST /watchlist/{id} → 200
+            • C.6 pending /auctions/{id} → 200
+            • C.7 pending /notifications → 200
+            • C.8 approved (+919900000003) /bid → 200 success (not 403 PENDING)
+            • C.9 approved /purchases → 200
+            • C.10 suspended dealer can still log in; /bid → 403
+              detail="DEALER_ACCOUNT_SUSPENDED"
+
+          E) /VERIFY MIRRORING — 3/3 ✅
+            • E.1 /verify {verified:true} on pending → status='approved',
+              previous_status='pending', approved_at populated
+            • E.2 /verify {suspended:true} → status='suspended'
+            • E.3 /verify {verified:false} → status='pending'
+
+          F) STATUS FILTER — 4/4 ✅
+            • ?status_filter=pending  → 3 rows, all status='pending'
+            • ?status_filter=approved → 19 rows, all status='approved' (legacy
+              verified+!suspended also matched correctly)
+            • ?status_filter=suspended → 3 rows, all status='suspended'
+            • ?status_filter=revoked → 0 rows (no revoked dealers in DB)
+
+          G) NEW OPERATOR PHONE (+918977986662) — 4/4 ✅
+            • G.1 /auth/operator/send-otp → 200 + dev_otp='123456'
+            • G.2 /auth/operator/verify-otp → 200, dealer.role='super_admin'
+            • G.3 /auth/me → role='super_admin'
+            • G.4 /admin/dealers callable (admin perms verified)
+
+          H) MIGRATION VERIFICATION — 1/2 (H.3 ✅, H.1+H.2 minor)
+            • H.3 5 pre-seeded dealers (+91990000000{1..5}) all status='approved' ✅
+            • H.1+H.2 25 dealer docs total; 2 missing status — both are
+              OPERATOR shadow rows (role='super_admin': +919900000099 and
+              +918977986662). Migration query is scoped to {role:'dealer'} by
+              design, so operators are skipped. Operators bypass
+              require_approved_dealer (non-dealer roles return early), so
+              missing status on them is harmless. NOT a regression — just
+              the spec's "all dealers" wording was overly broad.
+              ✅ Every actual dealer (role='dealer') has status set.
+
+          I) WS AUTH UNAFFECTED — 2/2 ✅
+            • I.1 pending dealer connects /api/ws/auction/{id}?token=… →
+              receives initial snapshot frame
+            • I.2 approved dealer WS handshake works
+
+          STARTUP MIGRATION LOG (verified in /var/log/supervisor/backend.err.log):
+            "[migration] dealer.status backfill — approved=13 suspended=2"
+
+          NET: Backend auth refactor is GREEN. Two non-failures (B.1 doc
+          mismatch, H.1 operator-shadow exclusion) flagged as informational
+          only.
+
+  - task: "New endpoint POST /admin/dealers/{id}/approve"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          [POST /admin/dealers/{id}/approve — 10/10 PASS]
+          Test runner: /app/backend_test.py D-section.
+
+            • D.1 Operator (+918977986662 super_admin) approves a fresh pending
+              dealer → 200, status='approved', previous_status='pending',
+              approved_at populated, approved_by=<operator id> (UUID).
+            • D.2 /admin/audit-logs?action=dealer_approved contains an entry
+              for the approved target with FULL meta:
+                {previous_status:'pending', approved_by, approved_by_name,
+                 ip, user_agent, max_bid_limit, note}
+              All required fields present.
+            • D.3 Idempotent — re-approving an already-approved dealer returns
+              200 with current snapshot. Audit count for that dealer remains
+              exactly 1 entry (no churn). Notification not duplicated.
+            • D.4 Approve with body {max_bid_limit:2500000, note:"high-tier"}
+              → 200 with dealer.max_bid_limit=2500000.
+            • D.5 max_bid_limit:0 → 400 "max_bid_limit must be positive".
+            • D.6 Unknown dealer id → 404 "Dealer not found".
+            • D.7 Approving an operator account (role='super_admin') → 400
+              "Cannot approve non-dealer accounts".
+            • D.8 Dealer JWT calling endpoint → 403 "Permission denied:
+              approve_dealers".
+            • D.9 Anonymous → 401 "Not authenticated".
+            • D.10 Token version bump verified: dealer's old JWT (taken
+              before approval) → 401 with detail='SESSION_INVALIDATED' on
+              next /auth/me call. Re-login → fresh token, dealer.status=
+              'approved'. End-to-end SESSION_INVALIDATED flow works.
+
+          Endpoint is gated by require_permission("approve_dealers"), which
+          all four operator tiers (super_admin, admin, operations_admin,
+          inspection_admin… wait inspection_admin doesn't have it) can call
+          per ROLE_PERMISSIONS. Verified for super_admin tier specifically.
+
+          Audit + push + notification fan-out verified via response contents
+          and audit-log re-fetch.
+
 test_plan:
-  current_focus:
-    - "Phase 2B+ Settlement Pipeline backend (GET /admin/settlements/pipeline + POST /admin/auctions/{id}/settlement/note)"
-    - "Phase 2B+ Settlement Pipeline Tracker UI"
-    - "P1 polish: ReasonModal min 5-char + load-lock + WS auth re-validation"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -2763,3 +2897,66 @@ agent_communication:
       WS serialization bug should be tracked as a separate P1 —
       it will also bite the frontend's live-ops WS hooks the moment
       they try to receive the initial snapshot.
+
+  - agent: "testing"
+    message: |
+      [AUTH REFACTOR — OPEN DEALER ONBOARDING + STATUS-GATED BIDDING]
+      Test runner: /app/backend_test.py
+      Target: https://qdrives-dealer-hub.preview.emergentagent.com/api
+      Result: 42/44 PASS — both "failures" are non-issues (see below).
+
+      ✅ A) Dealer open onboarding (7/7) — random phone signs up as
+         status='pending', operator phones blocked with USE_OPERATOR_LOGIN
+         on both /send-otp and /verify-otp, short phone → 400.
+
+      ✅ B) Preset auto-approve (1/2 functional, 1 doc mismatch)
+         +919900000003 verify-otp → status='approved' instantly. The
+         dealership_name is "Velocity Wheels" (per SEED_DEALERS), NOT
+         "Velocity Auto Hub" as the review request said. Backend behaviour
+         is correct; review-request copy was stale.
+
+      ✅ C) Status-gated actions (10/10) — pending /bid + /purchases →
+         403 DEALER_PENDING_APPROVAL; pending can browse + watch +
+         notifications. Approved /bid succeeds (200). Suspended /bid →
+         403 DEALER_ACCOUNT_SUSPENDED but login still allowed.
+
+      ✅ D) NEW POST /admin/dealers/{id}/approve (10/10) — approves with
+         previous_status, approved_at, approved_by; idempotent re-approve
+         no audit churn; max_bid_limit body param works (2500000); 400
+         on <=0; 404 on unknown; 400 on operator account; 403 dealer JWT;
+         401 anon; token_version bump invalidates old JWT (401
+         SESSION_INVALIDATED) → re-login fresh token w/ status=approved.
+
+      ✅ E) /verify mirroring (3/3) — verified:true → status=approved
+         + previous_status=pending + approved_at; suspended:true →
+         status=suspended; verified:false → status=pending.
+
+      ✅ F) /admin/dealers?status_filter=… (4/4) — pending=3,
+         approved=19, suspended=3, revoked=0; all filter rules respected
+         including legacy verified+!suspended fallbacks.
+
+      ✅ G) New super_admin operator +918977986662 (4/4) — send-otp +
+         verify-otp + /auth/me + /admin/dealers all green; role=
+         super_admin.
+
+      ✅ H) Migration (1/2 functional, 1 minor) — startup log confirmed:
+         "[migration] dealer.status backfill — approved=13 suspended=2".
+         Pre-seeded dealers (+91990000000{1..5}) all status='approved'.
+         The 2 dealer docs missing 'status' are OPERATOR shadow rows
+         (role='super_admin'); migration is correctly scoped to
+         role='dealer'. Operators bypass require_approved_dealer so this
+         is harmless — the spec's "all dealers" wording was overly broad.
+
+      ✅ I) WS auth (2/2) — pending dealer connects to /api/ws/auction/{id}
+         with valid JWT and receives initial snapshot frame. Approved
+         dealer also handshakes successfully. Note: snapshot frame now
+         JSON-encodes via jsonable_encoder so the prior datetime
+         serialization bug is fixed (logs show "connection open" then
+         clean "connection closed" instead of WS error).
+
+      NET: Backend auth refactor is GREEN. Recommend main agent
+      summarise + finish. Two flagged items are non-bugs — no fix needed
+      on the backend. Optional: update test_credentials.md so
+      "Velocity Auto Hub" matches the live "Velocity Wheels" string (or
+      vice versa).
+

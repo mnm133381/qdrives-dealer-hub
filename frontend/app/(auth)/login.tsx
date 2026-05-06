@@ -62,17 +62,17 @@ export default function Login() {
       });
     } catch (e: any) {
       const msg = String(e?.message || '');
-      if (msg.includes('DEALER_ACCESS_NOT_APPROVED')) {
-        setAccessError({
-          title: 'Access restricted.',
-          body: 'Your number is not approved on the Q Drives dealer network.',
-          hint: 'Please contact Q Drives support.',
-        });
-      } else if (msg.includes('OPERATOR_ACCESS_DENIED')) {
+      if (msg.includes('OPERATOR_ACCESS_DENIED')) {
         setAccessError({
           title: 'Operator access denied.',
           body: 'This number is not authorised for Q Drives operations.',
           hint: 'Operator access is restricted and audited.',
+        });
+      } else if (msg.includes('USE_OPERATOR_LOGIN')) {
+        setAccessError({
+          title: 'Use operator sign-in.',
+          body: 'This number is registered for operator access. Switch to the operator portal.',
+          hint: 'Tap "Choose access" above.',
         });
       } else {
         Alert.alert('Failed to send OTP', msg || 'Try again.');
@@ -128,7 +128,7 @@ export default function Login() {
         <Text style={styles.subtitle}>
           {isAdmin
             ? 'Restricted to authorised Q Drives operators. Your number is checked against the operator allow-list.'
-            : 'Restricted to dealers approved on the Q Drives network. Your number is checked against our dealer allow-list.'}
+            : 'Dealer access available upon mobile verification. Bidding activates after Q Drives approves your account.'}
         </Text>
 
         <View style={styles.inputWrap}>

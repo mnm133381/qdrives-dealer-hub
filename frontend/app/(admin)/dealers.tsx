@@ -84,7 +84,7 @@ export default function AdminDealers() {
     catch (e: any) { toast.show(e.message || 'Failed', 'error'); }
   };
   const onApprove = async (id: string) => {
-    try { await api.adminVerifyDealer(id, { verified: true }); toast.show('Approved · dealer notified', 'success'); load(); }
+    try { await api.adminApproveDealer(id, { note: 'Approved from approval queue' }); toast.show('Approved · dealer notified', 'success'); load(); }
     catch (e: any) { toast.show(e.message || 'Failed', 'error'); }
   };
 
@@ -93,7 +93,7 @@ export default function AdminDealers() {
       <AdminHeader
         kicker="Dealer network"
         title="Approval queue"
-        sub="Pre-fill profiles when whitelisting a phone. No public registration."
+        sub="Open dealer onboarding · pending dealers cannot bid until approved"
         rightSlot={(
           <TouchableOpacity onPress={() => setShowAdd(true)} style={styles.addBtn} activeOpacity={0.85} testID="admin-add-dealer-btn">
             <UserPlus size={13} color="#fff" />

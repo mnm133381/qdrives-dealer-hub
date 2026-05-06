@@ -70,8 +70,13 @@ export default function DealerDetail() {
 
   const onApprove = async () => {
     setBusy(true);
-    try { await api.adminVerifyDealer(d.id, { verified: true }); toast.show('Approved', 'success'); load(); }
-    catch (e: any) { toast.show(e.message || 'Failed', 'error'); }
+    try {
+      // Use the new canonical approve endpoint — captures previous_status,
+      // approved_at, approved_by, ip, user-agent in audit.
+      await api.adminApproveDealer(d.id, { note: 'Approved via dealer detail panel' });
+      toast.show('Approved · dealer notified', 'success');
+      load();
+    } catch (e: any) { toast.show(e.message || 'Failed', 'error'); }
     finally { setBusy(false); }
   };
   const onSuspend = () => {

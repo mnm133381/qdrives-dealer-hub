@@ -51,7 +51,41 @@ export const api = {
   marketPulse: () => request('/market/pulse'),
   networkActivity: () => request('/network/activity'),
   priceEstimate: (payload: any) => request('/ai/price-estimate', { method: 'POST', body: JSON.stringify(payload) }),
+
+  inspectionByCar: (carId: string) => request(`/inspections/by-car/${carId}`),
+  uploadInspection: async (carId: string, fileUri: string, fileName: string, version = 'v1') => {
+    const token = await storage.getItem(TOKEN_KEY);
+    const form = new FormData();
+    form.append('car_id', carId);
+    form.append('version', version);
+    // React Native FormData expects { uri, name, type } for native; on web we may have a Blob
+    if (fileUri.startsWith('blob:') || fileUri.startsWith('data:')) {
+      const blob = await (await fetch(fileUri)).blob();
+      form.append('file', new File([blob], fileName, { type: 'application/pdf' }));
+    } else {
+      // @ts-ignore React Native form-data shape
+      form.append('file', { uri: fileUri, name: fileName, type: 'application/pdf' });
+    }
+    const res = await fetch(`${BASE}/api/inspections/upload`, {
+      method: 'POST',
+      headers: { Authorization: token ? `Bearer ${token}` : '' },
+      body: form,
+    });
+    const text = await res.text();
+    let data: any = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+    if (!res.ok) {
+      const detail = (data && data.detail) || `Upload failed (${res.status})`;
+      throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    }
+    return data;
+  },
 };
+
+export async function inspectionPdfUrl(inspectionId: string): Promise<string> {
+  const token = await storage.getItem(TOKEN_KEY);
+  return `${BASE}/api/inspections/file/${inspectionId}?token=${encodeURIComponent(token || '')}`;
+}
 
 export function wsUrl(auctionId: string) {
   const base = (BASE || '').replace(/^http/, 'ws');

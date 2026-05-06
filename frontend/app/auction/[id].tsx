@@ -251,12 +251,21 @@ export default function AuctionScreen() {
           </View>
           <View style={styles.trustDivider} />
           <View style={styles.trustItem}>
-            <Sparkles size={13} color={colors.warning} />
-            <Text style={styles.trustItemText}>48-hr settlement</Text>
+            {auction.inspection_pdf ? (
+              <>
+                <ShieldCheck size={13} color={colors.success} />
+                <Text style={[styles.trustItemText, { color: colors.success }]}>PDF report</Text>
+              </>
+            ) : (
+              <>
+                <Sparkles size={13} color={colors.warning} />
+                <Text style={styles.trustItemText}>48-hr settlement</Text>
+              </>
+            )}
           </View>
         </View>
 
-        {/* Inspection details */}
+        {/* Inspection report (summary + PDF) */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Inspection report</Text>
           <View style={styles.detailCard}>
@@ -264,6 +273,15 @@ export default function AuctionScreen() {
             <DetailRow label="Tyre condition" value={car.tyre_condition || 'Good'} />
             <DetailRow label="Accident history" value={car.accident_history || 'None Reported'} valueColor={(car.accident_history || '').includes('None') ? colors.success : colors.warning} />
             <DetailRow label="Service history" value={car.service_history || 'Authorised'} />
+          </View>
+
+          <View style={{ marginTop: 12 }}>
+            <InspectionPdfCard
+              carId={auction.car_id}
+              inspection={auction.inspection_pdf}
+              isSeller={!!dealer && dealer.id === auction.seller_id}
+              onUploaded={() => load()}
+            />
           </View>
         </View>
 

@@ -14,16 +14,18 @@ import random
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, status, UploadFile, File, Form, Query
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from pydantic import BaseModel, Field
 
 # ---------- Setup ----------
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+inspections_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="inspections")
 
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGO = "HS256"
@@ -233,9 +235,11 @@ async def submit_kyc(req: KycReq, dealer = Depends(get_current_dealer)):
 async def _enrich_auction(a: dict) -> dict:
     car = await db.cars.find_one({"id": a["car_id"]}, {"_id": 0}) or {}
     seller = await db.dealers.find_one({"id": a.get("seller_id")}, {"_id": 0}) or {}
+    insp = await db.inspections.find_one({"car_id": a["car_id"]}, {"_id": 0})
     a = serialize(a)
     a["car"] = serialize(car) if car else None
     a["seller"] = {"id": seller.get("id"), "dealership_name": seller.get("dealership_name", ""), "city": seller.get("city", ""), "verified": seller.get("verified", False)} if seller else None
+    a["inspection_pdf"] = serialize(insp) if insp else None
     # compute live state
     end = a.get("end_time")
     if isinstance(end, str):
@@ -525,6 +529,124 @@ async def ai_price_estimate(req: PriceEstimateReq):
         }
 
 
+# ---------- Inspection PDF Endpoints ----------
+MAX_PDF_BYTES = 10 * 1024 * 1024  # 10 MB
+
+@api.post("/inspections/upload")
+async def upload_inspection_pdf(
+    car_id: str = Form(...),
+    version: Optional[str] = Form("v1"),
+    file: UploadFile = File(...),
+    dealer = Depends(get_current_dealer),
+):
+    # Validate file
+    if file.content_type not in ("application/pdf", "application/x-pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Filename must end with .pdf")
+
+    # Read into memory and enforce size cap
+    contents = await file.read()
+    if len(contents) > MAX_PDF_BYTES:
+        raise HTTPException(status_code=413, detail=f"PDF exceeds {MAX_PDF_BYTES // (1024*1024)} MB limit")
+    if len(contents) < 200:
+        raise HTTPException(status_code=400, detail="PDF file looks empty/corrupt")
+
+    # Validate associated car + ownership
+    car = await db.cars.find_one({"id": car_id}, {"_id": 0})
+    if not car:
+        raise HTTPException(status_code=404, detail="Car not found")
+    if car.get("seller_id") != dealer["id"]:
+        raise HTTPException(status_code=403, detail="Only the seller can attach an inspection PDF")
+
+    # Persist into GridFS
+    safe_name = (file.filename or f"inspection-{car_id}.pdf").replace("/", "_")
+    gridfs_id = await inspections_bucket.upload_from_stream(
+        safe_name,
+        contents,
+        metadata={"car_id": car_id, "uploader_id": dealer["id"], "version": version or "v1"},
+    )
+
+    # Replace any existing inspection record for this car (keep latest)
+    inspection = {
+        "id": str(uuid.uuid4()),
+        "car_id": car_id,
+        "uploader_id": dealer["id"],
+        "uploader_name": dealer.get("dealership_name") or dealer.get("full_name") or "Dealer",
+        "filename": safe_name,
+        "size_bytes": len(contents),
+        "version": version or "v1",
+        "status": "verified",
+        "gridfs_id": str(gridfs_id),
+        "created_at": now_utc(),
+    }
+    await db.inspections.delete_many({"car_id": car_id})
+    await db.inspections.insert_one(dict(inspection))
+
+    return serialize(inspection)
+
+
+@api.get("/inspections/by-car/{car_id}")
+async def get_inspection_for_car(car_id: str):
+    insp = await db.inspections.find_one({"car_id": car_id}, {"_id": 0})
+    if not insp:
+        return None
+    return serialize(insp)
+
+
+@api.get("/inspections/file/{inspection_id}")
+async def download_inspection_pdf(
+    inspection_id: str,
+    token: Optional[str] = Query(default=None),
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(security),
+):
+    """
+    Auth-gated PDF stream.
+    Accepts JWT either via Authorization header (creds) OR ?token= query
+    param so <a href> / Linking.openURL can stream the file from native/web
+    without having to inject custom headers.
+    """
+    raw = None
+    if creds and creds.credentials:
+        raw = creds.credentials
+    elif token:
+        raw = token
+    if not raw:
+        raise HTTPException(status_code=401, detail="Token required")
+    try:
+        jwt.decode(raw, JWT_SECRET, algorithms=[JWT_ALGO])
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    insp = await db.inspections.find_one({"id": inspection_id}, {"_id": 0})
+    if not insp:
+        raise HTTPException(status_code=404, detail="Inspection not found")
+
+    try:
+        from bson import ObjectId
+        gid = ObjectId(insp["gridfs_id"])
+    except Exception:
+        raise HTTPException(status_code=500, detail="Invalid stored file id")
+
+    try:
+        stream = await inspections_bucket.open_download_stream(gid)
+    except Exception:
+        raise HTTPException(status_code=404, detail="File missing in storage")
+
+    async def iterator():
+        while True:
+            chunk = await stream.readchunk()
+            if not chunk:
+                break
+            yield chunk
+
+    headers = {
+        "Content-Disposition": f'inline; filename="{insp.get("filename", "inspection.pdf")}"',
+        "Cache-Control": "private, max-age=300",
+    }
+    return StreamingResponse(iterator(), media_type="application/pdf", headers=headers)
+
+
 # ---------- Network activity (public ticker) ----------
 @api.get("/network/activity")
 async def network_activity(limit: int = 12):
@@ -770,6 +892,8 @@ async def on_startup():
     await db.cars.create_index("id", unique=True)
     await db.auctions.create_index("id", unique=True)
     await db.bids.create_index([("auction_id", 1), ("created_at", -1)])
+    await db.inspections.create_index("car_id")
+    await db.inspections.create_index("id", unique=True)
     await seed_data()
 
 

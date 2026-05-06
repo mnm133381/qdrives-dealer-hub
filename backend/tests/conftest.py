@@ -14,7 +14,7 @@ def base_url():
     return BASE_URL
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def api_client():
     s = requests.Session()
     s.headers.update({"Content-Type": "application/json"})

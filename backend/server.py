@@ -2154,6 +2154,10 @@ async def admin_settlement_pipeline(
 
     cursor = db.auctions.find(
         {
+            # Phase 2C hygiene: settlement pipeline must never surface
+            # archived/withdrawn or operator-hidden inventory.
+            "hidden_from_settlement": {"$ne": True},
+            "hidden_from_live_ops": {"$ne": True},
             "$or": [
                 {"status": {"$in": nonterminal}},
                 {"status": {"$in": terminal}, "$or": [
@@ -3759,6 +3763,7 @@ async def seed_allow_lists() -> None:
                 "archived_by": "system_migration",
                 "hidden_from_marketplace": True,
                 "hidden_from_live_ops": True,
+                "hidden_from_settlement": True,
                 "migration_tag": "legacy_cleanup_phase2c",
                 "archive_note": "Auto-archived: orphaned/legacy inventory (no valid seller or pre-lifecycle seed)",
                 "status_changed_at": now_utc(),
@@ -3770,10 +3775,33 @@ async def seed_allow_lists() -> None:
                 "role": "system",
                 "reason": "legacy_cleanup_phase2c",
                 "before_state": {"status": "legacy"},
-                "after_state": {"status": "archived", "hidden_from_marketplace": True, "hidden_from_live_ops": True},
+                "after_state": {"status": "archived",
+                                "hidden_from_marketplace": True,
+                                "hidden_from_live_ops": True,
+                                "hidden_from_settlement": True},
             }))
         logger.info("[migration] legacy_cleanup_phase2c — archived %s ghost auctions: %s",
                     result.modified_count, archived_ids[:10])
+
+    # Belt-and-braces: every previously-archived legacy ghost gets the
+    # full set of hidden_from_* flags. This catches docs that pre-date the
+    # hidden_from_settlement field. Idempotent.
+    backfill_hidden = await db.auctions.update_many(
+        {"migration_tag": "legacy_cleanup_phase2c",
+         "$or": [
+             {"hidden_from_settlement": {"$ne": True}},
+             {"hidden_from_marketplace": {"$ne": True}},
+             {"hidden_from_live_ops": {"$ne": True}},
+         ]},
+        {"$set": {
+            "hidden_from_settlement": True,
+            "hidden_from_marketplace": True,
+            "hidden_from_live_ops": True,
+        }},
+    )
+    if backfill_hidden.modified_count:
+        logger.info("[migration] hidden_from_* backfill on legacy archives: %s",
+                    backfill_hidden.modified_count)
 
     # ============================================================
     # Phase 2C — Dealer verification/approval state separation.

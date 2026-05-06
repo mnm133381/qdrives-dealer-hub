@@ -50,7 +50,8 @@ export default function AdminLayout() {
       <Tabs.Screen name="index" options={{ title: 'Ops', tabBarIcon: ({ color, size }) => <LayoutDashboard size={size - 2} color={color} strokeWidth={2.2} /> }} />
       <Tabs.Screen name="inventory" options={{ title: 'Inventory', tabBarIcon: ({ color, size }) => <Package size={size - 2} color={color} strokeWidth={2.2} /> }} />
       <Tabs.Screen name="launch" options={{
-        title: 'Launch',
+        title: 'List',
+        tabBarLabel: 'List Car',
         tabBarIcon: () => (
           <View style={styles.launchWrap}><PlusCircle size={28} color={colors.red} fill={colors.red} strokeWidth={2.2} /></View>
         ),

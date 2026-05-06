@@ -178,7 +178,16 @@ export default function MyListings() {
           <View style={styles.empty}>
             <FileText size={28} color={colors.textMuted} />
             <Text style={styles.emptyTitle}>No {tab} listings</Text>
-            <Text style={styles.emptySub}>Switch tab or use the Sell tab to launch a new auction.</Text>
+            <Text style={styles.emptySub}>Switch tab or list a new vehicle to start an auction.</Text>
+            <TouchableOpacity
+              onPress={() => router.push('/(admin)/launch' as any)}
+              style={styles.emptyCta}
+              testID="my-listings-empty-list-car"
+              activeOpacity={0.85}
+            >
+              <Upload size={14} color="#fff" strokeWidth={2.5} />
+              <Text style={styles.emptyCtaText}>+ LIST CAR</Text>
+            </TouchableOpacity>
           </View>
         ) : (
           filtered.map((a) => {
@@ -366,6 +375,8 @@ const styles = StyleSheet.create({
   empty: { alignItems: 'center', paddingVertical: 80, gap: 12 },
   emptyTitle: { color: colors.textChrome, fontSize: 16, fontWeight: '700' },
   emptySub: { color: colors.textMuted, fontSize: 12, textAlign: 'center', maxWidth: 260 },
+  emptyCta: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 18, paddingVertical: 11, borderRadius: 999, backgroundColor: colors.red, marginTop: 8 },
+  emptyCtaText: { color: '#fff', fontSize: 12.5, fontWeight: '900', letterSpacing: 1 },
 
   card: { backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: 1, borderRadius: radii.md, marginBottom: 14, overflow: 'hidden' },
   cardHead: { flexDirection: 'row', alignItems: 'center', padding: 14 },

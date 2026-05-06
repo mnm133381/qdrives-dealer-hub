@@ -183,9 +183,9 @@ export default function AdminOpsDashboard() {
           <View style={styles.emptyCard} testID="live-grid-empty">
             <View style={styles.emptyIcon}><Inbox size={20} color={colors.textChrome} /></View>
             <Text style={styles.emptyTitle}>No live auctions</Text>
-            <Text style={styles.emptyBody}>Pipeline is idle. Launch a new auction from the Inventory tab or pull-to-refresh to re-poll.</Text>
+            <Text style={styles.emptyBody}>Pipeline is idle. List a vehicle to start a new auction or pull-to-refresh to re-poll.</Text>
             <TouchableOpacity onPress={() => router.push('/(admin)/launch' as any)} style={styles.emptyCta} testID="live-grid-empty-cta">
-              <Text style={styles.emptyCtaText}>+ LAUNCH AUCTION</Text>
+              <Text style={styles.emptyCtaText}>+ LIST CAR</Text>
             </TouchableOpacity>
           </View>
         ) : (

@@ -578,11 +578,11 @@ backend:
 
   - task: "JWT token versioning + session kill-on-suspend"
     implemented: true
-    working: "NA"
+    working: true
     file: "backend/server.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
@@ -597,14 +597,38 @@ backend:
           (DELETE admin/approved-dealers/{phone}). Verified: dealer JWT
           goes 200 -> 401 SESSION_INVALIDATED instantly on suspend.
           token_invalidation event audited.
+      - working: true
+        agent: "testing"
+        comment: |
+          [PHASE 2A — 26/26 PASS] Comprehensive JWT/session hardening audit.
+          ✅ Access (kind='access', 8h exp) + refresh (kind='refresh', 30d) both
+            carry tv. Verified by decoding payload.
+          ✅ Wrong-kind enforcement: access on /auth/refresh → 401 "Wrong token
+            kind"; refresh on /auth/me → 401 "Wrong token kind".
+          ✅ Suspend kill: dealer +919900000002 suspended → all outstanding
+            access AND refresh tokens 401 SESSION_INVALIDATED instantly.
+            Multi-device confirmed (Device A + B old tokens both die).
+          ✅ Reinstate: tv bumps; old tokens stay dead; new login works with
+            tv > old.
+          ✅ Tampered-tv refresh → 401 SESSION_INVALIDATED.
+          ✅ Signature tamper → 401 "Invalid token".
+          ✅ Expired (hand-crafted with past exp) → 401 "Token expired".
+          ✅ Allow-list revoke kill: DELETE /admin/approved-dealers/<phone>
+            soft-revokes + bumps tv → in-flight access token 401
+            SESSION_INVALIDATED.
+          ✅ Refresh churn 10x sequential → all 200 with working access tokens.
+          📌 By design: refresh token does NOT rotate on every refresh (same
+            refresh reused until tv bumps). 8h access token replay window is
+            NOT mitigated by client logout (stateless tokens) — only by
+            tv bump or expiry. Documented as edge case, not a blocker.
 
   - task: "Immutable bid ledger + cancellation reversal"
     implemented: true
-    working: "NA"
+    working: true
     file: "backend/server.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
@@ -619,14 +643,35 @@ backend:
           Endpoint: POST /api/admin/auctions/{auction_id}/bids/{bid_id}/cancel
           gated by cancel_bid permission (super_admin + admin). Affected
           dealer gets push + in-app notification. WS broadcast to auction.
+      - working: true
+        agent: "testing"
+        comment: |
+          [PHASE 2A — 21/21 PASS] Append-only ledger fully verified.
+          ✅ 2 bids placed (dealer_5 lower, dealer_3 higher); current_bid +
+            top_bidder_id update correctly to dealer_3.
+          ✅ Cancel returns reversal_id + new current_bid. control-panel shows
+            cancelled bid intact with cancelled_at/by/reason fields. reversals[]
+            entry has kind='bid_cancellation', amount snapshot, mandatory
+            reason, operator_id, operator_ip/ua, created_at.
+          ✅ current_bid recomputed to next-highest non-cancelled (dealer_5
+            amount). top_bidder_id reverts to dealer_5.
+          ✅ Re-cancel → 400 "Bid already cancelled". Empty reason → 400
+            "Reason is mandatory". Unknown bid id → 404.
+          ✅ Cancelling all bids → current_bid falls back to starting_bid (or
+            next remaining).
+          ✅ New bid after cancellations correctly increments total_bids by 1
+            (cancelled bids excluded from count).
+          ✅ Cancelled bid doc preserved (not removed) — append-only honored.
+          ✅ Section 5: A→B→C bid ladder cancellations cascade correctly
+            (current_bid + top_bidder + total_bids all monotonically track).
 
   - task: "Settlement state machine (mandatory timestamps)"
     implemented: true
-    working: "NA"
+    working: true
     file: "backend/server.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
@@ -642,14 +687,39 @@ backend:
           settlement_state_change event audited.
           _enrich_auction now respects explicit terminal states over time-
           based status compute (cancelled/paused/settled win over now > end_time).
+      - working: true
+        agent: "testing"
+        comment: |
+          [PHASE 2A — 26/26 PASS] State machine fully verified.
+          ✅ force-close on live → ended_pending_payment with ended_at +
+            force_closed_at written.
+          ✅ Illegal: live (from epp), vehicle_released skip-step from epp,
+            cancelled from payment_received, anything from settled (terminal),
+            anything from cancelled — all correctly 400 "Illegal transition".
+          ✅ Happy paths: epp → payment_received → dispute → settled with
+            payment_received_at, dispute_opened_at, settled_at written.
+          ✅ Alt happy path: epp → payment_received → vehicle_released →
+            settled — all 4 timestamps (ended_at, payment_received_at,
+            released_at, settled_at) populated.
+          ✅ Cancellation: live → cancelled with cancelled_at + cancelled_by
+            + cancelled_reason. Empty reason → 400.
+          ✅ force-close on no-bid live auction → cancelled (correct fork).
+          ✅ Audit: ≥3 settlement_state_change events per auction with
+            from/to/note/operator_id meta.
+          ✅ Extension bounds: 10s → 400 (under min), 86401s → 400 (over
+            max), 120s → 200 with extension_count++ and end_time bumped.
+          ✅ Concurrent settlement (3 parallel POSTs to same target): exactly
+            1 succeeds (200), others return 400 "Illegal transition" (no 500s).
+            Note: relies on document state at update-time; no Mongo
+            transaction. Acceptable for single-instance deployment.
 
   - task: "Operator auction controls (pause/resume/extend/force-close/cancel)"
     implemented: true
-    working: "NA"
+    working: true
     file: "backend/server.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
@@ -668,14 +738,39 @@ backend:
           All gated by RBAC permissions (pause_auction, extend_auction,
           cancel_auction). All audited. Verified working on truly live
           auctions; non-live attempts correctly 400.
+      - working: true
+        agent: "testing"
+        comment: |
+          [PHASE 2A — 25/25 PASS] RBAC + control endpoints + WS verified.
+          ✅ Operator can pause/resume/extend/cancel/force-close/cancel-bid/
+            settlement-transition → 200.
+          ✅ Dealer JWT on each /admin/* endpoint (live-grid, control-panel,
+            risk/dealers, audit-logs, security/denied-logins,
+            dealers/{id}/max-bid, approved-dealers, all auction action
+            endpoints) → 403 "Admin access required".
+          ✅ Idempotency guards: pause-already-paused → 400; resume-not-
+            paused → 400; force-close-on-terminal → 400.
+          ✅ Audit feed contains auction_pause, auction_resume,
+            auction_cancel, auction_extend, force_close, bid_cancel,
+            settlement_state_change, allow_list_*, dealer_status_change,
+            token_invalidation, max_bid_change, dealer_login,
+            operator_login, dealer_access_denied, operator_access_denied.
+          ✅ WebSocket broadcast: dealer connects to
+            /api/ws/auction/{aid} → receives snapshot. Operator
+            triggers pause/resume/extend in background → frames received
+            with type='auction_pause', 'auction_resume',
+            'auction_extend' as expected.
+          📌 Anonymous WS connect to /api/ws/auction/{aid} is currently
+            ALLOWED (no token required at handshake). This is permissive
+            and should be reviewed for Phase 2B (see security weaknesses).
 
   - task: "Live auction grid + control panel (operator monitor)"
     implemented: true
-    working: "NA"
+    working: true
     file: "backend/server.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
@@ -689,14 +784,30 @@ backend:
           GET /admin/auctions/{id}/control-panel returns full forensic
           view: auction + car + bids (incl cancelled with cancelled_at) +
           reversals (full audit trail). Append-only data.
+      - working: true
+        agent: "testing"
+        comment: |
+          [PHASE 2A — verified across all sections] Both endpoints fully
+          functional and aligned.
+          ✅ live-grid returns id/status/car/current_bid/starting_bid/
+            reserve_price/reserve_met/top_bidder/total_bids/time_left_s/
+            end_time. reserve_met flag present.
+          ✅ control-panel returns auction+bids[]+reversals[] with cancelled
+            bids preserved with cancelled_at/by/reason; reversals[] include
+            kind/bid_id/amount/reason/operator_id/operator_ip/operator_ua/
+            created_at.
+          ✅ Determinism: GET /auctions/{id} (public) and
+            /admin/auctions/{id}/control-panel agree on current_bid +
+            top_bidder_id at every checkpoint after cascading cancellations.
+          ✅ Dealer JWT on both endpoints → 403.
 
   - task: "Dealer Risk Visibility feed"
     implemented: true
-    working: "NA"
+    working: true
     file: "backend/server.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
@@ -711,14 +822,28 @@ backend:
               0 bids in 30d).
           Verified: suspended=2, denied=5 entries, cancellations=1 (from
           test bid cancel). Admin-only (403 for dealer).
+      - working: true
+        agent: "testing"
+        comment: |
+          [PHASE 2A — 8/8 PASS] All 6 risk buckets surface correctly.
+          ✅ /admin/security/denied-logins: triggered 5 denied attempts on
+            +919000111144 → repeat_offenders shows phone with attempts>=5.
+          ✅ /admin/risk/dealers returns 200 with all keys present:
+            suspended, repeat_denied_24h, cancellations_7d,
+            abnormal_frequency_1h, high_value_spikes_24h,
+            inactive_high_limit (lists, no 500 errors).
+          ✅ repeat_denied_24h surfaced +919000111144 with attempts>=3.
+          ✅ cancellations_7d list present (populated by Phase 2A bid
+            cancellation tests).
+          ✅ Dealer JWT → 403 (verified in section 4 RBAC).
 
   - task: "Audit expansion (Phase 2 actions)"
     implemented: true
-    working: "NA"
+    working: true
     file: "backend/server.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
@@ -733,6 +858,21 @@ backend:
           auction_resume, bid_cancel, dealer_status_change, force_close,
           max_bid_change, token_invalidation, dealer_login, operator_login,
           dealer_access_denied, operator_access_denied.
+      - working: true
+        agent: "testing"
+        comment: |
+          [PHASE 2A — verified] All Phase 2 actions captured in audit_logs.
+          ✅ /admin/audit-logs returns full set including: auction_pause,
+            auction_resume, auction_extend, auction_cancel, force_close,
+            bid_cancel, settlement_state_change, allow_list_add/update/
+            revoke, dealer_status_change, max_bid_change, token_invalidation,
+            dealer_login, operator_login, dealer_access_denied,
+            operator_access_denied.
+          ✅ settlement_state_change events have full meta (from, to, note,
+            actor_id) — validated 3+ events per auction transitioned through
+            ended_pending_payment → payment_received → dispute → settled.
+          ✅ bid_cancel events with reason/operator_id/operator_ip/operator_ua.
+          ✅ since_hours + action filters work on the endpoint. Dealer JWT 403.
 
   - task: "Multi-tier role architecture + super-admin lockdown"
     implemented: true
@@ -1859,3 +1999,129 @@ agent_communication:
            POST /cars dealer→403, admin→200.
       No regressions, no backend errors. Please summarise & finish —
       do NOT re-fix.
+
+  - agent: "testing"
+    message: |
+      [PHASE 2A BACKEND CORRECTNESS AUDIT — 122/122 PASS]
+      Ran /app/phase2a_test.py against the public ingress URL covering all
+      8 mandatory categories. All 7 Phase 2A high-priority tasks are now
+      working:true, needs_retesting:false.
+
+      ===== PASS / FAIL MATRIX =====
+        Section 1 — Immutable Ledger Integrity         21/21 ✅
+        Section 2 — JWT / Session Hardening            26/26 ✅
+        Section 3 — Settlement State Machine           26/26 ✅
+        Section 4 — Operator Controls + RBAC           25/25 ✅
+        Section 5 — Auction Financial Integrity        13/13 ✅
+        Section 6 — Risk Detection                      8/8  ✅
+        Section 7 — Security Testing                    5/5  ✅
+        Section 8 — Performance / Reliability           3/3  ✅
+        TOTAL                                         122/122 ✅
+
+      ===== KEY VERIFICATIONS =====
+        • Append-only ledger: cancelled bids preserved, reversals[] doc
+          per cancellation with kind/bid_id/amount/reason/operator_id/ip/
+          ua/created_at. current_bid + top_bidder + total_bids correctly
+          recompute on every cancellation.
+        • Idempotent cancel (re-cancel → 400), mandatory reason (empty →
+          400), unknown bid → 404.
+        • JWT: kind='access'|'refresh' + tv on every token. Wrong-kind
+          rejected. Suspend/revoke bumps tv → all old access+refresh
+          tokens 401 SESSION_INVALIDATED instantly across multi-device.
+          Tampered tv refresh, signature tamper, expired token all 401.
+          Refresh churn (10x sequential) clean.
+        • State machine: live→ended_pending_payment→payment_received→
+          (vehicle_released | dispute)→settled. Illegal transitions all
+          400. Empty reasons all 400. Extension bounds 30s..86400s
+          enforced.
+        • RBAC: dealer JWT 403 on every /admin/* endpoint
+          (live-grid, control-panel, risk/dealers, audit-logs, denied-
+          logins, max-bid, approved-dealers, pause/resume/extend/cancel/
+          force-close/settlement, bid-cancel).
+        • Audit: settlement_state_change, bid_cancel, auction_pause,
+          auction_resume, auction_extend, auction_cancel, force_close,
+          token_invalidation, allow_list_*, dealer_status_change,
+          max_bid_change, dealer_login, operator_login,
+          dealer_access_denied, operator_access_denied — all written.
+        • WebSocket: dealer connects to /api/ws/auction/{aid}, receives
+          snapshot frame, then auction_pause / auction_resume /
+          auction_extend frames as operator triggers each.
+        • Concurrent settlement transitions (3 parallel POSTs same
+          target): exactly 1 succeeds, others 400 (no 500s).
+        • Race-bid simulation (5 parallel bids): some accepted, some
+          rejected; final current_bid == max(non-cancelled). No torn
+          state, no 500.
+
+      ===== UNRESOLVED EDGE CASES (BY DESIGN, NOT BLOCKERS) =====
+        1. JWT replay window: stateless access tokens valid for up to
+           8h after client logout (storage cleared) until tv bumps or
+           token expires. Documented; mitigation requires tv bump on
+           logout (not currently implemented; no /auth/logout endpoint).
+        2. Refresh token does NOT rotate on every refresh — same refresh
+           reused until tv changes. Documented; consider rotation for
+           Phase 2B.
+        3. WS auth at handshake only — anonymous WS connect to
+           /api/ws/auction/{aid} is currently ALLOWED (no token). Once
+           a dealer's tv bumps, an existing WS stays alive until the
+           client disconnects. Acceptable for view-only price stream
+           but should be reconfirmed for Phase 2B.
+        4. Mongo optimistic concurrency: bid placement and settlement
+           transitions rely on document state at update-time (no Mongo
+           transaction). Single-instance deployment is safe; multi-
+           instance scaling will need explicit `findAndModify` with
+           expected-state filters or transactions.
+
+      ===== RACE-CONDITION CONCERNS =====
+        • 5.3 (5 parallel bids): under contention, 2 of 5 were accepted.
+          Final current_bid still equals max(non-cancelled) → state is
+          consistent. The increment-floor check correctly rejected
+          stale-base bids.
+        • 8.3 (3 parallel settlement transitions): exactly 1 succeeded;
+          remaining 2 returned 400 "Illegal transition" (no 500). Good.
+
+      ===== SECURITY WEAKNESSES (RECOMMENDED HARDENING) =====
+        Priority 1 (before Phase 2B UI):
+          (a) Add WS authentication at handshake — require dealer JWT
+              in query string or first-frame auth. Today anonymous
+              clients can subscribe to live price streams.
+          (b) Add /auth/logout that bumps tv (server-side) so client
+              logout actually invalidates outstanding tokens.
+        Priority 2 (nice-to-have):
+          (c) Rotate refresh tokens on every refresh call (one-shot
+              refresh) to limit replay window.
+          (d) Re-validate WS connection authentication periodically by
+              forcing reconnect on tv-change broadcast.
+        Priority 3 (defense-in-depth):
+          (e) Audit-log replay-window denials (token_replay_after_logout)
+              if /auth/logout is added.
+
+      ===== ENDPOINTS HARDENED, NO ESCALATION FOUND =====
+        7.9 PATCH /auth/kyc body with extra { role:"super_admin",
+        max_bid_limit:99999999 } → server ignores both (Pydantic
+        whitelist). dealer.role stayed "dealer", max_bid_limit unchanged.
+
+      ===== TEST FIXTURES ADDED =====
+        /app/phase2a_test.py — comprehensive 8-section audit
+        (~750 lines, run with `python phase2a_test.py [section_nums]`).
+        Includes a reset_live_auctions(N) helper that promotes upcoming/
+        terminal auctions back to fresh-live so the test is re-runnable.
+        This mutates only auction start/end/status fields; bids, audit
+        logs, reversals, and dealer docs are untouched.
+
+      ===== CLEANUP =====
+        • Test allow-list phone +919876543299 left in soft-revoked
+          (status='revoked') state — backend keeps the audit trail
+          intentionally (no hard delete).
+        • All test-suspended dealers reinstated (verified, suspended:false).
+        • Auctions consumed by tests are in terminal states (settled/
+          cancelled/ended_pending_payment) but their bid history is
+          preserved.
+
+      ===== ACTION ITEMS FOR MAIN AGENT =====
+        1. Phase 2A backend is GREEN. Mark all 7 tasks done — no fixes
+           required. Please summarise & finish.
+        2. Before Phase 2B UI work, decide on the 4 hardening items
+           above. WS auth (item a) is the highest-impact gap.
+        3. DO NOT re-test or re-fix the 7 Phase 2A tasks.
+
+      YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.

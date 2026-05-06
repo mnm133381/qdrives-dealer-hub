@@ -732,9 +732,12 @@ async def _enrich_auction(a: dict) -> dict:
     a["car"] = serialize(car) if car else None
     a["seller"] = {"id": seller.get("id"), "dealership_name": seller.get("dealership_name", ""), "city": seller.get("city", ""), "verified": seller.get("verified", False)} if seller else None
     a["inspection_pdf"] = serialize(insp) if insp else None
-    # compute live state — explicit lifecycle states (paused, cancelled,
-    # settled, dispute, force-close payment lifecycle) win over time-based
-    # logic. Otherwise compute from time window.
+    # compute live state — explicit lifecycle states win over time-based
+    # logic. Critical: this list MUST include every operator-managed and
+    # terminal state, otherwise enrichment will resurrect archived /
+    # withdrawn / cancelled auctions as "live" purely because their
+    # end_time is in the future. That bug previously leaked 16 archived
+    # auctions into the dealer marketplace pulse.
     explicit = a.get("status")
     end = a.get("end_time")
     if isinstance(end, str):
@@ -749,9 +752,17 @@ async def _enrich_auction(a: dict) -> dict:
     else:
         start_dt = start
     if start_dt and start_dt.tzinfo is None: start_dt = start_dt.replace(tzinfo=timezone.utc)
-    if explicit in ("paused", "cancelled", "settled", "dispute",
-                     "ended_pending_payment", "payment_received",
-                     "vehicle_released"):
+    EXPLICIT_PRESERVE = {
+        # operator-managed / mid-flight
+        "paused", "cancelled", "settled", "dispute",
+        "ended_pending_payment", "payment_received", "vehicle_released",
+        # Phase 2C lifecycle (operator-only / non-marketplace)
+        "archived", "withdrawn", "draft",
+        # explicit terminal — preserve so enrichment does not "resurrect"
+        # an ended auction as live just because end_time was bumped
+        "ended", "scheduled",
+    }
+    if explicit in EXPLICIT_PRESERVE:
         a["status"] = explicit
     elif start_dt and now < start_dt:
         a["status"] = "upcoming"
@@ -763,14 +774,45 @@ async def _enrich_auction(a: dict) -> dict:
     return a
 
 
+# ============================================================
+# Marketplace visibility — single source of truth for "what is
+# dealer-facing right now". Operator surfaces (live-grid, settlement
+# pipeline, audit) use their own queries; marketplace endpoints
+# MUST go through this filter so dealer counts and dealer cards
+# always agree. The four conditions:
+#
+#   1. `hidden_from_marketplace != True`   — Phase 2C hard-cleanup flag
+#   2. `status NOT IN [archived, withdrawn, draft, cancelled, ended,
+#                       settled, dispute, ended_pending_payment,
+#                       payment_received, vehicle_released]`
+#                                          — exclude operator-only and
+#                                            terminal lifecycle records
+#
+# This guarantees `/market/pulse`, `/auctions`, and `/dashboard/stats`
+# all derive from the same dataset, eliminating the "16 live · empty
+# inventory" trust failure caused by mismatched filters.
+# ============================================================
+MARKETPLACE_EXCLUDED_STATUSES = [
+    "archived", "withdrawn", "draft", "cancelled",
+    # Settlement-pipeline states are operator surfaces only; the dealer
+    # marketplace should not surface them as bidable.
+    "settled", "dispute",
+    "ended_pending_payment", "payment_received", "vehicle_released",
+]
+def marketplace_query() -> Dict[str, Any]:
+    return {
+        "hidden_from_marketplace": {"$ne": True},
+        "status": {"$nin": MARKETPLACE_EXCLUDED_STATUSES},
+    }
+
+
 @api.get("/auctions")
 async def list_auctions(status_filter: Optional[str] = None, limit: int = 50):
     # Phase 2C hygiene — public marketplace must NEVER surface archived,
-    # withdrawn, or hidden inventory. These are operator-only artefacts.
-    base_query: Dict[str, Any] = {
-        "hidden_from_marketplace": {"$ne": True},
-        "status": {"$nin": ["archived", "withdrawn", "draft"]},
-    }
+    # withdrawn, hidden, settled, dispute, or settlement-pipeline
+    # inventory. Use marketplace_query() so this filter stays in lockstep
+    # with /market/pulse and /dashboard/stats.
+    base_query = marketplace_query()
     cursor = db.auctions.find(base_query).sort("start_time", -1).limit(limit)
     auctions = await cursor.to_list(limit)
     enriched = [await _enrich_auction(a) for a in auctions]
@@ -936,10 +978,22 @@ async def create_car(req: CarCreateReq, dealer = Depends(get_current_admin)):
         "top_bidder_id": None,
         "top_bidder_name": None,
         "total_bids": 0,
-        "interested_dealers": random.randint(8, 24),
+        "interested_dealers": 0,  # Real watcher count drives this; no fake liquidity
         "start_time": now_utc(),
         "end_time": now_utc() + timedelta(minutes=req.duration_minutes),
         "created_at": now_utc(),
+        # Phase 2C: explicit lifecycle state. Without this the doc gets
+        # auto-archived by the legacy_cleanup migration as a "pre-lifecycle
+        # ghost". Setting it on creation keeps the listing valid forever.
+        "status": "live",
+        "status_changed_at": now_utc(),
+        "status_changed_by": dealer["id"],
+        # Data isolation tag — production auctions are tagged so they can
+        # never be confused with demo_seed_data / qa_data / archived_legacy.
+        "data_class": "production_live_data",
+        "hidden_from_marketplace": False,
+        "hidden_from_live_ops": False,
+        "hidden_from_settlement": False,
     }
     await db.auctions.insert_one(dict(auction))
 
@@ -2902,9 +2956,12 @@ async def dashboard_stats(dealer = Depends(get_current_dealer)):
     won_count = await db.auctions.count_documents({"top_bidder_id": dealer["id"]})
     listed = dealer.get("total_listed", 0)
     live_count = 0
-    all_auctions = await db.auctions.find({}, {"_id": 0}).to_list(500)
+    # Phase 2C hygiene — dealer dashboard must align with /market/pulse
+    # and /auctions. Filter at DB level so archived/withdrawn/settled
+    # records never leak into "live_auctions" or "market_volume_today".
+    visible = await db.auctions.find(marketplace_query(), {"_id": 0}).to_list(500)
     market_volume = 0
-    for a in all_auctions:
+    for a in visible:
         ea = await _enrich_auction(a)
         if ea["status"] == "live":
             live_count += 1
@@ -3259,11 +3316,18 @@ async def network_activity(limit: int = 12):
 # ---------- Live market pulse (public) ----------
 @api.get("/market/pulse")
 async def market_pulse():
-    all_auctions = await db.auctions.find({}, {"_id": 0}).to_list(500)
+    # Phase 2C hygiene — pulse must align with /auctions and the dealer
+    # marketplace. Iterating all docs without filter previously surfaced
+    # 16 archived/orphaned auctions as "live" because enrichment had no
+    # explicit-state for archived. Now we both:
+    #   (1) filter at DB level via marketplace_query()
+    #   (2) recompute via the hardened _enrich_auction so archived /
+    #       withdrawn / cancelled never resurface as live.
+    visible = await db.auctions.find(marketplace_query(), {"_id": 0}).to_list(500)
     live = upcoming = ended = 0
     volume = 0
     top_makes: Dict[str, int] = {}
-    for a in all_auctions:
+    for a in visible:
         ea = await _enrich_auction(a)
         s = ea["status"]
         if s == "live":
@@ -3574,6 +3638,18 @@ async def seed_data():
             "start_time": start,
             "end_time": end,
             "created_at": now,
+            # Phase 2C: explicit lifecycle state. Without this the doc gets
+            # auto-archived by the legacy_cleanup migration on the next
+            # restart. Demo seed data is also tagged so it can be filtered
+            # out of production-only views (data isolation directive).
+            "status": "live",
+            "status_changed_at": now,
+            "status_changed_by": "system_seed",
+            "data_class": "demo_seed_data",
+            "legacy_seed": False,  # opt-out of legacy_cleanup_phase2c
+            "hidden_from_marketplace": False,
+            "hidden_from_live_ops": False,
+            "hidden_from_settlement": False,
         }
         await db.auctions.insert_one(auction)
 

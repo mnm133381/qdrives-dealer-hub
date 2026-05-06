@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, RefreshControl, FlatList,
+  View, Text, StyleSheet, ScrollView, Pressable, TouchableOpacity, Image, RefreshControl, FlatList, Animated,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { Bell, Activity, TrendingUp, ShieldCheck, ChevronRight, Search, BadgeCheck, Lock, Zap } from 'lucide-react-native';
+import { Bell, Activity, TrendingUp, ShieldCheck, ChevronRight, Search, BadgeCheck, Lock, Zap, Filter, Inbox } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, formatINR, radii } from '../../src/theme';
 import { useAuth } from '../../src/auth';
@@ -39,19 +39,29 @@ export default function Home() {
 
   const load = useCallback(async () => {
     try {
-      const [s, p, act, live, all, uc] = await Promise.all([
+      // Single source of truth: /auctions returns ONLY the marketplace
+      // dataset (post-Phase 2C filter). All counts and aggregates derive
+      // from this list — no /market/pulse round-trip — so the search bar,
+      // pulse strip, and inventory list can never disagree.
+      const [s, all, act, uc] = await Promise.all([
         api.dashboard().catch(() => null),
-        api.marketPulse().catch(() => null),
-        api.networkActivity().catch(() => []),
-        api.auctions('live').catch(() => []),
         api.auctions().catch(() => []),
+        api.networkActivity().catch(() => []),
         api.unreadCount().catch(() => ({ unread: 0 })),
       ]);
       setStats(s);
-      setPulse(p);
       setActivity(act as any[]);
-      const upcoming = (all as any[]).filter((a) => a.status === 'upcoming');
-      setAuctions([...(live as any[]), ...upcoming]);
+      const list = (all as any[]) || [];
+      // Hard filter: only live + upcoming surface in the dealer marketplace.
+      // Backend already excludes archived/withdrawn/settled/dispute, but we
+      // belt-and-brace to avoid any future leak.
+      const visible = list.filter((a) => a.status === 'live' || a.status === 'upcoming');
+      setAuctions(visible);
+      // Pulse derived from the same list — guarantees count consistency.
+      const liveList = visible.filter((a) => a.status === 'live');
+      const upcomingList = visible.filter((a) => a.status === 'upcoming');
+      const liveVolume = liveList.reduce((sum, a) => sum + (a.current_bid || a.starting_bid || 0), 0);
+      setPulse({ live: liveList.length, upcoming: upcomingList.length, live_volume_inr: liveVolume });
       setUnread(((uc as any)?.unread as number) || 0);
     } catch {}
     setLoaded(true);
@@ -152,7 +162,9 @@ export default function Home() {
           <StatCard label="Wins" value={`${stats?.your_wins ?? 0}`} icon={<TrendingUp size={13} color={colors.silver} />} />
         </View>
 
-        {/* Featured Live Auction */}
+        {/* Featured Live Auction — Pressable for tactile feedback,
+            urgency edge tint that pulses red when ending<60s, explicit
+            reserve status pill so dealers see whether the floor is met. */}
         {featured && (
           <View style={styles.section}>
             <View style={styles.sectionHead}>
@@ -160,44 +172,14 @@ export default function Home() {
                 <Text style={styles.sectionKicker}>FEATURED LIVE AUCTION</Text>
                 <Text style={styles.sectionTitle}>Hottest deal right now</Text>
               </View>
+              <Pressable onPress={() => router.push(`/auction/${featured.id}`)} hitSlop={8}>
+                <Text style={styles.seeAll}>Open →</Text>
+              </Pressable>
             </View>
-            <TouchableOpacity activeOpacity={0.92} onPress={() => router.push(`/auction/${featured.id}`)} testID="featured-auction" style={styles.featCard}>
-              <Image source={{ uri: featured.car?.images?.[0] }} style={styles.featImage} />
-              <View style={styles.featGradTop} />
-              <View style={styles.featGradBottom} />
-
-              <View style={styles.featTopRow}>
-                <View style={styles.liveBadge}>
-                  <LivePulse size={6} />
-                  <Text style={styles.liveBadgeText}>LIVE</Text>
-                </View>
-                <View style={styles.featTimer}>
-                  <Text style={styles.featTimerLabel}>ENDS IN</Text>
-                  <CountdownTimer endTime={featured.end_time} compact />
-                </View>
-              </View>
-
-              <View style={styles.featBottom}>
-                <View style={styles.featRegPlate}>
-                  <Text style={styles.featRegText}>{featured.car?.registration_number}</Text>
-                </View>
-                <Text style={styles.featTitle} numberOfLines={1}>{featured.car?.year} {featured.car?.make} {featured.car?.model}</Text>
-                <Text style={styles.featVariant} numberOfLines={1}>
-                  {featured.car?.variant} · {(featured.car?.km_driven || 0).toLocaleString('en-IN')} km · {featured.car?.fuel_type}
-                </Text>
-                <View style={styles.featPriceRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.featPriceLabel}>CURRENT BID</Text>
-                    <Text style={styles.featPrice}>{formatINR(featured.current_bid)}</Text>
-                    <Text style={styles.featBids}>{featured.total_bids} bids · {featured.interested_dealers} watching</Text>
-                  </View>
-                  <View style={styles.featCta}>
-                    <Text style={styles.featCtaText}>BID NOW</Text>
-                    <ChevronRight size={14} color="#fff" />
-                  </View>
-                </View>
-              </View>
-            </TouchableOpacity>
+            <FeaturedCard
+              auction={featured}
+              onPress={() => router.push(`/auction/${featured.id}`)}
+            />
           </View>
         )}
 
@@ -217,7 +199,10 @@ export default function Home() {
           />
         </View>
 
-        {/* Inventory */}
+        {/* Inventory — empty-state intelligence:
+             - if no auctions exist at all → "Marketplace is quiet"
+             - if filter empties results → "No matches · reset filter"
+             - if only the featured exists → "Featured above is the only live listing" */}
         <View style={[styles.section, { paddingHorizontal: 20 }]}>
           <View style={styles.sectionHead}>
             <View>
@@ -230,8 +215,30 @@ export default function Home() {
           </View>
           {!loaded ? (
             <View style={styles.skelCard}><Text style={styles.skelText}>Loading inventory…</Text></View>
+          ) : auctions.length === 0 ? (
+            <View style={styles.emptyIntelligence} testID="inv-empty-no-data">
+              <View style={styles.emptyIcon}><Inbox size={20} color={colors.textChrome} /></View>
+              <Text style={styles.emptyTitle}>Marketplace is quiet right now</Text>
+              <Text style={styles.emptyBody}>No live or upcoming auctions on the floor. Check back soon — Q Drives lists new wholesale inventory throughout the day.</Text>
+            </View>
+          ) : inventory.length === 0 && featured ? (
+            <View style={styles.emptyIntelligence} testID="inv-empty-featured-only">
+              <View style={styles.emptyIcon}><Zap size={20} color={colors.warning} /></View>
+              <Text style={styles.emptyTitle}>One active listing — featured above</Text>
+              <Text style={styles.emptyBody}>This is the only auction matching the marketplace filter right now. Tap the featured card to bid, or open the full Auctions tab for upcoming listings.</Text>
+              <TouchableOpacity onPress={() => router.push('/(tabs)/auctions')} style={styles.emptyCta}>
+                <Text style={styles.emptyCtaText}>OPEN AUCTIONS TAB →</Text>
+              </TouchableOpacity>
+            </View>
           ) : inventory.length === 0 ? (
-            <View style={styles.skelCard}><Text style={styles.skelText}>No matches for "{activeFilter}". Try another filter.</Text></View>
+            <View style={styles.emptyIntelligence} testID="inv-empty-filter">
+              <View style={styles.emptyIcon}><Filter size={20} color={colors.textChrome} /></View>
+              <Text style={styles.emptyTitle}>No matches for "{activeFilter}"</Text>
+              <Text style={styles.emptyBody}>Clear the filter to see all live inventory or try a different category.</Text>
+              <TouchableOpacity onPress={() => setActiveFilter('all')} style={styles.emptyCta} testID="inv-reset-filter">
+                <Text style={styles.emptyCtaText}>RESET FILTER →</Text>
+              </TouchableOpacity>
+            </View>
           ) : inventory.slice(0, 5).map((a) => (
             <AuctionCard
               key={a.id}
@@ -270,6 +277,103 @@ function PulseStat({ label, value, accent }: { label: string; value: any; accent
       <Text style={[styles.pulseStatVal, accent && { color: accent }]}>{value}</Text>
       <Text style={styles.pulseStatLabel}>{label}</Text>
     </View>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * FeaturedCard — premium dealer-facing live auction tile.
+ *
+ * UX upgrades over the prior implementation:
+ *   • Pressable wrapper instead of TouchableOpacity → press scale feedback.
+ *   • Compact countdown that reads time-left every second; switches to a
+ *     red pulse band + "ENDING NOW" copy when <60s remain.
+ *   • Reserve status pill (MET / NOT MET / NO RESERVE) so dealers know
+ *     instantly whether the floor has been crossed.
+ *   • CTA gains a visible chevron + the entire card is tap-target.
+ *   • Auction id is logged as testID for routing assertions.
+ * ------------------------------------------------------------------ */
+function FeaturedCard({ auction, onPress }: { auction: any; onPress: () => void }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  const endMs = auction.end_time ? new Date(auction.end_time).getTime() : 0;
+  const timeLeft = Math.max(0, Math.floor((endMs - now) / 1000));
+  const ending = timeLeft > 0 && timeLeft <= 60;
+  const reserveMet = auction.reserve_price && (auction.current_bid || 0) >= auction.reserve_price;
+  const noReserve = !auction.reserve_price;
+
+  const pulse = useMemo(() => new Animated.Value(0), []);
+  useEffect(() => {
+    if (!ending) return;
+    const loop = Animated.loop(Animated.sequence([
+      Animated.timing(pulse, { toValue: 1, duration: 700, useNativeDriver: false }),
+      Animated.timing(pulse, { toValue: 0, duration: 700, useNativeDriver: false }),
+    ]));
+    loop.start();
+    return () => loop.stop();
+  }, [ending]);
+  const glowOpacity = ending ? pulse.interpolate({ inputRange: [0, 1], outputRange: [0.25, 0.7] }) : 0;
+
+  return (
+    <Pressable
+      onPress={onPress}
+      testID={`featured-auction-${auction.id}`}
+      style={({ pressed }) => [styles.featCard, pressed && { transform: [{ scale: 0.985 }], opacity: 0.95 }]}
+    >
+      <Image source={{ uri: auction.car?.images?.[0] }} style={styles.featImage} />
+      <View style={styles.featGradTop} />
+      <View style={styles.featGradBottom} />
+      {/* Urgency edge glow — pulses red along the bottom border when ending<60s */}
+      {ending && (
+        <Animated.View pointerEvents="none" style={[styles.featUrgencyGlow, { opacity: glowOpacity }]} />
+      )}
+
+      <View style={styles.featTopRow}>
+        <View style={styles.liveBadge}>
+          <LivePulse size={6} />
+          <Text style={styles.liveBadgeText}>LIVE</Text>
+        </View>
+        <View style={[styles.featTimer, ending && styles.featTimerEnding]}>
+          <Text style={[styles.featTimerLabel, ending && { color: colors.red }]}>{ending ? 'ENDING NOW' : 'ENDS IN'}</Text>
+          <CountdownTimer endTime={auction.end_time} compact />
+        </View>
+      </View>
+
+      <View style={styles.featBottom}>
+        <View style={styles.featMetaRow}>
+          <View style={styles.featRegPlate}>
+            <Text style={styles.featRegText}>{auction.car?.registration_number}</Text>
+          </View>
+          <View style={[
+            styles.featReservePill,
+            reserveMet && styles.featReserveMet,
+            noReserve && styles.featReserveNone,
+          ]}>
+            <Text style={[
+              styles.featReserveText,
+              reserveMet && { color: colors.success },
+              noReserve && { color: colors.textChrome },
+            ]}>
+              {noReserve ? 'NO RESERVE' : reserveMet ? '✓ RESERVE MET' : 'BELOW RESERVE'}
+            </Text>
+          </View>
+        </View>
+        <Text style={styles.featTitle} numberOfLines={1}>{auction.car?.year} {auction.car?.make} {auction.car?.model}</Text>
+        <Text style={styles.featVariant} numberOfLines={1}>
+          {auction.car?.variant ? auction.car?.variant + ' · ' : ''}{(auction.car?.km_driven || 0).toLocaleString('en-IN')} km · {auction.car?.fuel_type}
+        </Text>
+        <View style={styles.featPriceRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.featPriceLabel}>CURRENT BID</Text>
+            <Text style={styles.featPrice}>{formatINR(auction.current_bid)}</Text>
+            <Text style={styles.featBids}>{auction.total_bids || 0} bids · {auction.interested_dealers || 0} watching</Text>
+          </View>
+          <View style={[styles.featCta, ending && { backgroundColor: colors.red }]}>
+            <Text style={styles.featCtaText}>BID NOW</Text>
+            <ChevronRight size={14} color="#fff" />
+          </View>
+        </View>
+      </View>
+    </Pressable>
   );
 }
 
@@ -342,6 +446,10 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border,
     marginBottom: 28,
   },
+  featUrgencyGlow: {
+    position: 'absolute', left: 0, right: 0, bottom: 0, height: 6,
+    backgroundColor: colors.red,
+  },
   featImage: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%' },
   featGradTop: { position: 'absolute', top: 0, left: 0, right: 0, height: 100, backgroundColor: 'rgba(11,11,13,0.55)' },
   featGradBottom: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 200, backgroundColor: 'rgba(11,11,13,0.85)' },
@@ -349,11 +457,21 @@ const styles = StyleSheet.create({
   liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.red, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999 },
   liveBadgeText: { color: '#fff', fontSize: 10, fontWeight: '900', letterSpacing: 1.6 },
   featTimer: { alignItems: 'flex-end', paddingHorizontal: 10, paddingVertical: 6, backgroundColor: 'rgba(11,11,13,0.65)', borderRadius: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  featTimerEnding: { borderColor: 'rgba(185,28,28,0.7)', backgroundColor: 'rgba(185,28,28,0.18)' },
   featTimerLabel: { color: colors.textMuted, fontSize: 9, fontWeight: '900', letterSpacing: 1.4, marginBottom: 3 },
 
   featBottom: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 18 },
-  featRegPlate: { alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 3, backgroundColor: 'rgba(255,255,255,0.95)', borderRadius: 5, marginBottom: 10 },
+  featMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
+  featRegPlate: { paddingHorizontal: 8, paddingVertical: 3, backgroundColor: 'rgba(255,255,255,0.95)', borderRadius: 5 },
   featRegText: { color: '#0B0B0D', fontSize: 10, fontWeight: '900', letterSpacing: 1.4 },
+  featReservePill: {
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 5,
+    borderWidth: 1, borderColor: 'rgba(245,158,11,0.55)',
+    backgroundColor: 'rgba(245,158,11,0.10)',
+  },
+  featReserveMet: { borderColor: 'rgba(16,185,129,0.55)', backgroundColor: 'rgba(16,185,129,0.10)' },
+  featReserveNone: { borderColor: colors.border, backgroundColor: 'rgba(0,0,0,0.45)' },
+  featReserveText: { color: colors.warning, fontSize: 9, fontWeight: '900', letterSpacing: 1.0 },
   featTitle: { color: colors.textPrimary, fontSize: 22, fontWeight: '800', letterSpacing: -0.5 },
   featVariant: { color: colors.textChrome, fontSize: 12, marginTop: 4, fontWeight: '500' },
   featPriceRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', marginTop: 16 },
@@ -366,6 +484,27 @@ const styles = StyleSheet.create({
     shadowColor: colors.red, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.5, shadowRadius: 12, elevation: 8,
   },
   featCtaText: { color: '#fff', fontSize: 12, fontWeight: '900', letterSpacing: 1.2 },
+
+  /* Empty-state intelligence — three variants:
+     • no marketplace data at all     → skel-quiet
+     • only featured exists           → featured-only callout
+     • filter empties results         → reset-filter card */
+  emptyIntelligence: {
+    backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: 1,
+    borderRadius: radii.lg, padding: 22, alignItems: 'center', marginBottom: 16,
+    borderStyle: 'dashed',
+  },
+  emptyIcon: {
+    width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, marginBottom: 12,
+  },
+  emptyTitle: { color: colors.textPrimary, fontSize: 14, fontWeight: '800', letterSpacing: -0.2, textAlign: 'center' },
+  emptyBody: { color: colors.textChrome, fontSize: 12, fontWeight: '500', textAlign: 'center', marginTop: 6, marginBottom: 14, lineHeight: 17 },
+  emptyCta: {
+    paddingHorizontal: 14, paddingVertical: 9, borderRadius: 999,
+    backgroundColor: 'rgba(185,28,28,0.10)', borderWidth: 1, borderColor: 'rgba(185,28,28,0.45)',
+  },
+  emptyCtaText: { color: colors.red, fontSize: 11, fontWeight: '900', letterSpacing: 1.0 },
 
   filtersWrap: { marginBottom: 16 },
   filterPill: {

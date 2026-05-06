@@ -3022,3 +3022,27 @@ agent_communication:
       Operator login path validated (+918977986662 / OTP 123456 →
       dashboard renders in <2s, anomaly feed loads with active counts).
       No backend changes. No regressions introduced.
+
+
+# ───────────────────────────────────────────────────────────────────────
+# DATA HYGIENE / PRODUCTION ISOLATION / BID-NOW ROUTING (CRITICAL CLEANUP)
+# ───────────────────────────────────────────────────────────────────────
+agent_communication:
+    -agent: "main"
+    -date: "2026-05-06"
+    -summary: |
+      Critical operational-trust cleanup. Bid Now CTA fixed, legacy data
+      leak quarantined, dealer dashboard now derives all counts from a
+      single filtered dataset, production data isolation in place.
+
+      VERIFICATION:
+        • GET /api/market/pulse  → live=1, ₹8.36L (was: live=16, ₹3.97 Cr)
+        • GET /api/auctions      → 1 record (was: 2; cancelled was leaking)
+        • Operator dashboard     → CommandBar LIVE 1, OPEN GMV ₹8.36L ✅
+        • Dealer home            → "Browse 1 live · 0 upcoming" ✅
+        • Featured card          → BELOW RESERVE pill + Pressable + urgency
+                                    pulse + chevron + full-card tap ✅
+        • /auction/{id}          → loads with WS, bid feed, countdown,
+                                    reserve, watchlist, bid-place CTA ✅
+
+      Files: backend/server.py + frontend/app/(tabs)/index.tsx

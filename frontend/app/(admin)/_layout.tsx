@@ -38,13 +38,13 @@ export default function AdminLayout() {
           backgroundColor: colors.bgElevated,
           borderTopColor: 'rgba(185,28,28,0.25)',
           borderTopWidth: 1,
-          height: Platform.OS === 'ios' ? 90 : 72,
-          paddingTop: 8,
-          paddingBottom: Platform.OS === 'ios' ? 28 : 12,
+          height: Platform.OS === 'ios' ? 82 : 64,
+          paddingTop: 6,
+          paddingBottom: Platform.OS === 'ios' ? 26 : 8,
         },
         tabBarActiveTintColor: colors.red,
         tabBarInactiveTintColor: colors.textMuted,
-        tabBarLabelStyle: { fontSize: 9.5, fontWeight: '900', letterSpacing: 0.6, textTransform: 'uppercase' },
+        tabBarLabelStyle: { fontSize: 9, fontWeight: '900', letterSpacing: 0.6, textTransform: 'uppercase' },
       }}
     >
       <Tabs.Screen name="index" options={{ title: 'Ops', tabBarIcon: ({ color, size }) => <LayoutDashboard size={size - 2} color={color} strokeWidth={2.2} /> }} />
@@ -60,6 +60,11 @@ export default function AdminLayout() {
       <Tabs.Screen name="settlement" options={{ title: 'Settle', tabBarIcon: ({ color, size }) => <Truck size={size - 2} color={color} strokeWidth={2.2} /> }} />
       <Tabs.Screen name="security" options={{ title: 'Audit', tabBarIcon: ({ color, size }) => <ShieldAlert size={size - 2} color={color} strokeWidth={2.2} /> }} />
       <Tabs.Screen name="profile" options={{ title: 'Admin', tabBarIcon: ({ color, size }) => <ScrollText size={size - 2} color={color} strokeWidth={2.2} /> }} />
+      {/* Dynamic detail routes — hidden from the tabbar; reachable via deep
+          navigation from list screens. Without href:null they leak in as
+          ghost tabs on web (Expo Router file-based discovery quirk). */}
+      <Tabs.Screen name="auction/[id]" options={{ href: null }} />
+      <Tabs.Screen name="dealer/[id]" options={{ href: null }} />
       {/* Broadcast is now reached via Ops dashboard quick-action; route remains. */}
       <Tabs.Screen name="broadcast" options={{ href: null }} />
     </Tabs>

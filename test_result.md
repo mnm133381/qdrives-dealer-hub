@@ -2960,3 +2960,65 @@ agent_communication:
       "Velocity Auto Hub" matches the live "Velocity Wheels" string (or
       vice versa).
 
+
+
+# ───────────────────────────────────────────────────────────────────────
+# OPERATOR COGNITION & UI DENSITY REFACTOR — FRONTEND
+# ───────────────────────────────────────────────────────────────────────
+agent_communication:
+    -agent: "main"
+    -date: "2026-05-06"
+    -summary: |
+      Cohesive P0 UX/UI refactor of the Operator Live Ops dashboard to
+      eliminate the consumer-marketplace feel and convert the surface into
+      an institutional Bloomberg-style command console. Changes:
+
+      1. AdminHeader now drives a 3-line dense ribbon (≈30% shorter than
+         the previous shell). Sub-line dynamically reflects live count +
+         anomaly count + tick rhythm.
+
+      2. NEW AttentionRail (/(admin)/index.tsx, inline component):
+         single-row intervention strip surfacing disputes, ending<60s,
+         paused, pend-payment, and approval-queue counts. Hides at zero,
+         pulses red when active. Tap routes to the highest-priority
+         triage surface.
+
+      3. NEW CommandBar (replaces 4 KPI tiles + GMV strip):
+         one row of 7 mono-numeric cells (LIVE / PAUSED / PEND $ / DSPT /
+         REL'D / OPEN GMV / BIDS). Vertical waste reduced from ~140px to
+         ~52px. DSPT cell flips into a tinted hot state when count>0.
+
+      4. AuctionRow rewritten with urgency rank (dispute → ending<60s →
+         <5m → paused → pend$ → high-velocity live → others). 3px left
+         edge tint encodes urgency pre-attentively. Internal stack
+         compressed from 4 stacked rows to 3 dense rows. Pulse animation
+         on the row when ending<60s (cinematic burn-down preserved).
+         Velocity, watcher count, extension count fused into a single
+         telemetry row instead of three meta lines.
+
+      5. RiskTile grid (6 decorative tiles) → DEALER ANOMALY FEED: dense
+         tap-to-triage list. Only categories with active signals render.
+         Empty state confirms desk health ("No risk anomalies detected")
+         instead of rendering 6 zero-tiles that look broken.
+
+      6. Settlement Pipeline tightened (gap 4→3, font 17→14, padding
+         9→7) so it occupies one ergonomic glance.
+
+      7. Tab bar: iOS height 90→82, Android 72→64, label fontSize 9.5→9.
+         Hidden ghost dynamic routes (auction/[id], dealer/[id]) that
+         were leaking into the tabbar.
+
+      8. Terminology sweep — "AI estimate" / "AI wholesale estimate"
+         replaced with "Wholesale Valuation Engine" / "Valuation" across
+         /(tabs)/sell.tsx (per Reputation Engine spec — no black-box AI
+         language).
+
+      Files touched:
+        - /app/frontend/app/(admin)/index.tsx       (major rewrite)
+        - /app/frontend/app/(admin)/_layout.tsx     (tabbar density)
+        - /app/frontend/app/(tabs)/sell.tsx         (terminology)
+
+      Status: rendered + visually verified at 390×844 (mobile portrait).
+      Operator login path validated (+918977986662 / OTP 123456 →
+      dashboard renders in <2s, anomaly feed loads with active counts).
+      No backend changes. No regressions introduced.

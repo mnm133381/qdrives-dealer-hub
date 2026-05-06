@@ -216,7 +216,7 @@ export default function Sell() {
     toast.show('Draft cleared', 'success');
   };
 
-  // ---- AI estimate ----
+  // ---- Wholesale Valuation Engine (deterministic price band) ----
   const canEstimate = !!form.make && !!form.model && !!form.registration_year && !!form.km_driven;
   const estimate = async () => {
     if (!canEstimate) {
@@ -238,9 +238,9 @@ export default function Sell() {
       const start = Math.max(50000, Math.round(((res as any).market_low_inr || 1000000) * 0.95 / 1000) * 1000);
       const reserve = Math.round(((res as any).estimated_price_inr || 1200000) / 1000) * 1000;
       setForm((p) => ({ ...p, starting_bid: start, reserve_price: reserve }));
-      toast.show('AI estimate ready', 'success');
+      toast.show('Valuation ready', 'success');
     } catch (e: any) {
-      toast.show(e.message || 'AI estimate failed', 'error');
+      toast.show(e.message || 'Valuation failed', 'error');
     } finally {
       setEstimating(false);
     }
@@ -636,16 +636,16 @@ export default function Sell() {
           </Field>
         </View>
 
-        {/* AI estimate */}
+        {/* Wholesale Valuation Engine — deterministic price band */}
         <View style={styles.sectionGroup}>
           <View style={styles.sectionHead}>
-            <Text style={styles.sectionTitle}>AI wholesale estimate</Text>
-            <Text style={styles.sectionSub}>Based on the details above</Text>
+            <Text style={styles.sectionTitle}>Wholesale Valuation Engine</Text>
+            <Text style={styles.sectionSub}>Deterministic price band from above details</Text>
           </View>
           <View style={styles.aiCard}>
             <View style={styles.aiHead}>
               <Sparkles size={18} color={colors.red} />
-              <Text style={styles.aiTitle}>Instant pricing analysis</Text>
+              <Text style={styles.aiTitle}>Instant valuation</Text>
             </View>
             {aiEst ? (
               <>
@@ -655,12 +655,12 @@ export default function Sell() {
                 </Text>
                 <Text style={styles.aiReason}>{aiEst.reasoning}</Text>
                 <TouchableOpacity onPress={estimate} disabled={estimating} style={[styles.aiBtn, { marginTop: 12 }]}>
-                  {estimating ? <ActivityIndicator color={colors.red} /> : <Text style={styles.aiBtnText}>Re-run estimate</Text>}
+                  {estimating ? <ActivityIndicator color={colors.red} /> : <Text style={styles.aiBtnText}>Re-run valuation</Text>}
                 </TouchableOpacity>
               </>
             ) : (
               <TouchableOpacity onPress={estimate} disabled={estimating || !canEstimate} style={[styles.aiBtn, !canEstimate && { opacity: 0.5 }]} testID="sell-ai-estimate-btn">
-                {estimating ? <ActivityIndicator color={colors.red} /> : <Text style={styles.aiBtnText}>Get instant AI estimate</Text>}
+                {estimating ? <ActivityIndicator color={colors.red} /> : <Text style={styles.aiBtnText}>Run wholesale valuation</Text>}
               </TouchableOpacity>
             )}
           </View>

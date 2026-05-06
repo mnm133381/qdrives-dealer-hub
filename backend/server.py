@@ -5,6 +5,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 import os
+import re
 import jwt
 import uuid
 import json
@@ -910,11 +911,12 @@ async def admin_dealers(
     elif status_filter == "suspended":
         query["suspended"] = True
     if q:
+        safe = re.escape(q)
         query["$or"] = [
-            {"phone": {"$regex": q, "$options": "i"}},
-            {"dealership_name": {"$regex": q, "$options": "i"}},
-            {"full_name": {"$regex": q, "$options": "i"}},
-            {"city": {"$regex": q, "$options": "i"}},
+            {"phone": {"$regex": safe, "$options": "i"}},
+            {"dealership_name": {"$regex": safe, "$options": "i"}},
+            {"full_name": {"$regex": safe, "$options": "i"}},
+            {"city": {"$regex": safe, "$options": "i"}},
         ]
     items = await db.dealers.find(query, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
     # Enrich with quick metrics
@@ -1030,11 +1032,12 @@ async def list_approved_dealers(
         else:
             query["status"] = status_filter
     if q:
+        safe = re.escape(q)
         query["$or"] = [
-            {"phone": {"$regex": q, "$options": "i"}},
-            {"seed_full_name": {"$regex": q, "$options": "i"}},
-            {"seed_dealership_name": {"$regex": q, "$options": "i"}},
-            {"seed_city": {"$regex": q, "$options": "i"}},
+            {"phone": {"$regex": safe, "$options": "i"}},
+            {"seed_full_name": {"$regex": safe, "$options": "i"}},
+            {"seed_dealership_name": {"$regex": safe, "$options": "i"}},
+            {"seed_city": {"$regex": safe, "$options": "i"}},
         ]
     rows = await db.approved_dealers.find(query, {"_id": 0}).sort("added_at", -1).limit(500).to_list(500)
     out = []
@@ -1294,10 +1297,11 @@ async def admin_audit_logs(
     if since_hours:
         query["ts"] = {"$gte": now_utc() - timedelta(hours=int(since_hours))}
     if q:
+        safe = re.escape(q)
         query["$or"] = [
-            {"meta.phone": {"$regex": q, "$options": "i"}},
-            {"actor_id": {"$regex": q, "$options": "i"}},
-            {"target_id": {"$regex": q, "$options": "i"}},
+            {"meta.phone": {"$regex": safe, "$options": "i"}},
+            {"actor_id": {"$regex": safe, "$options": "i"}},
+            {"target_id": {"$regex": safe, "$options": "i"}},
         ]
     limit = max(1, min(int(limit), 500))
     rows = await db.audit_logs.find(query, {"_id": 0}).sort("ts", -1).limit(limit).to_list(limit)

@@ -5,10 +5,11 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Search, Sparkles, Camera, ImageIcon, Clock, ArrowRight } from 'lucide-react-native';
+import { Search, Sparkles, Clock, ArrowRight, ShieldCheck, ChevronRight, FileCheck2, Camera as CameraIcon } from 'lucide-react-native';
 import { colors, radii, formatINRFull, formatINR } from '../../src/theme';
 import { api } from '../../src/api';
 import { useToast } from '../../src/toast';
+import { useInspection, inspectionStats } from '../../src/inspection';
 
 const STOCK_GALLERY = [
   'https://images.unsplash.com/photo-1768965468641-39e87aa78a9d?w=1400&q=85',
@@ -24,6 +25,8 @@ export default function Sell() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const toast = useToast();
+  const { draft } = useInspection();
+  const inspStats = inspectionStats(draft);
   const [reg, setReg] = useState('');
   const [autofilled, setAutofilled] = useState(false);
   const [estimating, setEstimating] = useState(false);
@@ -74,6 +77,11 @@ export default function Sell() {
 
   const launch = async () => {
     if (!form.make || !form.model || !reg) return toast.show('Lookup registration first', 'error');
+    if (inspStats.status !== 'completed') {
+      toast.show('Complete the inspection report before launching', 'error');
+      router.push('/sell/inspection');
+      return;
+    }
     setCreating(true);
     try {
       const res: any = await api.createCar({
@@ -134,18 +142,18 @@ export default function Sell() {
           )}
         </View>
 
-        {/* Step 2: Photos */}
+        {/* Step 2: Photos placeholder (managed inside inspection report) */}
         <View style={styles.section}>
           <Text style={styles.label}>Photos & inspection</Text>
           <View style={styles.uploadGrid}>
             {[0, 1, 2, 3].map((i) => (
               <View key={i} style={styles.uploadCell}>
-                {i === 0 ? <Camera size={20} color={colors.textChrome} /> : <ImageIcon size={20} color={colors.textMuted} />}
+                <CameraIcon size={18} color={colors.textChrome} />
                 <Text style={styles.uploadLabel}>{i === 0 ? 'Front' : i === 1 ? 'Back' : i === 2 ? 'Side' : 'Interior'}</Text>
               </View>
             ))}
           </View>
-          <Text style={styles.helper}>Stock gallery will be used in dev mode</Text>
+          <Text style={styles.helper}>Photos are captured inside the inspection report</Text>
         </View>
 
         {/* Step 3: AI estimate */}
@@ -212,9 +220,12 @@ export default function Sell() {
         )}
 
         {autofilled && (
-          <TouchableOpacity onPress={launch} disabled={creating} style={styles.launch} testID="sell-launch-btn">
-            <Text style={styles.launchText}>{creating ? 'Launching...' : 'Launch Auction'}</Text>
-            <ArrowRight size={18} color="#fff" />
+          <TouchableOpacity onPress={launch} disabled={creating} style={[styles.launch, inspStats.status !== 'completed' && styles.launchLocked]} testID="sell-launch-btn">
+            {inspStats.status !== 'completed' && <FileCheck2 size={16} color="#fff" />}
+            <Text style={styles.launchText}>
+              {creating ? 'Launching...' : inspStats.status !== 'completed' ? `Inspection ${inspStats.percent}% — Launch locked` : 'Launch Auction'}
+            </Text>
+            {inspStats.status === 'completed' && !creating && <ArrowRight size={18} color="#fff" />}
           </TouchableOpacity>
         )}
       </ScrollView>
@@ -300,5 +311,29 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     shadowColor: colors.red, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 8,
   },
+  launchLocked: { backgroundColor: '#3F2828', shadowOpacity: 0 },
   launchText: { color: '#fff', fontSize: 16, fontWeight: '800' },
+
+  inspCard: {
+    marginHorizontal: 20, marginBottom: 22,
+    padding: 18,
+    backgroundColor: 'rgba(185,28,28,0.06)',
+    borderColor: colors.red, borderWidth: 1.5,
+    borderRadius: radii.lg,
+    shadowColor: colors.red, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.25, shadowRadius: 16, elevation: 6,
+  },
+  inspCardProgress: { backgroundColor: 'rgba(245,158,11,0.06)', borderColor: 'rgba(245,158,11,0.6)', shadowColor: colors.warning },
+  inspCardDone: { backgroundColor: 'rgba(16,185,129,0.06)', borderColor: 'rgba(16,185,129,0.55)', shadowColor: colors.success },
+  inspTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  inspBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999, backgroundColor: 'rgba(185,28,28,0.16)', borderWidth: 1, borderColor: 'rgba(185,28,28,0.4)' },
+  inspBadgeProgress: { backgroundColor: 'rgba(245,158,11,0.16)', borderColor: 'rgba(245,158,11,0.5)' },
+  inspBadgeDone: { backgroundColor: 'rgba(16,185,129,0.16)', borderColor: 'rgba(16,185,129,0.5)' },
+  inspBadgeText: { fontSize: 9, fontWeight: '900', letterSpacing: 1.4 },
+  inspPercent: { color: colors.textPrimary, fontSize: 22, fontWeight: '900', letterSpacing: -0.6 },
+  inspTitle: { color: colors.textPrimary, fontSize: 18, fontWeight: '800', letterSpacing: -0.3 },
+  inspSub: { color: colors.textChrome, fontSize: 12, marginTop: 4, fontWeight: '500', lineHeight: 17 },
+  inspProgressTrack: { height: 6, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 3, overflow: 'hidden', marginTop: 14 },
+  inspProgressFill: { height: '100%', backgroundColor: colors.red, borderRadius: 3 },
+  inspCtaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 },
+  inspCtaText: { color: colors.textPrimary, fontSize: 13, fontWeight: '800', letterSpacing: 0.4 },
 });

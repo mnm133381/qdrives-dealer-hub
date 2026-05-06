@@ -1,0 +1,67 @@
+{
+  "summary": "Frontend-only review of the inspection report flow on Q Drives. Login + KYC + navigation verified. Inspection screen at /sell/inspection works (header, kicker, 6 sections, auto-expand, complete buttons, toast, progress bar, % pill, finish-btn gated). State persists across full reload (verified percent after re-navigation). HOWEVER the primary feature ask — the high-visibility inspection CTA card on the Sell tab above the fold — is COMPLETELY MISSING from sell.tsx. Styles inspCard / inspCardProgress / inspCardDone / inspBadge / inspPercent etc. are defined in StyleSheet but no JSX renders them. data-testid='sell-inspection-cta' does not exist anywhere in the rendered DOM. Without this CTA the entire feature requirement (status badge, progress %, '0 of 6', red→amber→green color states, tap to navigate) is non-functional from the seller's primary entry point.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "app/(tabs)/sell.tsx",
+        "issue": "Inspection CTA card is not rendered above the registration lookup. Styles (inspCard, inspCardProgress, inspCardDone, inspTopRow, inspBadge*, inspPercent, inspTitle, inspSub, inspProgressTrack, inspProgressFill, inspCtaRow, inspCtaText) are defined in StyleSheet.create but no <TouchableOpacity testID='sell-inspection-cta'> JSX exists. inspStats is computed but never read in the render (except inside the Launch button text).",
+        "testID": "sell-inspection-cta (MISSING)",
+        "priority": "CRITICAL"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Sell tab → Inspection navigation",
+        "issue": "User has no entry point from Sell tab to /sell/inspection because the CTA card is not rendered. Only way to reach inspection screen is by typing the URL or via the gated Launch button (which redirects on tap, not a discoverable CTA).",
+        "affected_testIDs": ["sell-inspection-cta"]
+      },
+      {
+        "flow": "Sell tab post-completion state",
+        "issue": "Cannot verify 'green border / 100% pill / COMPLETED status' on Sell tab because the card itself is missing. inspStats (percent, status, completed/total) is wired via useInspection() and inspectionStats(draft) but only consumed by the Launch button label.",
+        "affected_testIDs": ["sell-inspection-cta", "sell-launch-btn"]
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "Sell tab",
+        "issues": [
+          "No prominent above-the-fold trust-builder. First section is the bare 'REGISTRATION NUMBER' input which buries the inspection essential.",
+          "PHOTOS & INSPECTION block at the top is a static 4-cell grid with helper text 'Photos are captured inside the inspection report' — no tap target, no progress, no testID. This conflicts with the request to make inspection a primary CTA."
+        ]
+      }
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_3.json"
+  ],
+  "action_items": [
+    "PRIMARY: In /app/frontend/app/(tabs)/sell.tsx render an inspection CTA <TouchableOpacity testID='sell-inspection-cta' onPress={() => router.push('/sell/inspection')}> immediately AFTER the header View and BEFORE the registration-lookup section.",
+    "Use the already-defined styles: styles.inspCard + (inspStats.status === 'in_progress' && styles.inspCardProgress) + (inspStats.status === 'completed' && styles.inspCardDone).",
+    "Inside the card: top row with status badge (NOT STARTED red / IN PROGRESS amber / COMPLETED green) on the left and the percent pill ({inspStats.percent}%) on the right; title 'Complete inspection report'; sub line with trust messaging (e.g. 'Verified reports earn up to 18% higher bids · {inspStats.completed} of {inspStats.total} sections'); a progress track using inspProgressTrack/inspProgressFill with width {`${inspStats.percent}%`}; bottom CTA row with 'Open inspection' + ChevronRight icon.",
+    "Make sure the badge text uses styles.inspBadgeText with the matching variant style (inspBadge / inspBadgeProgress / inspBadgeDone) and a colored dot or icon (ShieldCheck / FileCheck2 / Camera already imported).",
+    "Optional: replace the static 'Photos & inspection' 4-cell placeholder OR keep it but de-emphasise so the new CTA remains the primary trust block.",
+    "Verify after fix that tapping the card navigates to /sell/inspection (already working) and that returning after completing all 6 sections shows the green-state card with 100% pill."
+  ],
+  "critical_code_review_comments": [
+    "sell.tsx (lines 317-339) defines a full visual language for the inspection card but the JSX implementation was never added — likely incomplete merge or partial commit.",
+    "useInspection() draft is loaded via storage on mount but there is no loading guard in Sell.tsx; while loading is briefly true, draft is EMPTY so the (future) card would flash 'Not started 0%' for users who already completed it. Consider rendering a subtle skeleton when useInspection().loading is true.",
+    "InspectionForm.finish() only navigates back when isDone is true; if the user reaches 100% mid-session and taps the sticky CTA we go back to Sell tab, OK. But there is no UI affordance to leave the screen otherwise except inspection-back arrow — acceptable.",
+    "Documents/Photos sections do NOT auto-mark themselves complete when all checkboxes are ticked or 4 photos are filled. User must explicitly tap 'Mark Documents complete'. This is a correct minimal design but consider auto-completing for a faster flow.",
+    "sell.tsx imports ShieldCheck and ChevronRight from lucide-react-native but never uses them — dead imports that will be needed by the missing CTA. Keep them when implementing."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "n/a",
+    "frontend": "60%"
+  },
+  "seed_data_creation": "None. Used phone 9876543210 + OTP 123456 (auto-creates dealer + KYC stepped form completed with name 'Test Dealer', dealership 'Test Motors', city 'Mumbai').",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "After main agent adds the sell-inspection-cta to sell.tsx, retest: (1) login with new phone, complete KYC stepped form (3 steps, kyc-next-button each step), (2) on Sell tab the card MUST appear at top with red border + 'NOT STARTED' badge + 0% pill + '0 of 6' text, (3) tap card → /sell/inspection, (4) complete sections one by one — auto-expand of next section already works, finish-btn gated until 100%, (5) tap insp-finish-btn at 100% → router.back() returns to Sell tab; the card should now show green border + COMPLETED + 100%, (6) launch flow: enter reg, lookup (auto-fills Hyundai Tucson), AI estimate, then sell-launch-btn — when inspection is 100% it reads 'Launch Auction' otherwise 'Inspection X% — Launch locked' and tapping shows the toast and routes to /sell/inspection. The launch-btn gating logic is already wired in sell.tsx::launch().",
+  "rca_of_issue": "Root cause: incomplete implementation in /app/frontend/app/(tabs)/sell.tsx. The supporting code is in place — InspectionProvider wraps the app in _layout.tsx, useInspection + inspectionStats are imported and even called in Sell(), and the StyleSheet contains a full 'inspCard*' palette. The JSX block that wires data → styles → testID was never written. Reproduction: open https://qdrives-dealer-hub.preview.emergentagent.com, login (any phone + OTP 123456), complete KYC, tap Sell tab — the screen jumps directly from 'Launch an auction' header to 'REGISTRATION NUMBER' input. document.querySelectorAll('[data-testid=\"sell-inspection-cta\"]').length === 0. Mitigation: add the missing JSX as described in action_items; no other code changes required for the requested feature."
+}

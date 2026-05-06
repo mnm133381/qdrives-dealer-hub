@@ -13,8 +13,9 @@ const OTP_LEN = 6;
 
 export default function VerifyOtp() {
   const router = useRouter();
-  const { phone } = useLocalSearchParams<{ phone: string }>();
+  const { phone, role: requestedRole } = useLocalSearchParams<{ phone: string; role?: string }>();
   const { signIn } = useAuth();
+  const wantedAdmin = requestedRole === 'admin';
 
   const [digits, setDigits] = useState<string[]>(Array(OTP_LEN).fill(''));
   const [resendIn, setResendIn] = useState(30);
@@ -58,6 +59,16 @@ export default function VerifyOtp() {
       const data: any = await api.verifyOtp(String(phone), code);
       try { await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {}
       await signIn(data.token, data.dealer);
+      // If the user picked the admin entry but the phone isn't on the admin
+      // allow-list, surface that explicitly so they understand why they land
+      // in the dealer marketplace instead of the operator console.
+      if (wantedAdmin && data.dealer.role !== 'admin') {
+        Alert.alert(
+          'Operator access not granted',
+          'This number is not on the Q Drives operator allow-list. You will be signed in as a dealer.',
+          [{ text: 'OK' }],
+        );
+      }
       if (data.is_new || !data.dealer.kyc_completed) {
         router.replace('/(auth)/kyc');
       } else if (data.dealer.role === 'admin') {

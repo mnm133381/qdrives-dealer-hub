@@ -1,17 +1,24 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View, Text, TextInput, StyleSheet, TouchableOpacity, ImageBackground,
   KeyboardAvoidingView, Platform, ScrollView, Alert,
 } from 'react-native';
-import { useRouter } from 'expo-router';
-import { ChevronRight, ShieldCheck, Zap, TrendingUp } from 'lucide-react-native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { ChevronRight, ShieldCheck, Zap, TrendingUp, ArrowLeft, Lock } from 'lucide-react-native';
 import { colors, radii, spacing } from '../../src/theme';
 import { api } from '../../src/api';
 
 export default function Login() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ role?: string }>();
+  const isAdmin = params.role === 'admin';
   const [phone, setPhone] = useState('');
   const [loading, setLoading] = useState(false);
+
+  const heroSrc = useMemo(() => isAdmin
+    ? 'https://images.unsplash.com/photo-1551434678-e076c223a692?w=1400&q=85'  // ops dashboards
+    : 'https://images.unsplash.com/photo-1761229170508-f4791c297af8?w=1400&q=85',
+  [isAdmin]);
 
   const onSend = async () => {
     const cleaned = phone.replace(/\s/g, '');
@@ -23,7 +30,7 @@ export default function Login() {
     setLoading(true);
     try {
       await api.sendOtp(e164);
-      router.push({ pathname: '/(auth)/verify', params: { phone: e164 } });
+      router.push({ pathname: '/(auth)/verify', params: { phone: e164, role: isAdmin ? 'admin' : 'dealer' } });
     } catch (e: any) {
       Alert.alert('Failed to send OTP', e.message || 'Try again.');
     } finally {
@@ -34,29 +41,49 @@ export default function Login() {
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
       <ImageBackground
-        source={{ uri: 'https://images.unsplash.com/photo-1761229170508-f4791c297af8?w=1400&q=85' }}
+        source={{ uri: heroSrc }}
         style={styles.hero}
-        imageStyle={{ opacity: 0.65 }}
+        imageStyle={{ opacity: isAdmin ? 0.30 : 0.65 }}
       >
-        <View style={styles.heroOverlay} />
+        <View style={[styles.heroOverlay, isAdmin && styles.heroOverlayAdmin]} />
         <View style={styles.heroVignette} />
+
+        {/* Back to portal */}
+        <TouchableOpacity onPress={() => router.replace('/(auth)' as any)} style={styles.backChip}>
+          <ArrowLeft size={14} color="#fff" />
+          <Text style={styles.backChipText}>Choose access</Text>
+        </TouchableOpacity>
+
         <View style={styles.heroContent}>
           <View style={styles.brandRow}>
             <View style={styles.shieldMini}><Text style={styles.qMini}>Q</Text></View>
             <Text style={styles.brand}>Q DRIVES</Text>
-            <View style={styles.brandPill}>
-              <Text style={styles.brandPillText}>DEALER NETWORK</Text>
+            <View style={[styles.brandPill, isAdmin && styles.brandPillAdmin]}>
+              {isAdmin && <Lock size={9} color={colors.warning} />}
+              <Text style={[styles.brandPillText, isAdmin && styles.brandPillTextAdmin]}>
+                {isAdmin ? 'ADMIN OPS' : 'DEALER NETWORK'}
+              </Text>
             </View>
           </View>
-          <Text style={styles.heroTitle}>The trading floor{'\n'}for serious dealers.</Text>
-          <Text style={styles.heroSub}>Live auctions · Verified inventory · 48-hr settlement</Text>
+          <Text style={styles.heroTitle}>
+            {isAdmin ? 'Operator access\nto the auction floor.' : 'The trading floor\nfor serious dealers.'}
+          </Text>
+          <Text style={styles.heroSub}>
+            {isAdmin
+              ? 'Inventory · Auction control · Approvals · Reports'
+              : 'Live auctions · Verified inventory · 48-hr settlement'}
+          </Text>
         </View>
       </ImageBackground>
 
       <ScrollView style={styles.sheet} contentContainerStyle={styles.sheetContent} keyboardShouldPersistTaps="handled">
         <View style={styles.sheetHandle} />
-        <Text style={styles.title}>Sign in</Text>
-        <Text style={styles.subtitle}>Enter your registered dealer mobile number</Text>
+        <Text style={styles.title}>{isAdmin ? 'Operator sign-in' : 'Sign in'}</Text>
+        <Text style={styles.subtitle}>
+          {isAdmin
+            ? 'Restricted to authorised Q Drives operators. Your number is checked against our admin allow-list.'
+            : 'Enter your registered dealer mobile number'}
+        </Text>
 
         <View style={styles.inputWrap}>
           <Text style={styles.cc}>+91</Text>
@@ -111,6 +138,15 @@ const styles = StyleSheet.create({
   hero: { height: 360, justifyContent: 'flex-end' },
   heroOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(11,11,13,0.45)' },
   heroVignette: { ...StyleSheet.absoluteFillObject, backgroundColor: 'transparent', shadowColor: '#000', shadowOpacity: 0.9 },
+  heroOverlayAdmin: { backgroundColor: 'rgba(8,8,10,0.85)' },
+  backChip: {
+    position: 'absolute', top: Platform.OS === 'ios' ? 56 : 22, left: 16,
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.10)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)',
+    zIndex: 10,
+  },
+  backChipText: { color: '#fff', fontSize: 11, fontWeight: '800', letterSpacing: 0.4 },
   heroContent: { padding: 24, paddingBottom: 40 },
   brandRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 60 },
   shieldMini: {
@@ -120,8 +156,10 @@ const styles = StyleSheet.create({
   },
   qMini: { color: '#fff', fontSize: 18, fontWeight: '900' },
   brand: { color: colors.textPrimary, fontSize: 14, fontWeight: '900', letterSpacing: 4 },
-  brandPill: { paddingHorizontal: 8, paddingVertical: 3, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' },
+  brandPill: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 3, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' },
   brandPillText: { color: colors.textChrome, fontSize: 9, fontWeight: '800', letterSpacing: 1.4 },
+  brandPillAdmin: { backgroundColor: 'rgba(245,158,11,0.10)', borderColor: 'rgba(245,158,11,0.5)' },
+  brandPillTextAdmin: { color: colors.warning },
   heroTitle: { color: colors.textPrimary, fontSize: 34, fontWeight: '800', letterSpacing: -1, lineHeight: 40 },
   heroSub: { color: colors.textChrome, fontSize: 13, marginTop: 12, lineHeight: 18, letterSpacing: 0.3, fontWeight: '500' },
 

@@ -24,9 +24,9 @@ export default function Splash() {
   useEffect(() => {
     if (loading) return;
     const t = setTimeout(() => {
-      if (!dealer) router.replace('/(auth)/login');
+      if (!dealer) router.replace('/(auth)' as any);
       else if (!dealer.kyc_completed) router.replace('/(auth)/kyc');
-      else if (dealer.role === 'admin') router.replace('/(admin)');
+      else if (dealer.role === 'admin') router.replace('/(admin)' as any);
       else router.replace('/(tabs)');
     }, 1900);
     return () => clearTimeout(t);

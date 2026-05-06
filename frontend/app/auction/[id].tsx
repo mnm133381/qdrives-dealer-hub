@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, Dimensions, Alert,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, Dimensions,
+  ActivityIndicator,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -15,6 +16,7 @@ import { api, wsUrl } from '../../src/api';
 import { useAuth } from '../../src/auth';
 import { CountdownTimer } from '../../src/components/CountdownTimer';
 import { LivePulse } from '../../src/components/LivePulse';
+import { useToast } from '../../src/toast';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 const HERO_H = 360;
@@ -24,6 +26,7 @@ export default function AuctionScreen() {
   const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
   const { dealer } = useAuth();
+  const toast = useToast();
 
   const [auction, setAuction] = useState<any>(null);
   const [bids, setBids] = useState<any[]>([]);
@@ -45,9 +48,9 @@ export default function AuctionScreen() {
       const w: any[] = await api.watchlist().catch(() => []);
       setWatching(!!w.find((x) => x.id === a.id));
     } catch (e: any) {
-      Alert.alert('Failed to load auction', e.message);
+      toast.show(e.message || 'Failed to load auction', 'error');
     }
-  }, [id]);
+  }, [id, toast]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -98,17 +101,23 @@ export default function AuctionScreen() {
     try {
       try { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy); } catch {}
       await api.bid(id as string, amount);
+      toast.show(`Bid placed at ${formatINR(amount)}`, 'success');
     } catch (e: any) {
       try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error); } catch {}
-      Alert.alert('Bid failed', e.message);
+      toast.show(e.message || 'Bid failed', 'error');
     }
   };
 
   const toggleWatch = async () => {
     setWatching((w) => !w);
     try {
-      if (watching) await api.removeWatch(id as string);
-      else await api.addWatch(id as string);
+      if (watching) {
+        await api.removeWatch(id as string);
+        toast.show('Removed from watchlist', 'info');
+      } else {
+        await api.addWatch(id as string);
+        toast.show('Added to watchlist', 'success');
+      }
     } catch {
       setWatching((w) => !w);
     }
@@ -120,7 +129,8 @@ export default function AuctionScreen() {
   if (!auction) {
     return (
       <View style={[styles.root, { paddingTop: insets.top, alignItems: 'center', justifyContent: 'center' }]}>
-        <Text style={{ color: colors.textChrome }}>Loading auction...</Text>
+        <ActivityIndicator color={colors.red} />
+        <Text style={{ color: colors.textMuted, marginTop: 14, fontSize: 12, fontWeight: '700', letterSpacing: 1.5 }}>LOADING AUCTION</Text>
       </View>
     );
   }

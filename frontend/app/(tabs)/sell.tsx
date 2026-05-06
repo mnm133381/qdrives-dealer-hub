@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput,
-  KeyboardAvoidingView, Platform, Alert, ActivityIndicator,
+  KeyboardAvoidingView, Platform, ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Search, Sparkles, Camera, ImageIcon, Clock, ArrowRight } from 'lucide-react-native';
 import { colors, radii, formatINRFull, formatINR } from '../../src/theme';
 import { api } from '../../src/api';
+import { useToast } from '../../src/toast';
 
 const STOCK_GALLERY = [
   'https://images.unsplash.com/photo-1768965468641-39e87aa78a9d?w=1400&q=85',
@@ -22,6 +23,7 @@ const TRANS = ['Manual', 'Automatic'];
 export default function Sell() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const toast = useToast();
   const [reg, setReg] = useState('');
   const [autofilled, setAutofilled] = useState(false);
   const [estimating, setEstimating] = useState(false);
@@ -38,8 +40,7 @@ export default function Sell() {
   const u = (k: string, v: any) => setForm((p) => ({ ...p, [k]: v }));
 
   const lookup = () => {
-    if (!reg.trim()) return Alert.alert('Enter registration', 'Type a registration number first.');
-    // mock auto-fill
+    if (!reg.trim()) return toast.show('Type a registration number first', 'error');
     setForm({
       ...form,
       make: 'Hyundai', model: 'Tucson', variant: 'Signature', year: 2022,
@@ -48,10 +49,11 @@ export default function Sell() {
       starting_bid: 2100000, reserve_price: 2350000,
     });
     setAutofilled(true);
+    toast.show('RC details auto-filled', 'success');
   };
 
   const estimate = async () => {
-    if (!form.make || !form.model) return Alert.alert('Need details', 'Lookup the reg or fill make & model first.');
+    if (!form.make || !form.model) return toast.show('Lookup the reg first', 'error');
     setEstimating(true);
     try {
       const res = await api.priceEstimate({
@@ -60,18 +62,18 @@ export default function Sell() {
         owners: form.owners, condition_score: 8.5,
       });
       setAiEst(res);
-      // pre-fill reserve to AI mid
       u('starting_bid', Math.max(50000, Math.round(((res as any).market_low_inr || 1000000) * 0.95 / 1000) * 1000));
       u('reserve_price', Math.round(((res as any).estimated_price_inr || 1200000) / 1000) * 1000);
+      toast.show('AI estimate ready', 'success');
     } catch (e: any) {
-      Alert.alert('AI estimate failed', e.message);
+      toast.show(e.message || 'AI estimate failed', 'error');
     } finally {
       setEstimating(false);
     }
   };
 
   const launch = async () => {
-    if (!form.make || !form.model || !reg) return Alert.alert('Missing', 'Lookup registration & complete details');
+    if (!form.make || !form.model || !reg) return toast.show('Lookup registration first', 'error');
     setCreating(true);
     try {
       const res: any = await api.createCar({
@@ -80,11 +82,14 @@ export default function Sell() {
         images: STOCK_GALLERY,
         description: `${form.year} ${form.make} ${form.model} listed for wholesale auction.`,
       });
-      Alert.alert('Auction Live', `Your auction is now live. Reserve: ${formatINR(form.reserve_price)}`, [
-        { text: 'Open auction', onPress: () => router.push(`/auction/${res.auction.id}`) },
-      ]);
+      toast.show('Auction launched successfully', 'success');
+      router.push(`/auction/${res.auction.id}`);
+      // reset form for next listing
+      setReg('');
+      setAutofilled(false);
+      setAiEst(null);
     } catch (e: any) {
-      Alert.alert('Failed to launch', e.message);
+      toast.show(e.message || 'Failed to launch', 'error');
     } finally {
       setCreating(false);
     }

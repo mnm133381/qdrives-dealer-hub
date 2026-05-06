@@ -1,17 +1,20 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BadgeCheck, ShieldCheck, TrendingUp, Award, LogOut, Settings, ChevronRight, Star } from 'lucide-react-native';
+import { BadgeCheck, ShieldCheck, TrendingUp, Award, LogOut, Settings, ChevronRight, Star, Bell } from 'lucide-react-native';
 import { colors, radii, formatINR } from '../../src/theme';
 import { useAuth } from '../../src/auth';
 import { api } from '../../src/api';
+import { useToast } from '../../src/toast';
 
 export default function Profile() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { dealer, signOut } = useAuth();
+  const toast = useToast();
   const [stats, setStats] = useState<any>(null);
+  const [confirmingSignOut, setConfirmingSignOut] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -21,11 +24,15 @@ export default function Profile() {
   }, []);
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const doSignOut = () => {
-    Alert.alert('Sign out', 'Are you sure?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Sign out', style: 'destructive', onPress: async () => { await signOut(); router.replace('/(auth)/login'); } },
-    ]);
+  const doSignOut = async () => {
+    if (!confirmingSignOut) {
+      setConfirmingSignOut(true);
+      toast.show('Tap sign out again to confirm', 'info');
+      setTimeout(() => setConfirmingSignOut(false), 3000);
+      return;
+    }
+    await signOut();
+    router.replace('/(auth)/login');
   };
 
   if (!dealer) return null;
@@ -71,15 +78,21 @@ export default function Profile() {
           <Row label="PAN" value={(dealer as any).pan_number || 'Not provided'} />
         </View>
 
-        <TouchableOpacity style={styles.menuItem}>
-          <Settings size={18} color={colors.textChrome} />
-          <Text style={styles.menuText}>Notification preferences</Text>
+        <TouchableOpacity onPress={() => router.push('/notifications')} style={styles.menuItem} testID="profile-notifications">
+          <Bell size={18} color={colors.textChrome} />
+          <Text style={styles.menuText}>Notifications & alerts</Text>
           <ChevronRight size={16} color={colors.textMuted} />
         </TouchableOpacity>
 
-        <TouchableOpacity onPress={doSignOut} style={[styles.menuItem, { marginTop: 8 }]} testID="profile-signout">
+        <TouchableOpacity onPress={() => router.push('/(tabs)/watchlist')} style={[styles.menuItem, { marginTop: 8 }]} testID="profile-watchlist">
+          <Settings size={18} color={colors.textChrome} />
+          <Text style={styles.menuText}>My watchlist</Text>
+          <ChevronRight size={16} color={colors.textMuted} />
+        </TouchableOpacity>
+
+        <TouchableOpacity onPress={doSignOut} style={[styles.menuItem, { marginTop: 8 }, confirmingSignOut && styles.menuItemDanger]} testID="profile-signout">
           <LogOut size={18} color={colors.red} />
-          <Text style={[styles.menuText, { color: colors.red }]}>Sign out</Text>
+          <Text style={[styles.menuText, { color: colors.red }]}>{confirmingSignOut ? 'Tap again to confirm' : 'Sign out'}</Text>
           <View style={{ width: 16 }} />
         </TouchableOpacity>
 
@@ -152,6 +165,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: 1,
     borderRadius: radii.md, paddingVertical: 14, paddingHorizontal: 16,
   },
+  menuItemDanger: { borderColor: 'rgba(185,28,28,0.5)', backgroundColor: 'rgba(185,28,28,0.06)' },
   menuText: { flex: 1, color: colors.textPrimary, fontSize: 14, fontWeight: '600' },
 
   footer: { color: colors.textMuted, fontSize: 11, textAlign: 'center', marginTop: 32, letterSpacing: 2 },

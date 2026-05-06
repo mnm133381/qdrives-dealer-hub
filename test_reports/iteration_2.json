@@ -1,0 +1,61 @@
+{
+  "summary": "Q Drives mobile navigation E2E tested end-to-end on the public Expo web preview. Found & fixed a CRITICAL ReferenceError on Home screen (`loaded is not defined`) that was crashing the entire app immediately after KYC. After fix, all 20 requested navigation flows work: splash auto-redirect → login → OTP verify → 3-step KYC → home/tabs; bottom tabs (Home/Auctions/Sell/Watchlist/Profile) switch correctly with tab bar persisted; Home bell → /notifications; Featured auction card → /auction/[id]; auction back & bid buttons functional; Home search bar → Auctions tab; Auctions tab switcher (Live/Upcoming/Ended) works; Sell flow: reg lookup → AI estimate → launch auction → navigates to /auction/[new id]; Profile menu items (Notifications, Watchlist, Sign-out 2-tap) all navigate correctly; sign-out returns user to /login (auth guard verified).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "app/(tabs)/index.tsx",
+        "issue": "FIXED BY TESTER — Home screen referenced undeclared `loaded` variable at line 218 (`{!loaded ? (...) : ...}`), causing ReferenceError red-screen crash as soon as a dealer reached Home. The entire tab navigation was blocked by this. Added `loaded` state (useState(false)) and set it to true at end of `load()` callback.",
+        "testID": "home-dealer-name",
+        "priority": "CRITICAL"
+      },
+      {
+        "component": "app/(tabs)/index.tsx header",
+        "issue": "`home-dealer-name` renders dealership_name preferentially over full_name (e.g. 'Test Motors' instead of 'Test Dealer'). Works as coded but the test request wording implies dealer name display — confirm this is the intended product choice.",
+        "testID": "home-dealer-name",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "global",
+        "issues": [
+          "Multiple 'shadow* style props are deprecated, use boxShadow' console warnings across components (AuctionCard featCta, etc.). Non-blocking but will fail React Native 0.80+ upgrade. Cosmetic for web.",
+          "`props.pointerEvents is deprecated. Use style.pointerEvents` warning in ActivityTicker / LivePulse area."
+        ]
+      }
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_2.json",
+    "/app/test_reports/iteration_1.json (backend, still passing)"
+  ],
+  "action_items": [
+    "Review the one-line state-init fix the tester applied to app/(tabs)/index.tsx (added `const [loaded, setLoaded] = useState(false)` and `setLoaded(true)` at end of `load()`). E1 may want a nicer 'skeleton while loading' UX than the current text-only skelCard.",
+    "Replace deprecated `shadow*` style props with `boxShadow` (esp. featCta, AuctionCard) to silence warnings and future-proof for RN 0.80+.",
+    "Verify intended behaviour of `home-dealer-name` greeting — currently shows dealership_name first, falling back to full_name. If product expectation was 'Hi, <dealer first name>', swap the precedence."
+  ],
+  "critical_code_review_comments": [
+    "app/(tabs)/index.tsx was shipped with a ReferenceError to an undeclared `loaded` identifier — suggests the file was edited without running TypeScript check or a local web preview. Recommend adding `tsc --noEmit` or `expo lint` to CI before deploy.",
+    "KYC final step uses the same testID `kyc-next-button` for 'Continue' (steps 1-2) and 'Finish & enter Q Drives' (step 3). For clearer semantics and more robust testing consider `kyc-finish-button` on step 3.",
+    "useProtectedRoute hook exists in /app/frontend/src/useProtectedRoute.ts but is not imported anywhere (grep showed no callers) — auth guarding is actually performed inside `(tabs)/_layout.tsx` via `<Redirect>`. Either delete the hook or wire it into the root `_layout.tsx` to avoid dead code.",
+    "Sell flow successfully created two real listings in the DB during one test run (launch creates an auction per click). No cleanup / rate-limit on the public endpoint."
+  ],
+  "updated_files": [
+    "/app/frontend/app/(tabs)/index.tsx (added `loaded` state + setLoaded(true) in load())"
+  ],
+  "success_rate": {
+    "backend": "not re-tested this iteration (unchanged since iteration_1 — 100%)",
+    "frontend": "100% of requested navigation flows verified (20/20)"
+  },
+  "seed_data_creation": "Created transient TEST dealer with phone +919876500033 (full_name='Test Dealer', dealership_name='Test Motors', city='Mumbai'). Sell flow created 1 TEST car listing + auction (id 1de7148b-b4fc-43cd-986b-f8fcbfad8bfd). 1 bid placed on featured auction id 72ef61b4-5b05-4adc-9ffe-2d0ba8763370. Safe to leave or wipe qdrives_db between iterations.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "All navigation flows covered by a single Playwright run using data-testid selectors exactly as documented by E1 in the review_request. Re-run steps: open public URL at mobile viewport 390x844, fill login-phone-input with any 10-digit number, click login-send-otp-button, fill otp-digit-0..5 with '123456', fill kyc-full-name, click kyc-next-button, fill kyc-dealership+kyc-city, click kyc-next-button, click kyc-next-button (finish), then exercise home-notifications-btn, featured-auction, home-search, auctions-tab-{live,upcoming,ended}, bottom tabs via get_by_role('tab', name=...), sell-reg-input → sell-lookup-btn → sell-ai-estimate-btn (waits ~8s) → sell-launch-btn, profile-notifications, profile-watchlist, profile-signout (double tap). Auth guard verified implicitly: after signout, redirect to /login is enforced.",
+  "rca_of_issue": "ROOT CAUSE of the Home red-screen: `app/(tabs)/index.tsx` was rewritten to declare `<AuctionCard /> mapping gated by !loaded ? <Skel /> : inventory.length === 0 ? <Empty /> : inventory.slice(0,5).map(...)` — but the `loaded` state variable was never declared. First render of Home therefore threw ReferenceError: loaded is not defined, which the Expo DevScreenErrorOverlay caught but the page was non-interactive. REPRODUCTION (pre-fix): login with any new phone → OTP 123456 → KYC 3 steps → redirect to /(tabs)/ → red overlay 'loaded is not defined'. MITIGATION: added `const [loaded, setLoaded] = useState(false);` in Home component and `setLoaded(true);` at the end of the `load()` useCallback so the guard flips true after first successful fetch."
+}

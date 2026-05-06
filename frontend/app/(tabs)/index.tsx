@@ -33,6 +33,7 @@ export default function Home() {
   const [activity, setActivity] = useState<any[]>([]);
   const [auctions, setAuctions] = useState<any[]>([]);
   const [activeFilter, setActiveFilter] = useState('all');
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -49,6 +50,7 @@ export default function Home() {
       const upcoming = (all as any[]).filter((a) => a.status === 'upcoming');
       setAuctions([...(live as any[]), ...upcoming]);
     } catch {}
+    setLoaded(true);
   }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
@@ -57,7 +59,22 @@ export default function Home() {
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
   const featured = auctions.find((a) => a.status === 'live');
-  const inventory = auctions.filter((a) => a !== featured);
+
+  const matchFilter = (a: any): boolean => {
+    if (activeFilter === 'all') return true;
+    const car = a.car || {};
+    const fuel = (car.fuel_type || '').toLowerCase();
+    const model = `${car.make} ${car.model}`.toLowerCase();
+    const price = a.current_bid || a.starting_bid || 0;
+    if (activeFilter === 'diesel') return fuel === 'diesel';
+    if (activeFilter === 'petrol') return fuel === 'petrol';
+    if (activeFilter === 'suv') return /(xuv|fortuner|harrier|compass|tucson|xc60|glc|q5|carnival)/.test(model);
+    if (activeFilter === 'sedan') return /(city|superb|5 series|camry|civic)/.test(model);
+    if (activeFilter === 'budget') return price < 1500000;
+    if (activeFilter === 'luxury') return price >= 3000000;
+    return true;
+  };
+  const inventory = auctions.filter((a) => a !== featured).filter(matchFilter);
 
   const greeting = (() => {
     const h = new Date().getHours();
@@ -93,10 +110,10 @@ export default function Home() {
         <ActivityTicker items={activity} />
 
         {/* Search bar */}
-        <TouchableOpacity style={styles.search} activeOpacity={0.8}>
+        <TouchableOpacity onPress={() => router.push('/(tabs)/auctions')} style={styles.search} activeOpacity={0.8} testID="home-search">
           <Search size={15} color={colors.textMuted} />
-          <Text style={styles.searchPlaceholder}>Search by registration, make or model</Text>
-          <View style={styles.searchKbd}><Text style={styles.searchKbdText}>⌘K</Text></View>
+          <Text style={styles.searchPlaceholder}>Browse {pulse?.live ?? 0} live · {pulse?.upcoming ?? 0} upcoming</Text>
+          <View style={styles.searchKbd}><Text style={styles.searchKbdText}>BROWSE</Text></View>
         </TouchableOpacity>
 
         {/* Market pulse strip */}
@@ -200,7 +217,11 @@ export default function Home() {
               <Text style={styles.seeAll}>See all →</Text>
             </TouchableOpacity>
           </View>
-          {inventory.slice(0, 5).map((a) => (
+          {!loaded ? (
+            <View style={styles.skelCard}><Text style={styles.skelText}>Loading inventory…</Text></View>
+          ) : inventory.length === 0 ? (
+            <View style={styles.skelCard}><Text style={styles.skelText}>No matches for "{activeFilter}". Try another filter.</Text></View>
+          ) : inventory.slice(0, 5).map((a) => (
             <AuctionCard
               key={a.id}
               auction={a}
@@ -346,4 +367,6 @@ const styles = StyleSheet.create({
   trustItem: { flex: 1, alignItems: 'center', gap: 6 },
   trustItemText: { color: colors.textChrome, fontSize: 10, fontWeight: '700', textAlign: 'center', letterSpacing: 0.4, lineHeight: 14 },
   trustDivider: { width: StyleSheet.hairlineWidth, height: 32, backgroundColor: colors.border },
+  skelCard: { backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: 1, borderRadius: radii.md, padding: 32, alignItems: 'center', marginBottom: 16 },
+  skelText: { color: colors.textMuted, fontSize: 13, fontWeight: '600' },
 });

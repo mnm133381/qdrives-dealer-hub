@@ -1,10 +1,25 @@
 import React from 'react';
-import { Tabs } from 'expo-router';
+import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
+import { Tabs, Redirect } from 'expo-router';
 import { Home, Gavel, PlusCircle, Heart, User } from 'lucide-react-native';
-import { Platform, View, StyleSheet } from 'react-native';
+import { Platform } from 'react-native';
 import { colors } from '../../src/theme';
+import { useAuth } from '../../src/auth';
 
 export default function TabsLayout() {
+  const { dealer, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <View style={styles.loader}>
+        <ActivityIndicator color={colors.red} />
+        <Text style={styles.loadingText}>Loading…</Text>
+      </View>
+    );
+  }
+  if (!dealer) return <Redirect href="/(auth)/login" />;
+  if (!dealer.kyc_completed) return <Redirect href="/(auth)/kyc" />;
+
   return (
     <Tabs
       screenOptions={{
@@ -40,7 +55,7 @@ export default function TabsLayout() {
         name="sell"
         options={{
           title: 'Sell',
-          tabBarIcon: ({ color }) => (
+          tabBarIcon: () => (
             <View style={styles.sellWrap}>
               <PlusCircle size={32} color={colors.red} fill={colors.red} strokeWidth={2} />
               <View style={styles.plusInner} />
@@ -68,9 +83,8 @@ export default function TabsLayout() {
 }
 
 const styles = StyleSheet.create({
+  loader: { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center', gap: 14 },
+  loadingText: { color: colors.textMuted, fontSize: 12, letterSpacing: 1.5, fontWeight: '700' },
   sellWrap: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
-  plusInner: {
-    position: 'absolute',
-    width: 14, height: 2, backgroundColor: '#fff', borderRadius: 1,
-  },
+  plusInner: { position: 'absolute', width: 14, height: 2, backgroundColor: '#fff', borderRadius: 1 },
 });

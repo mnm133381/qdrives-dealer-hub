@@ -16,18 +16,14 @@ type Status = 'pending' | 'suspended' | 'revoked' | 'approved' | string | null |
 export function PendingApprovalCard({ status, compact = false }: { status: Status; compact?: boolean }) {
   if (!status || status === 'approved') return null;
 
-  const map: Record<string, { icon: any; tint: string; kicker: string; title: string; body: string; steps?: string[] }> = {
+  const map: Record<string, { icon: any; tint: string; kicker: string; title: string; body: string; footer?: string }> = {
     pending: {
       icon: Clock3,
       tint: colors.warning,
       kicker: 'PENDING APPROVAL',
-      title: 'Your account is under review',
-      body: 'Welcome to Q Drives. While we verify your dealership, you can browse auctions, view live bidding, and watch vehicles. Bidding activates the moment our team approves your account.',
-      steps: [
-        'Complete your KYC profile in Settings',
-        'Q Drives reviews your dealership credentials',
-        'Approval unlocks bidding & purchases',
-      ],
+      title: 'Pending Approval',
+      body: 'Your dealership account is currently under review.\n\nYou can browse live auctions and monitor bidding activity while approval is pending.\n\nBidding and purchases activate immediately after approval.',
+      footer: 'Approval typically completed within business hours',
     },
     suspended: {
       icon: ShieldAlert,
@@ -58,16 +54,10 @@ export function PendingApprovalCard({ status, compact = false }: { status: Statu
       </View>
       <Text style={styles.title}>{entry.title}</Text>
       {!compact && <Text style={styles.body}>{entry.body}</Text>}
-      {!compact && entry.steps && (
-        <View style={styles.steps}>
-          {entry.steps.map((s, i) => (
-            <View key={i} style={styles.stepRow}>
-              <View style={[styles.stepDot, { backgroundColor: entry.tint }]}>
-                <Text style={styles.stepDotText}>{i + 1}</Text>
-              </View>
-              <Text style={styles.stepText}>{s}</Text>
-            </View>
-          ))}
+      {!compact && entry.footer && (
+        <View style={[styles.footerPill, { borderColor: entry.tint + '40', backgroundColor: entry.tint + '12' }]}>
+          <Clock3 size={10} color={entry.tint} strokeWidth={2.4} />
+          <Text style={[styles.footerPillText, { color: entry.tint }]}>{entry.footer}</Text>
         </View>
       )}
       {compact && (
@@ -87,11 +77,8 @@ const styles = StyleSheet.create({
   kicker: { fontSize: 10.5, fontWeight: '900', letterSpacing: 1.4 },
   title: { color: colors.textPrimary, fontSize: 16, fontWeight: '900', marginBottom: 6, letterSpacing: -0.2 },
   body: { color: colors.textChrome, fontSize: 12.5, fontWeight: '600', lineHeight: 18 },
-  steps: { marginTop: 12, gap: 8 },
-  stepRow: { flexDirection: 'row', alignItems: 'center', gap: 9 },
-  stepDot: { width: 18, height: 18, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
-  stepDotText: { color: '#fff', fontSize: 9.5, fontWeight: '900' },
-  stepText: { color: colors.textPrimary, fontSize: 12.5, fontWeight: '700', flex: 1 },
+  footerPill: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginTop: 12, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, borderWidth: 1 },
+  footerPillText: { fontSize: 10.5, fontWeight: '900', letterSpacing: 0.5 },
   compactPill: { flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start', marginTop: 8, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 999, backgroundColor: colors.bgCard },
   compactPillText: { fontSize: 10.5, fontWeight: '900', letterSpacing: 0.8 },
 });

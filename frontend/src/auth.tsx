@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import { AppState } from 'react-native';
 import { storage } from './storage';
 import { api, TOKEN_KEY, REFRESH_TOKEN_KEY, setOnSessionKilled } from './api';
 import {
@@ -94,17 +95,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; setOnSessionKilled(null); };
   }, [refresh]);
 
-  // Periodic /auth/me re-poll. If the operator bumps a dealer's
-  // token_version (suspend / role change / max-bid update), the next /me
-  // returns 401 SESSION_INVALIDATED → the api layer fires onSessionKilled
-  // → setDealer(null) → all WS-using screens unmount and disconnect.
-  // This closes the Phase 2A WS-auth gap (#d): re-validate WS auth on
-  // tv-change. Polled every 30s while dealer is signed in.
+  // Foreground refresh — when the app comes back to active, immediately
+  // re-poll /me. Important so dealer status changes (approval) propagate
+  // the moment the user returns to the app, not after the next 15s tick.
   useEffect(() => {
     if (!dealer) return;
-    const t = setInterval(() => { refresh().catch(() => {}); }, 30000);
-    return () => clearInterval(t);
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') refresh().catch(() => {});
+    });
+    return () => sub.remove();
   }, [dealer?.id, refresh]);
+  //   • dealer approval (status pending → approved)  — capability EXPANSION,
+  //     no tv-bump server-side; this poll picks up the new status and
+  //     unlocks bid/purchase UI within the poll interval.
+  //   • dealer suspension/revoke — capability RESTRICTION, server bumps tv,
+  //     /me returns 401 SESSION_INVALIDATED → existing kill hook nukes
+  //     session and routes back to /(auth).
+  // Tighter cadence (15s) when the dealer is pending so approval feels
+  // near-instant; relaxed (45s) once approved so we don't hammer /me.
+  useEffect(() => {
+    if (!dealer) return;
+    const interval = dealer.status === 'pending' ? 15000 : 45000;
+    const t = setInterval(() => { refresh().catch(() => {}); }, interval);
+    return () => clearInterval(t);
+  }, [dealer?.id, dealer?.status, refresh]);
 
   // After we have a dealer, register for push (best-effort, non-blocking)
   useEffect(() => {

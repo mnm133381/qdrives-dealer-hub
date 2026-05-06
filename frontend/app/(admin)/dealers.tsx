@@ -12,12 +12,12 @@
  * full profile), open dealer detail, suspend / reinstate. Detailed
  * mutations live on /(admin)/dealer/[id].
  */
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator,
   RefreshControl, TextInput, Modal, KeyboardAvoidingView, Platform, Alert,
 } from 'react-native';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, useRouter, useLocalSearchParams } from 'expo-router';
 import {
   Search, BadgeCheck, Ban, ShieldCheck, Phone, MapPin, AlertTriangle,
   UserPlus, X, Building2, User, Star, Banknote, FileText, ChevronRight, Hash,
@@ -27,12 +27,18 @@ import { api } from '../../src/api';
 import { useToast } from '../../src/toast';
 import { AdminHeader } from '../../src/components/AdminHeader';
 
-type Tab = 'invitations' | 'onboarding' | 'active' | 'suspended' | 'revoked';
+type Tab = 'pending' | 'invitations' | 'onboarding' | 'active' | 'suspended' | 'revoked';
 
 export default function AdminDealers() {
   const toast = useToast();
   const router = useRouter();
-  const [tab, setTab] = useState<Tab>('active');
+  const params = useLocalSearchParams<{ status?: string }>();
+  const initialTab: Tab = (params.status === 'pending') ? 'pending' : 'active';
+  const [tab, setTab] = useState<Tab>(initialTab);
+  // Honour deep-link param updates (e.g. router.push with new ?status=).
+  useEffect(() => {
+    if (params.status === 'pending' && tab !== 'pending') setTab('pending');
+  }, [params.status]);
   const [q, setQ] = useState('');
   const [allowList, setAllowList] = useState<any[]>([]);
   const [dealers, setDealers] = useState<any[]>([]);
@@ -58,13 +64,17 @@ export default function AdminDealers() {
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
   // Build the per-tab segmented list
+  // Self-onboarded dealers awaiting operator approval — surfaced from
+  // dealers collection (status=='pending'), not from the legacy allow-list.
+  const pendingDealers = dealers.filter((d) => d.status === 'pending');
   const invitations = allowList.filter((a) => a.onboarding === 'never_logged_in' && a.status === 'active');
   const onboarding = allowList.filter((a) => a.onboarding === 'kyc_pending' && a.status === 'active');
-  const activeDealers = dealers.filter((d) => d.verified && !d.suspended);
-  const suspendedDealers = dealers.filter((d) => d.suspended);
+  const activeDealers = dealers.filter((d) => (d.status === 'approved') || (d.verified && !d.suspended && d.status !== 'pending'));
+  const suspendedDealers = dealers.filter((d) => d.status === 'suspended' || d.suspended);
   const revokedAllow = allowList.filter((a) => a.status === 'revoked');
 
   const counts = {
+    pending: pendingDealers.length,
     invitations: invitations.length,
     onboarding: onboarding.length,
     active: activeDealers.length,
@@ -117,6 +127,7 @@ export default function AdminDealers() {
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabsRow}>
+        <SegTab label="PENDING" count={counts.pending} active={tab === 'pending'} onPress={() => setTab('pending')} tint={colors.warning} pulse={counts.pending > 0} />
         <SegTab label="INVITATIONS" count={counts.invitations} active={tab === 'invitations'} onPress={() => setTab('invitations')} tint={colors.warning} />
         <SegTab label="ONBOARDING" count={counts.onboarding} active={tab === 'onboarding'} onPress={() => setTab('onboarding')} tint={colors.silver} />
         <SegTab label="ACTIVE" count={counts.active} active={tab === 'active'} onPress={() => setTab('active')} tint={colors.success} />
@@ -132,6 +143,7 @@ export default function AdminDealers() {
           <View style={styles.empty}><ActivityIndicator color={colors.red} /></View>
         ) : (
           <>
+            {tab === 'pending' && <DealerCards items={pendingDealers} kind="pending" onApprove={onApprove} onTap={(d) => router.push(`/(admin)/dealer/${d.id}` as any)} />}
             {tab === 'invitations' && <AllowListCards items={invitations} kind="invitations" onTap={(p) => router.push({ pathname: '/(admin)/dealers', params: {} })} />}
             {tab === 'onboarding' && <AllowListCards items={onboarding} kind="onboarding" />}
             {tab === 'active' && <DealerCards items={activeDealers} onSuspend={onSuspend} onApprove={onApprove} onTap={(d) => router.push(`/(admin)/dealer/${d.id}` as any)} />}
@@ -146,12 +158,12 @@ export default function AdminDealers() {
   );
 }
 
-function SegTab({ label, count, active, onPress, tint }: any) {
+function SegTab({ label, count, active, onPress, tint, pulse }: any) {
   return (
-    <TouchableOpacity onPress={onPress} style={[styles.segTab, active && { borderColor: tint, backgroundColor: tint + '10' }]}>
+    <TouchableOpacity onPress={onPress} style={[styles.segTab, active && { borderColor: tint, backgroundColor: tint + '10' }, pulse && !active && { borderColor: tint + '88' }]}>
       <Text style={[styles.segTabText, active && { color: tint }]}>{label}</Text>
-      <View style={[styles.segCount, active && { backgroundColor: tint }]}>
-        <Text style={[styles.segCountText, active && { color: '#fff' }]}>{count}</Text>
+      <View style={[styles.segCount, active && { backgroundColor: tint }, pulse && !active && { backgroundColor: tint }]}>
+        <Text style={[styles.segCountText, active && { color: '#fff' }, pulse && !active && { color: '#0c0c0c' }]}>{count}</Text>
       </View>
     </TouchableOpacity>
   );
@@ -201,10 +213,14 @@ function DealerCards({ items, onSuspend, onReinstate, onApprove, onTap }: any) {
             <View style={{ flex: 1 }}>
               <View style={styles.titleRow}>
                 <Text style={styles.dealershipText} numberOfLines={1}>{d.dealership_name || d.full_name || 'Unnamed'}</Text>
-                {d.suspended ? (
+                {d.status === 'suspended' || d.suspended ? (
                   <View style={[styles.statusPill, styles.statusSuspended]}><Ban size={9} color={colors.red} /><Text style={[styles.statusText, { color: colors.red }]}>SUSPENDED</Text></View>
-                ) : d.verified ? (
-                  <View style={[styles.statusPill, styles.statusOk]}><BadgeCheck size={9} color={colors.success} /><Text style={[styles.statusText, { color: colors.success }]}>ACTIVE</Text></View>
+                ) : d.status === 'revoked' ? (
+                  <View style={[styles.statusPill, styles.statusSuspended]}><Ban size={9} color={colors.red} /><Text style={[styles.statusText, { color: colors.red }]}>REVOKED</Text></View>
+                ) : d.status === 'pending' ? (
+                  <View style={[styles.statusPill, styles.statusPending]}><AlertTriangle size={9} color={colors.warning} /><Text style={[styles.statusText, { color: colors.warning }]}>PENDING</Text></View>
+                ) : d.status === 'approved' || d.verified ? (
+                  <View style={[styles.statusPill, styles.statusOk]}><BadgeCheck size={9} color={colors.success} /><Text style={[styles.statusText, { color: colors.success }]}>APPROVED</Text></View>
                 ) : (
                   <View style={[styles.statusPill, styles.statusPending]}><AlertTriangle size={9} color={colors.warning} /><Text style={[styles.statusText, { color: colors.warning }]}>UNVERIFIED</Text></View>
                 )}
@@ -221,19 +237,19 @@ function DealerCards({ items, onSuspend, onReinstate, onApprove, onTap }: any) {
             <Stat label="MAX BID" value={d.max_bid_limit ? formatINR(d.max_bid_limit) : '∞'} />
           </View>
           <View style={styles.actions}>
-            {!d.verified && !d.suspended && (
+            {(d.status === 'pending' || (!d.verified && !d.suspended && d.status !== 'revoked')) && (
               <TouchableOpacity onPress={() => onApprove(d.id)} style={[styles.actionBtn, styles.actionApprove]}>
                 <ShieldCheck size={12} color={colors.success} />
                 <Text style={[styles.actionText, { color: colors.success }]}>Approve</Text>
               </TouchableOpacity>
             )}
-            {!d.suspended && d.verified && (
+            {(!d.suspended && d.status !== 'suspended' && (d.verified || d.status === 'approved')) && (
               <TouchableOpacity onPress={() => onSuspend(d.id)} style={[styles.actionBtn, styles.actionDanger]}>
                 <Ban size={12} color={colors.red} />
                 <Text style={[styles.actionText, { color: colors.red }]}>Suspend</Text>
               </TouchableOpacity>
             )}
-            {d.suspended && (
+            {(d.suspended || d.status === 'suspended') && (
               <TouchableOpacity onPress={() => onReinstate(d.id)} style={[styles.actionBtn, styles.actionApprove]}>
                 <ShieldCheck size={12} color={colors.success} />
                 <Text style={[styles.actionText, { color: colors.success }]}>Reinstate</Text>

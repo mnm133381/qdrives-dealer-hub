@@ -541,6 +541,25 @@ async def dealer_verify_otp(req: VerifyOtpReq):
         asyncio.create_task(audit(db, "dealer_signup", dealer["id"], None, {
             "phone": phone, "auto_approved": auto_approve, "preset": bool(preset),
         }))
+        # Real-time operator visibility — push a `dealer_pending_created`
+        # event into the operator ops room so the approval queue badge
+        # increments instantly. broadcast_ops only delivers to operators
+        # so dealers never see this signal.
+        if not auto_approve:
+            try:
+                asyncio.create_task(manager.broadcast_ops({
+                    "type": "dealer_pending_created",
+                    "dealer": {
+                        "id": dealer["id"], "phone": phone,
+                        "full_name": dealer.get("full_name", ""),
+                        "dealership_name": dealer.get("dealership_name", ""),
+                        "city": dealer.get("city", ""),
+                        "kyc_completed": dealer.get("kyc_completed", False),
+                        "created_at": dealer["created_at"],
+                    },
+                }))
+            except Exception:
+                pass
     else:
         # Existing dealer login.
         # Operator role can only be assigned via the operator endpoint.
@@ -1275,10 +1294,13 @@ async def admin_approve_dealer(
     })
     asyncio.create_task(send_to_dealer(db, dealer_id, title, body, data={"type": "verification"}))
 
-    # Bump token_version so the dealer's existing JWT is invalidated and
-    # the next /auth/me re-poll picks up the new status (approved). The
-    # dealer's app will re-issue a fresh token via /auth/refresh next tick.
-    asyncio.create_task(bump_token_version(dealer_id, reason="dealer_approved", actor_id=admin["id"]))
+    # NOTE: We intentionally DO NOT bump token_version here. Approval is a
+    # capability EXPANSION, not a security event — the dealer's existing
+    # JWT remains valid and their app's periodic /auth/me poll picks up
+    # the new `status='approved'` within ~15s, unlocking bid/purchase UI
+    # without forcing a re-login. Compare with suspend/revoke (in /verify)
+    # where tv IS bumped — those are restrictions that must drop the
+    # session instantly.
 
     return serialize(updated)
 
@@ -1731,7 +1753,10 @@ async def admin_live_grid(admin = Depends(get_current_admin)):
             "extension_count": a.get("extension_count", 0),
             "paused_reason": a.get("paused_reason"),
         })
-    return {"items": items, "ts": iso(now)}
+    # Operational KPIs surfaced inline so the Live Ops dashboard can
+    # render a `pending_approvals` badge without a second round-trip.
+    pending_dealers = await db.dealers.count_documents({"role": "dealer", "status": "pending"})
+    return {"items": items, "ts": iso(now), "pending_dealers": pending_dealers}
 
 
 @api.get("/admin/auctions/{auction_id}/control-panel")

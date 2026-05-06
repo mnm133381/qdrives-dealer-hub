@@ -19,7 +19,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import {
   Gavel, Clock, Pause, Play, FastForward, ShieldX, Flame, Users,
   AlertOctagon, ChevronRight, Banknote, ArrowRight, BadgeAlert,
-  Activity, TrendingUp, Inbox, CheckCircle2, Truck, FileWarning,
+  Activity, TrendingUp, Inbox, CheckCircle2, Truck, FileWarning, UserPlus,
 } from 'lucide-react-native';
 import { colors, radii, formatINR } from '../../src/theme';
 import { api } from '../../src/api';
@@ -32,6 +32,7 @@ export default function AdminOpsDashboard() {
   const toast = useToast();
   const [grid, setGrid] = useState<any[]>([]);
   const [risk, setRisk] = useState<any | null>(null);
+  const [pendingDealers, setPendingDealers] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -53,6 +54,7 @@ export default function AdminOpsDashboard() {
     try {
       const [g, r] = await Promise.all([api.adminLiveGrid(), api.adminRiskDealers()]);
       setGrid(g.items || []);
+      setPendingDealers(g.pending_dealers || 0);
       setRisk(r);
     } catch (e: any) {
       toast.show(e.message || 'Failed to load ops', 'error');
@@ -143,6 +145,30 @@ export default function AdminOpsDashboard() {
             <Text style={styles.gmvVal}>{liveBids}</Text>
           </View>
         </View>
+
+        {/* PENDING APPROVALS — operator approval queue badge */}
+        {pendingDealers > 0 && (
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => router.push('/(admin)/dealers?status=pending' as any)}
+            style={styles.pendingTile}
+            testID="kpi-pending-approvals"
+          >
+            <View style={styles.pendingIcon}>
+              <UserPlus size={16} color={colors.warning} strokeWidth={2.4} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.pendingKicker}>PENDING APPROVALS · NEW</Text>
+              <Text style={styles.pendingTitle}>
+                {pendingDealers} dealer{pendingDealers === 1 ? '' : 's'} awaiting review
+              </Text>
+            </View>
+            <View style={styles.pendingCount}>
+              <Text style={styles.pendingCountText}>{pendingDealers}</Text>
+            </View>
+            <ChevronRight size={16} color={colors.warning} />
+          </TouchableOpacity>
+        )}
 
         {/* LIVE AUCTIONS GRID */}
         <View style={styles.sectionHead}>
@@ -381,6 +407,13 @@ const styles = StyleSheet.create({
   sectionCount: { color: colors.red, fontSize: 11, fontWeight: '900', marginLeft: 'auto', fontVariant: ['tabular-nums'] },
   linkBtn: { marginLeft: 'auto', paddingHorizontal: 9, paddingVertical: 4, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(185,28,28,0.45)', backgroundColor: 'rgba(185,28,28,0.06)' },
   linkBtnText: { color: colors.red, fontSize: 9.5, fontWeight: '900', letterSpacing: 1 },
+
+  pendingTile: { flexDirection: 'row', alignItems: 'center', gap: 11, padding: 12, borderRadius: radii.lg, backgroundColor: 'rgba(245,158,11,0.06)', borderWidth: 1, borderColor: 'rgba(245,158,11,0.45)', marginBottom: 14 },
+  pendingIcon: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(245,158,11,0.10)', borderWidth: 1, borderColor: 'rgba(245,158,11,0.40)' },
+  pendingKicker: { color: colors.warning, fontSize: 9.5, fontWeight: '900', letterSpacing: 1.4 },
+  pendingTitle: { color: colors.textPrimary, fontSize: 13, fontWeight: '800', marginTop: 3 },
+  pendingCount: { paddingHorizontal: 9, paddingVertical: 4, borderRadius: 999, backgroundColor: colors.warning, marginRight: 4 },
+  pendingCountText: { color: '#0c0c0c', fontSize: 11, fontWeight: '900', fontVariant: ['tabular-nums'] },
 
   loader: { paddingVertical: 30, alignItems: 'center' },
   empty: { color: colors.textMuted, fontSize: 12, fontWeight: '600', textAlign: 'center', paddingVertical: 30 },

@@ -1,0 +1,158 @@
+{
+  "theme": "dark",
+  "archetype": "5 (Jewel & Luxury)",
+  "brand_name": "Q Drives",
+  "description": "Premium wholesale used car auction platform for dealers in India. A fusion of luxury automotive brand, high-end fintech app, and real-time trading platform.",
+  "typography": {
+    "heading_font": "Outfit, sans-serif",
+    "body_font": "Manrope, sans-serif",
+    "mono_font": "JetBrains Mono, monospace",
+    "scales": {
+      "h1": "text-4xl sm:text-5xl font-bold tracking-tight",
+      "h2": "text-2xl sm:text-3xl font-bold tracking-tight",
+      "h3": "text-xl sm:text-2xl font-semibold",
+      "h4": "text-lg font-semibold",
+      "body": "text-base leading-relaxed",
+      "small": "text-sm leading-snug",
+      "tiny": "text-xs font-medium tracking-wider uppercase",
+      "timer": "text-3xl font-mono tracking-tighter"
+    }
+  },
+  "colors": {
+    "background": {
+      "main": "#0B0B0D",
+      "card": "#16181D",
+      "elevated": "#1A1C23",
+      "overlay": "rgba(11, 11, 13, 0.85)"
+    },
+    "text": {
+      "primary": "#F8FAFC",
+      "secondary": "#94A3B8",
+      "muted": "#64748B",
+      "chrome": "#E2E8F0",
+      "inverse": "#0B0B0D"
+    },
+    "accent": {
+      "primary": "#B91C1C",
+      "primary_hover": "#991B1B",
+      "pulse": "rgba(185, 28, 28, 0.3)",
+      "silver": "#CBD5E1"
+    },
+    "border": {
+      "default": "#2A2D35",
+      "focus": "#475569",
+      "active": "#B91C1C"
+    },
+    "status": {
+      "success": "#10B981",
+      "success_bg": "rgba(16, 185, 129, 0.1)",
+      "warning": "#F59E0B",
+      "warning_bg": "rgba(245, 158, 11, 0.1)",
+      "danger": "#EF4444",
+      "info": "#3B82F6"
+    }
+  },
+  "spacing": {
+    "screen_px": "px-4 sm:px-6",
+    "section_py": "py-8 sm:py-12",
+    "card_p": "p-5",
+    "gap_sm": "gap-2",
+    "gap_md": "gap-4",
+    "gap_lg": "gap-6"
+  },
+  "radii": {
+    "button": "rounded-xl",
+    "card": "rounded-2xl",
+    "input": "rounded-xl",
+    "badge": "rounded-full",
+    "image": "rounded-2xl"
+  },
+  "shadows": {
+    "subtle": "shadow-[0_4px_20px_rgba(0,0,0,0.4)]",
+    "glow": "shadow-[0_0_15px_rgba(185,28,28,0.3)]"
+  },
+  "components": {
+    "card": "bg-[#16181D] border border-[#2A2D35] rounded-2xl p-5 shadow-[0_4px_20px_rgba(0,0,0,0.4)] overflow-hidden",
+    "button_primary": "w-full bg-[#B91C1C] text-white rounded-xl py-4 font-semibold text-lg flex items-center justify-center gap-2 active:scale-[0.98] transition-transform",
+    "button_secondary": "w-full bg-transparent border border-[#2A2D35] text-white rounded-xl py-4 font-medium text-lg flex items-center justify-center gap-2 active:bg-[#1A1C23]",
+    "input": "w-full bg-[#0B0B0D] border border-[#2A2D35] rounded-xl px-4 py-4 text-white placeholder-[#64748B] focus:border-[#B91C1C] focus:ring-1 focus:ring-[#B91C1C] outline-none",
+    "badge_live": "bg-[#B91C1C] text-white text-xs font-bold px-2.5 py-1 rounded-full uppercase tracking-widest flex items-center gap-1.5 animate-pulse",
+    "badge_success": "bg-[rgba(16,185,129,0.1)] text-[#10B981] border border-[rgba(16,185,129,0.2)] text-xs font-semibold px-2.5 py-1 rounded-full",
+    "timer_box": "bg-[#0B0B0D] border border-[#2A2D35] rounded-lg px-3 py-2 text-center",
+    "bid_module": "bg-[#1A1C23] border border-[#2A2D35] rounded-t-3xl p-6 absolute bottom-0 w-full shadow-[0_-10px_40px_rgba(0,0,0,0.6)]"
+  },
+  "motion": {
+    "transition_default": "transition-all duration-300 ease-in-out",
+    "hover_lift": "hover:-translate-y-1 hover:shadow-[0_8px_30px_rgba(0,0,0,0.5)]",
+    "pulse_ring": "animate-[ping_2s_cubic-bezier(0,0,0.2,1)_infinite]",
+    "fade_in_up": "animate-in fade-in slide-in-from-bottom-4 duration-500"
+  },
+  "media": {
+    "hero_car_1": {
+      "url": "https://images.unsplash.com/photo-1768965468641-39e87aa78a9d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTJ8MHwxfHNlYXJjaHw0fHxkYXJrJTIwbHV4dXJ5JTIwY2FyJTIwZXh0ZXJpb3J8ZW58MHx8fHwxNzc4MDU3MzU0fDA&ixlib=rb-4.1.0&q=85",
+      "description": "Dark luxury SUV exterior",
+      "category": "live_auction_hero"
+    },
+    "hero_car_2": {
+      "url": "https://images.unsplash.com/photo-1764089859664-30aa6919ef0b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTJ8MHwxfHNlYXJjaHwxfHxkYXJrJTIwbHV4dXJ5JTIwY2FyJTIwZXh0ZXJpb3J8ZW58MHx8fHwxNzc4MDU3MzU0fDA&ixlib=rb-4.1.0&q=85",
+      "description": "Dark grey luxury sedan",
+      "category": "inventory_card"
+    },
+    "hero_car_3": {
+      "url": "https://images.pexels.com/photos/31298995/pexels-photo-31298995.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Black sports car side view",
+      "category": "inventory_card"
+    },
+    "dashboard_detail_1": {
+      "url": "https://images.unsplash.com/photo-1765522074881-c4c3e81cb846?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1ODF8MHwxfHNlYXJjaHwyfHxsdXh1cnklMjBjYXIlMjBkYXNoYm9hcmQlMjBjbG9zZSUyMHVwfGVufDB8fHx8MTc3ODA1NzM1NHww&ixlib=rb-4.1.0&q=85",
+      "description": "Luxury steering wheel interior",
+      "category": "car_gallery"
+    },
+    "dashboard_detail_2": {
+      "url": "https://images.unsplash.com/photo-1761229170508-f4791c297af8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTJ8MHwxfHNlYXJjaHwyfHxkYXJrJTIwbHV4dXJ5JTIwY2FyJTIwZXh0ZXJpb3J8ZW58MHx8fHwxNzc4MDU3MzU0fDA&ixlib=rb-4.1.0&q=85",
+      "description": "Modern black car headlight",
+      "category": "car_gallery"
+    },
+    "tail_light_detail": {
+      "url": "https://images.pexels.com/photos/29755707/pexels-photo-29755707.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Sleek black sports car red tail light",
+      "category": "car_gallery"
+    },
+    "user_avatar": {
+      "url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTV8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBtYW4lMjBwb3J0cmFpdHxlbnwwfHx8fDE3NzgwNTczNjB8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Man sitting inside car",
+      "category": "profile_avatar"
+    },
+    "bg_texture": {
+      "url": "https://images.unsplash.com/photo-1771096095800-fe1f49993bf5?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwzfHxwcmVtaXVtJTIwZGFyayUyMG1ldGFsJTIwdGV4dHVyZXxlbnwwfHx8fDE3NzgwNTczNjB8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Dark metal geometric pattern",
+      "category": "app_background_subtle"
+    }
+  },
+  "icons": {
+    "library": "lucide-react",
+    "stroke_width": 1.5,
+    "size_default": 24,
+    "size_sm": 16,
+    "size_lg": 32
+  },
+  "layout_strategy": {
+    "nav_bar": "Fixed bottom tab navigation with glassmorphism (bg-[#0B0B0D]/80 backdrop-blur-xl border-t border-[#2A2D35]).",
+    "header": "Sticky top header with minimal height, bg-[#0B0B0D]/90 backdrop-blur-md, z-50.",
+    "live_auction_screen": "Full viewport height. Top 60% is a cinematic car image with linear gradient overlay (to top, #0B0B0D, transparent). Bottom 40% is the interactive bid module overlapping the image.",
+    "cards": "Vertical stack for feed, horizontal scroll for 'Featured' or 'Quick Filters'.",
+    "forms": "Floating labels or clear labels outside inputs. High contrast active states."
+  },
+  "data_testid_conventions": {
+    "rule": "All interactive and key informational elements MUST include a data-testid attribute in kebab-case, based on role.",
+    "examples": ["login-submit-button", "live-auction-bid-button", "car-card-123", "watchlist-toggle-icon", "timer-countdown-text"]
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the color palette. Do not use generic tailwind grays (slate/gray); use the defined hex codes (e.g. #0B0B0D, #16181D) to maintain the graphite/metallic feel.",
+    "Ensure the deep metallic red (#B91C1C) is used sparingly for primary CTAs, Live badges, and winning states only. Overuse will kill the luxury vibe.",
+    "Use standard semantic HTML mapped to Expo React Native Web components (View, Text, TouchableOpacity, ScrollView, Image) since this is a mobile web app / PWA context if using React DOM, or directly React Native elements. Ensure you stick to the framework context requested by the user.",
+    "Ensure all text has sufficient contrast. Silver/chrome (#E2E8F0) should be used for primary text instead of pure white to maintain the automotive feel.",
+    "Images MUST be pulled from the 'media' object provided in this JSON. Do not use placeholders.",
+    "For the live auction screen, implement a pulsing animation on the current highest bid to simulate real-time action."
+  ]
+}

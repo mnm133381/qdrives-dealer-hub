@@ -253,6 +253,41 @@ backend:
           send_to_dealer hit https://exp.host/--/api/v2/push/send (200 OK in backend logs) and dead-token cleanup
           fired ("Removed 1 dead Expo push tokens" in logs) confirming the DeviceNotRegistered branch works.
 
+  - task: "Car listing accepts new vehicle detail fields"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          CarCreateReq + POST /api/cars now accept manufacturing_year, registration_year,
+          insurance_validity, rto_details, notes (all optional). Backwards compatible — old
+          payloads still work. rc_verified now defaults to False since we no longer fake
+          government RC verification on listing creation.
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified end-to-end via /app/test_car_fields.py against the public ingress URL
+          (25/25 assertions passed).
+            • A. Full payload (Hyundai Creta MH02XY9999): 200 OK; car.manufacturing_year=2022,
+              car.registration_year=2023, car.year=2023 (registration_year fallback),
+              car.insurance_validity="08/2026", car.rto_details="MH02 - Mumbai West",
+              car.notes exact string preserved, car.rc_verified=false (no longer hardcoded true),
+              auction.status="live", auction.car.id matches car.id.
+            • B. Minimal/legacy payload (Tata Nexon MH99AB1111, no new fields): 200 OK;
+              manufacturing_year and registration_year both fall back to year=2022,
+              insurance_validity / rto_details / notes are empty strings, rc_verified=false.
+            • C. Missing required field (no 'make'): 422 Unprocessable Entity with
+              FastAPI/Pydantic validation detail pointing at body.make.
+            • D. GET /api/cars/{id} for the car created in A returns the same new fields
+              persisted in MongoDB (manufacturing_year, registration_year, insurance_validity,
+              rto_details, notes, rc_verified=false).
+          No regressions; backward compatibility intact.
+
 frontend:
   - task: "Notifications client module"
     implemented: true

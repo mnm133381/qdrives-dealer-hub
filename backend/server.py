@@ -116,12 +116,17 @@ class CarCreateReq(BaseModel):
     make: str
     model: str
     variant: Optional[str] = None
-    year: int
+    year: int  # registration year (kept for backward compat with existing UI)
+    manufacturing_year: Optional[int] = None
+    registration_year: Optional[int] = None
     fuel_type: str
     transmission: str
     km_driven: int
-    color: str
-    owners: int
+    color: Optional[str] = ""
+    owners: int = 1
+    insurance_validity: Optional[str] = None  # free-form MM/YYYY or ISO
+    rto_details: Optional[str] = None
+    notes: Optional[str] = None
     reserve_price: int
     starting_bid: int
     images: List[str] = []
@@ -401,26 +406,35 @@ async def get_car(car_id: str):
 @api.post("/cars")
 async def create_car(req: CarCreateReq, dealer = Depends(get_current_dealer)):
     car_id = str(uuid.uuid4())
+    # Use registration_year as primary "year" (sale year) when provided,
+    # otherwise fall back to req.year for backward compat.
+    reg_year = req.registration_year or req.year
+    mfg_year = req.manufacturing_year or reg_year
     car = {
         "id": car_id,
         "registration_number": req.registration_number.upper(),
         "make": req.make,
         "model": req.model,
         "variant": req.variant or "",
-        "year": req.year,
+        "year": reg_year,
+        "manufacturing_year": mfg_year,
+        "registration_year": reg_year,
         "fuel_type": req.fuel_type,
         "transmission": req.transmission,
         "km_driven": req.km_driven,
-        "color": req.color,
+        "color": req.color or "",
         "owners": req.owners,
+        "insurance_validity": req.insurance_validity or "",
+        "rto_details": req.rto_details or "",
+        "notes": req.notes or "",
         "images": req.images or ["https://images.unsplash.com/photo-1768965468641-39e87aa78a9d?w=1200&q=80"],
-        "description": req.description or "",
+        "description": req.description or req.notes or "",
         "inspection_score": round(random.uniform(7.5, 9.4), 1),
         "condition_grade": random.choice(["A", "A", "B", "B+"]),
         "tyre_condition": random.choice(["Excellent", "Good", "Average"]),
         "accident_history": random.choice(["None Reported", "Minor (Repaired)"]),
         "service_history": random.choice(["Authorised Service", "Multi-Brand Service"]),
-        "rc_verified": True,
+        "rc_verified": False,
         "seller_id": dealer["id"],
         "created_at": now_utc(),
     }

@@ -576,6 +576,164 @@ backend:
               dealer.kyc_completed=true, dealer.verified=true.
           Frontend's strict typing in api.ts is honoured.
 
+  - task: "JWT token versioning + session kill-on-suspend"
+    implemented: true
+    working: "NA"
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Tokens now carry `tv` (token_version) + `kind` (access|refresh).
+          Access tokens 8h, refresh tokens 30d. /api/auth/refresh exchanges
+          refresh -> new pair (must match tv). Server-side session kill via
+          bump_token_version() — atomically increments dealer.token_version,
+          invalidating every outstanding access+refresh token immediately.
+          Hooked into: dealer suspend (admin/dealers/{id}/verify with
+          suspended:true OR verified:false) and allow-list revoke
+          (DELETE admin/approved-dealers/{phone}). Verified: dealer JWT
+          goes 200 -> 401 SESSION_INVALIDATED instantly on suspend.
+          token_invalidation event audited.
+
+  - task: "Immutable bid ledger + cancellation reversal"
+    implemented: true
+    working: "NA"
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Bids never deleted or edited. Cancellation creates an append-only
+          bid_reversals doc (kind='bid_cancellation', bid_id, dealer_id,
+          original amount snapshot, mandatory reason, operator_id, operator_ip,
+          operator_ua, timestamp). Original bid is flagged cancelled=true
+          with cancelled_at/by/reason. Auction current_bid is recomputed
+          from the next-highest non-cancelled bid (or starting_bid if none).
+          Idempotent: re-cancel returns 400. Reason mandatory.
+          Endpoint: POST /api/admin/auctions/{auction_id}/bids/{bid_id}/cancel
+          gated by cancel_bid permission (super_admin + admin). Affected
+          dealer gets push + in-app notification. WS broadcast to auction.
+
+  - task: "Settlement state machine (mandatory timestamps)"
+    implemented: true
+    working: "NA"
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Explicit lifecycle states with directed transition graph:
+          live -> ended_pending_payment -> payment_received ->
+          vehicle_released -> settled (terminal). Plus dispute fork
+          and cancelled terminal. Each transition writes the matching
+          timestamp (ended_at, payment_received_at, released_at, settled_at,
+          dispute_opened_at, cancelled_at). Illegal transitions return 400
+          with the source/target. Endpoint:
+          POST /api/admin/auctions/{auction_id}/settlement {target_state,note}.
+          settlement_state_change event audited.
+          _enrich_auction now respects explicit terminal states over time-
+          based status compute (cancelled/paused/settled win over now > end_time).
+
+  - task: "Operator auction controls (pause/resume/extend/force-close/cancel)"
+    implemented: true
+    working: "NA"
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          POST /admin/auctions/{id}/pause {reason} -> status='paused' +
+          paused_at + paused_reason + paused_by.
+          POST /admin/auctions/{id}/resume -> status='live' + resumed_at.
+          POST /admin/auctions/{id}/extend {extend_seconds, reason} -> bumps
+          end_time by 30s..24h, increments extension_count, records
+          last_extended_at/by/seconds. WS broadcast.
+          POST /admin/auctions/{id}/cancel {reason} -> status='cancelled'
+          + cancelled_at/reason/by. Reason mandatory.
+          POST /admin/auctions/{id}/force-close {reason} -> if has top_bidder
+          -> ended_pending_payment + ended_at, else cancelled. Records
+          force_closed_at/by/reason. Reason mandatory.
+          All gated by RBAC permissions (pause_auction, extend_auction,
+          cancel_auction). All audited. Verified working on truly live
+          auctions; non-live attempts correctly 400.
+
+  - task: "Live auction grid + control panel (operator monitor)"
+    implemented: true
+    working: "NA"
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          GET /admin/auctions/live-grid returns dense rows for the operator
+          console: car, status, current_bid, reserve_met, top_bidder
+          (id, dealership_name, trust_score, city, max_bid_limit), total_bids,
+          watcher_count, velocity_60s (bids in last 60s), last_bid_at,
+          end_time, time_left_s, extension_count, paused_reason. Sorted
+          by end_time. Admin-only (403 for dealer JWT).
+          GET /admin/auctions/{id}/control-panel returns full forensic
+          view: auction + car + bids (incl cancelled with cancelled_at) +
+          reversals (full audit trail). Append-only data.
+
+  - task: "Dealer Risk Visibility feed"
+    implemented: true
+    working: "NA"
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          GET /admin/risk/dealers aggregates 6 risk indicators:
+          (1) suspended dealers,
+          (2) repeat_denied_24h (phones with >=3 denied login attempts in 24h),
+          (3) cancellations_7d (top dealers by cancelled-bid count + amount),
+          (4) abnormal_frequency_1h (dealers placing >=50 bids in last hour),
+          (5) high_value_spikes_24h (any single bid >=50L in 24h),
+          (6) inactive_high_limit (dealers with max_bid_limit >=10L but
+              0 bids in 30d).
+          Verified: suspended=2, denied=5 entries, cancellations=1 (from
+          test bid cancel). Admin-only (403 for dealer).
+
+  - task: "Audit expansion (Phase 2 actions)"
+    implemented: true
+    working: "NA"
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          SECURITY_AUDIT_ACTIONS expanded to include: auction_pause,
+          auction_resume, auction_extend, auction_cancel, force_close,
+          settlement_state_change, bid_cancel, token_invalidation,
+          suspicious_activity_flag. All these actions write to db.audit_logs
+          with actor_id (operator), target_id, meta (reason, ip, ua, changes,
+          extend_seconds, etc.). Verified captured in audit feed:
+          allow_list_add/update/revoke, auction_extend, auction_pause,
+          auction_resume, bid_cancel, dealer_status_change, force_close,
+          max_bid_change, token_invalidation, dealer_login, operator_login,
+          dealer_access_denied, operator_access_denied.
+
   - task: "Multi-tier role architecture + super-admin lockdown"
     implemented: true
     working: true

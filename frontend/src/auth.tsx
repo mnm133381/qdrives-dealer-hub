@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { storage } from './storage';
-import { api, TOKEN_KEY } from './api';
+import { api, TOKEN_KEY, REFRESH_TOKEN_KEY, setOnSessionKilled } from './api';
 import {
   registerForPushNotifications,
   unregisterFromPushNotifications,
@@ -19,14 +19,17 @@ type Dealer = {
   bid_success_rate: number;
   total_purchases: number;
   total_listed: number;
-  role?: 'admin' | 'dealer';
+  role?: 'admin' | 'super_admin' | 'operations_admin' | 'inspection_admin' | 'dealer';
   avatar_url?: string;
+  max_bid_limit?: number | null;
+  suspended?: boolean;
+  token_version?: number;
 };
 
 type AuthContextShape = {
   loading: boolean;
   dealer: Dealer | null;
-  signIn: (token: string, dealer: Dealer) => Promise<void>;
+  signIn: (token: string, dealer: Dealer, refreshToken?: string) => Promise<void>;
   signOut: () => Promise<void>;
   refresh: () => Promise<void>;
 };
@@ -71,6 +74,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
+    // Register a global session-kill hook — when the api layer detects
+    // SESSION_INVALIDATED / DEALER_ACCOUNT_SUSPENDED, it nukes storage and
+    // notifies us to drop the dealer state so screens redirect to /(auth).
+    setOnSessionKilled(() => { setDealer(null); });
     (async () => {
       try {
         await refresh();
@@ -80,7 +87,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })();
     // Attach listeners early so deep-link from a cold-start tap fires
     try { attachPushListeners(); } catch {}
-    return () => { cancelled = true; };
+    return () => { cancelled = true; setOnSessionKilled(null); };
   }, [refresh]);
 
   // After we have a dealer, register for push (best-effort, non-blocking)
@@ -89,9 +96,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     registerForPushNotifications().catch(() => {});
   }, [dealer?.id]);
 
-  const signIn = useCallback(async (token: string, d: Dealer) => {
+  const signIn = useCallback(async (token: string, d: Dealer, refreshToken?: string) => {
     try {
       await storage.setItem(TOKEN_KEY, token);
+      if (refreshToken) await storage.setItem(REFRESH_TOKEN_KEY, refreshToken);
     } catch (e) {
       // eslint-disable-next-line no-console
       console.warn('[auth] storage write failed (using in-memory):', e);
@@ -105,6 +113,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try { await unregisterFromPushNotifications(); } catch {}
     try {
       await storage.removeItem(TOKEN_KEY);
+      await storage.removeItem(REFRESH_TOKEN_KEY);
     } catch {}
     setDealer(null);
   }, []);

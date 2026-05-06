@@ -77,13 +77,45 @@ def iso(dt: datetime) -> str:
     return dt.isoformat()
 
 
-def create_jwt(dealer_id: str) -> str:
+def create_jwt(dealer_id: str, token_version: int = 0, kind: str = "access") -> str:
+    """Issue a JWT.
+    - access tokens are short-lived (8h) and carry token_version (`tv`).
+      Bumping the dealer's token_version in DB instantly invalidates all
+      outstanding access tokens for that dealer.
+    - refresh tokens are 30d, also carry tv, and have kind='refresh'.
+    """
+    ttl = timedelta(hours=8) if kind == "access" else timedelta(days=30)
     payload = {
         "sub": dealer_id,
-        "exp": now_utc() + timedelta(days=30),
+        "tv": int(token_version),
+        "kind": kind,
+        "exp": now_utc() + ttl,
         "iat": now_utc(),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+
+
+def issue_token_pair(dealer: Dict[str, Any]) -> Dict[str, str]:
+    tv = int(dealer.get("token_version") or 0)
+    return {
+        "token": create_jwt(dealer["id"], tv, "access"),
+        "refresh_token": create_jwt(dealer["id"], tv, "refresh"),
+    }
+
+
+async def bump_token_version(dealer_id: str, reason: str, actor_id: Optional[str] = None) -> None:
+    """Server-side session kill. Atomically bumps token_version on the dealer
+    doc — every outstanding JWT for this dealer fails the next /auth/me check
+    with 401 KILLED. Audits the event."""
+    res = await db.dealers.find_one_and_update(
+        {"id": dealer_id},
+        {"$inc": {"token_version": 1}},
+        return_document=True,
+    )
+    if res:
+        asyncio.create_task(audit(db, "token_invalidation", actor_id, dealer_id, {
+            "reason": reason, "new_tv": int(res.get("token_version") or 0),
+        }))
 
 
 async def get_current_dealer(creds: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Dict[str, Any]:
@@ -92,14 +124,30 @@ async def get_current_dealer(creds: Optional[HTTPAuthorizationCredentials] = Dep
     try:
         payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALGO])
         dealer_id = payload["sub"]
+        token_kind = payload.get("kind", "access")
+        token_tv = int(payload.get("tv", 0))
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+    if token_kind != "access":
+        raise HTTPException(status_code=401, detail="Wrong token kind")
+
     dealer = await db.dealers.find_one({"id": dealer_id}, {"_id": 0})
     if not dealer:
         raise HTTPException(status_code=401, detail="Dealer not found")
+
+    # Token-version check — bumped on suspend / revoke / role-change.
+    current_tv = int(dealer.get("token_version") or 0)
+    if token_tv != current_tv:
+        raise HTTPException(status_code=401, detail="SESSION_INVALIDATED")
+
+    # Defense in depth — hard block any access by suspended dealers, even
+    # if their token somehow survived a tv bump (e.g. edge race).
+    if dealer.get("suspended") and (dealer.get("role") or "dealer") == "dealer":
+        raise HTTPException(status_code=403, detail="DEALER_ACCOUNT_SUSPENDED")
+
     return dealer
 
 
@@ -392,8 +440,8 @@ async def dealer_verify_otp(req: VerifyOtpReq):
             dealer["max_bid_limit"] = approved.get("max_bid_limit")
 
     asyncio.create_task(audit(db, "dealer_login", dealer["id"], None, {"phone": phone}))
-    token = create_jwt(dealer["id"])
-    return {"token": token, "is_new": is_new, "dealer": serialize(dealer)}
+    pair = issue_token_pair(dealer)
+    return {**pair, "is_new": is_new, "dealer": serialize(dealer)}
 
 
 # ---- Operator auth (operators allow-list only) ----
@@ -440,8 +488,8 @@ async def operator_verify_otp(req: VerifyOtpReq):
             dealer["role"] = op.get("role", "super_admin")
 
     asyncio.create_task(audit(db, "operator_login", dealer["id"], None, {"phone": phone}))
-    token = create_jwt(dealer["id"])
-    return {"token": token, "is_new": is_new, "dealer": serialize(dealer)}
+    pair = issue_token_pair(dealer)
+    return {**pair, "is_new": is_new, "dealer": serialize(dealer)}
 
 
 @api.get("/auth/me")
@@ -492,25 +540,34 @@ async def _enrich_auction(a: dict) -> dict:
     a["car"] = serialize(car) if car else None
     a["seller"] = {"id": seller.get("id"), "dealership_name": seller.get("dealership_name", ""), "city": seller.get("city", ""), "verified": seller.get("verified", False)} if seller else None
     a["inspection_pdf"] = serialize(insp) if insp else None
-    # compute live state
+    # compute live state — explicit lifecycle states (paused, cancelled,
+    # settled, dispute, force-close payment lifecycle) win over time-based
+    # logic. Otherwise compute from time window.
+    explicit = a.get("status")
     end = a.get("end_time")
     if isinstance(end, str):
         end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
     else:
         end_dt = end
+    if end_dt and end_dt.tzinfo is None: end_dt = end_dt.replace(tzinfo=timezone.utc)
     now = now_utc()
     start = a.get("start_time")
     if isinstance(start, str):
         start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
     else:
         start_dt = start
-    if now < start_dt:
+    if start_dt and start_dt.tzinfo is None: start_dt = start_dt.replace(tzinfo=timezone.utc)
+    if explicit in ("paused", "cancelled", "settled", "dispute",
+                     "ended_pending_payment", "payment_received",
+                     "vehicle_released"):
+        a["status"] = explicit
+    elif start_dt and now < start_dt:
         a["status"] = "upcoming"
-    elif now > end_dt:
+    elif end_dt and now > end_dt:
         a["status"] = "ended"
     else:
         a["status"] = "live"
-    a["seconds_remaining"] = max(0, int((end_dt - now).total_seconds()))
+    a["seconds_remaining"] = max(0, int((end_dt - now).total_seconds())) if end_dt else 0
     return a
 
 
@@ -566,6 +623,7 @@ async def place_bid(auction_id: str, req: BidReq, dealer = Depends(get_current_d
         "dealer_id": dealer["id"],
         "dealer_name": dealer.get("dealership_name") or dealer.get("full_name") or "Dealer",
         "amount": req.amount,
+        "cancelled": False,
         "created_at": now_utc(),
     }
     await db.bids.insert_one(dict(bid))
@@ -956,6 +1014,10 @@ async def admin_verify_dealer(
     # Audit
     asyncio.create_task(audit(db, "dealer_status_change", admin["id"], dealer_id, {"changes": update}))
 
+    # Server-side session kill on suspend OR loss of verified flag.
+    if update.get("suspended") is True or update.get("verified") is False:
+        asyncio.create_task(bump_token_version(dealer_id, reason="dealer_status_change", actor_id=admin["id"]))
+
     # Push verification status change
     if req.verified is True:
         title = "Dealer status verified"
@@ -976,6 +1038,576 @@ async def admin_verify_dealer(
         })
         asyncio.create_task(send_to_dealer(db, dealer_id, title, body, data={"type": "suspended"}))
     return serialize(updated)
+
+
+@api.post("/auth/refresh")
+async def auth_refresh(creds: Optional[HTTPAuthorizationCredentials] = Depends(security)):
+    """Exchange a valid refresh token for a fresh access+refresh pair.
+    The submitted refresh token MUST have kind='refresh' and a tv that
+    matches the dealer's current token_version. Otherwise 401."""
+    if not creds or not creds.credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALGO])
+        dealer_id = payload["sub"]
+        if payload.get("kind") != "refresh":
+            raise HTTPException(status_code=401, detail="Wrong token kind")
+        token_tv = int(payload.get("tv", 0))
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid refresh")
+
+    dealer = await db.dealers.find_one({"id": dealer_id}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=401, detail="Dealer not found")
+    current_tv = int(dealer.get("token_version") or 0)
+    if token_tv != current_tv:
+        raise HTTPException(status_code=401, detail="SESSION_INVALIDATED")
+    if dealer.get("suspended") and (dealer.get("role") or "dealer") == "dealer":
+        raise HTTPException(status_code=403, detail="DEALER_ACCOUNT_SUSPENDED")
+    pair = issue_token_pair(dealer)
+    return {**pair, "dealer": serialize(dealer)}
+
+
+# ============================================================
+# Settlement state machine (explicit, immutable, timestamp-mandatory)
+# ============================================================
+
+# Allowed transitions: only forward + dispute fork. No reverse motion
+# without an explicit operator override (which is itself audited).
+SETTLEMENT_FLOW: Dict[str, set] = {
+    "live": {"ended_pending_payment", "cancelled"},
+    "ended_pending_payment": {"payment_received", "dispute", "cancelled"},
+    "payment_received": {"vehicle_released", "dispute"},
+    "vehicle_released": {"settled", "dispute"},
+    "settled": set(),  # terminal — closed forever
+    "dispute": {"settled", "cancelled"},  # admin-resolved fork
+    "cancelled": set(),  # terminal
+    "ended": {"ended_pending_payment", "cancelled"},  # legacy alias
+    "scheduled": {"live", "cancelled"},
+    "paused": {"live", "cancelled"},
+}
+
+# Timestamp field per state.
+SETTLEMENT_TS_FIELD: Dict[str, str] = {
+    "ended_pending_payment": "ended_at",
+    "payment_received": "payment_received_at",
+    "vehicle_released": "released_at",
+    "settled": "settled_at",
+    "dispute": "dispute_opened_at",
+    "cancelled": "cancelled_at",
+    "live": "started_at",
+    "paused": "paused_at",
+}
+
+
+class SettlementTransitionReq(BaseModel):
+    target_state: str
+    note: Optional[str] = ""
+
+
+@api.post("/admin/auctions/{auction_id}/settlement")
+async def admin_settlement_transition(
+    auction_id: str, req: SettlementTransitionReq,
+    admin = Depends(require_permission("manage_inventory")),
+):
+    a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Auction not found")
+    src = await _effective_status(a) or "live"
+    tgt = req.target_state
+    if tgt not in SETTLEMENT_FLOW:
+        raise HTTPException(status_code=400, detail=f"Unknown state: {tgt}")
+    if tgt not in SETTLEMENT_FLOW.get(src, set()):
+        raise HTTPException(status_code=400, detail=f"Illegal transition {src} -> {tgt}")
+    update: Dict[str, Any] = {"status": tgt}
+    ts_field = SETTLEMENT_TS_FIELD.get(tgt)
+    if ts_field:
+        update[ts_field] = now_utc()
+    await db.auctions.update_one({"id": auction_id}, {"$set": update})
+    asyncio.create_task(audit(db, "settlement_state_change", admin["id"], auction_id, {
+        "from": src, "to": tgt, "note": req.note or "",
+    }))
+    # Broadcast to subscribed clients
+    await manager.broadcast(auction_id, {"type": "settlement_state", "status": tgt})
+    return {"ok": True, "status": tgt}
+
+
+# ============================================================
+# Operator auction controls — pause / extend / cancel / force_close
+# Every action is audited; nothing is hard-deleted.
+# ============================================================
+
+class AuctionPauseReq(BaseModel):
+    reason: str
+
+
+class AuctionExtendReq(BaseModel):
+    extend_seconds: int
+    reason: Optional[str] = ""
+
+
+class AuctionCancelReq(BaseModel):
+    reason: str
+
+
+async def _effective_status(a: Dict[str, Any]) -> str:
+    """Return the canonical lifecycle state for an auction, accounting for
+    time-based transitions when the DB status is unset (legacy seed data).
+    Explicit lifecycle states (paused, ended_pending_payment, settled,
+    cancelled, dispute, payment_received, vehicle_released) win over time."""
+    explicit = a.get("status")
+    if explicit and explicit != "live":
+        return explicit
+    end = a.get("end_time")
+    start = a.get("start_time")
+    if isinstance(end, str): end = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    if isinstance(start, str): start = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    if end and end.tzinfo is None: end = end.replace(tzinfo=timezone.utc)
+    if start and start.tzinfo is None: start = start.replace(tzinfo=timezone.utc)
+    now = now_utc()
+    if start and now < start:
+        return "scheduled"
+    if end and now >= end:
+        return "ended"
+    return "live"
+
+
+@api.post("/admin/auctions/{auction_id}/pause")
+async def admin_pause_auction(
+    auction_id: str, req: AuctionPauseReq,
+    admin = Depends(require_permission("pause_auction")),
+):
+    a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Auction not found")
+    eff = await _effective_status(a)
+    if eff not in ("live", "scheduled"):
+        raise HTTPException(status_code=400, detail=f"Only live/scheduled auctions can be paused (current: {eff})")
+    if not req.reason or not req.reason.strip():
+        raise HTTPException(status_code=400, detail="Reason is mandatory")
+    await db.auctions.update_one(
+        {"id": auction_id},
+        {"$set": {"status": "paused", "paused_at": now_utc(),
+                  "paused_reason": req.reason.strip(), "paused_by": admin["id"]}},
+    )
+    asyncio.create_task(audit(db, "auction_pause", admin["id"], auction_id, {"reason": req.reason}))
+    await manager.broadcast(auction_id, {"type": "auction_pause", "reason": req.reason})
+    return {"ok": True}
+
+
+@api.post("/admin/auctions/{auction_id}/resume")
+async def admin_resume_auction(
+    auction_id: str,
+    admin = Depends(require_permission("pause_auction")),
+):
+    a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
+    if not a or a.get("status") != "paused":
+        raise HTTPException(status_code=400, detail="Auction is not paused")
+    await db.auctions.update_one(
+        {"id": auction_id},
+        {"$set": {"status": "live", "resumed_at": now_utc()}},
+    )
+    asyncio.create_task(audit(db, "auction_resume", admin["id"], auction_id, {}))
+    await manager.broadcast(auction_id, {"type": "auction_resume"})
+    return {"ok": True}
+
+
+@api.post("/admin/auctions/{auction_id}/extend")
+async def admin_extend_auction(
+    auction_id: str, req: AuctionExtendReq,
+    admin = Depends(require_permission("extend_auction")),
+):
+    a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Auction not found")
+    eff = await _effective_status(a)
+    if eff not in ("live", "paused"):
+        raise HTTPException(status_code=400, detail=f"Cannot extend a non-live auction (current: {eff})")
+    if req.extend_seconds < 30 or req.extend_seconds > 24 * 3600:
+        raise HTTPException(status_code=400, detail="Extension must be between 30s and 24h")
+    end_time = a.get("end_time")
+    if not end_time:
+        raise HTTPException(status_code=400, detail="Auction has no end_time")
+    if isinstance(end_time, str):
+        end_time = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+    new_end = end_time + timedelta(seconds=req.extend_seconds)
+    await db.auctions.update_one(
+        {"id": auction_id},
+        {"$set": {"end_time": new_end, "last_extended_at": now_utc(),
+                  "last_extended_by": admin["id"], "last_extension_seconds": req.extend_seconds},
+         "$inc": {"extension_count": 1}},
+    )
+    asyncio.create_task(audit(db, "auction_extend", admin["id"], auction_id, {
+        "extend_seconds": req.extend_seconds, "reason": req.reason or "",
+        "new_end": iso(new_end),
+    }))
+    await manager.broadcast(auction_id, {"type": "auction_extend", "new_end": iso(new_end), "extend_seconds": req.extend_seconds})
+    return {"ok": True, "new_end": iso(new_end)}
+
+
+@api.post("/admin/auctions/{auction_id}/cancel")
+async def admin_cancel_auction(
+    auction_id: str, req: AuctionCancelReq,
+    admin = Depends(require_permission("cancel_auction")),
+):
+    a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Auction not found")
+    eff = await _effective_status(a)
+    if eff in ("settled", "cancelled"):
+        raise HTTPException(status_code=400, detail="Already terminal")
+    if not req.reason or not req.reason.strip():
+        raise HTTPException(status_code=400, detail="Reason is mandatory")
+    await db.auctions.update_one(
+        {"id": auction_id},
+        {"$set": {"status": "cancelled", "cancelled_at": now_utc(),
+                  "cancelled_reason": req.reason.strip(), "cancelled_by": admin["id"]}},
+    )
+    asyncio.create_task(audit(db, "auction_cancel", admin["id"], auction_id, {"reason": req.reason}))
+    await manager.broadcast(auction_id, {"type": "auction_cancel", "reason": req.reason})
+    return {"ok": True}
+
+
+@api.post("/admin/auctions/{auction_id}/force-close")
+async def admin_force_close(
+    auction_id: str, req: AuctionCancelReq,
+    admin = Depends(require_permission("cancel_auction")),
+):
+    """Immediately ends a live auction (declares the current top bidder
+    the winner if any) and moves it to ended_pending_payment. Otherwise
+    transitions to cancelled if no bids."""
+    a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Auction not found")
+    eff = await _effective_status(a)
+    if eff not in ("live", "paused"):
+        raise HTTPException(status_code=400, detail=f"Cannot force-close a non-live auction (current: {eff})")
+    if not req.reason or not req.reason.strip():
+        raise HTTPException(status_code=400, detail="Reason is mandatory")
+    has_winner = bool(a.get("top_bidder_id"))
+    target = "ended_pending_payment" if has_winner else "cancelled"
+    update: Dict[str, Any] = {
+        "status": target,
+        "ended_at": now_utc(),
+        "force_closed_at": now_utc(),
+        "force_closed_by": admin["id"],
+        "force_closed_reason": req.reason.strip(),
+    }
+    if target == "cancelled":
+        update["cancelled_at"] = now_utc()
+        update["cancelled_reason"] = req.reason.strip()
+    await db.auctions.update_one({"id": auction_id}, {"$set": update})
+    asyncio.create_task(audit(db, "force_close", admin["id"], auction_id, {
+        "reason": req.reason, "winner": a.get("top_bidder_id"), "amount": a.get("current_bid"),
+    }))
+    await manager.broadcast(auction_id, {"type": "force_close", "status": target})
+    return {"ok": True, "status": target}
+
+
+# ============================================================
+# Immutable bid cancellation (compensating reversal pattern)
+# Original bid is NEVER deleted/edited. A bid_reversals doc is appended,
+# the bid is flagged cancelled=true, and the auction current_bid is
+# recomputed from the next-highest non-cancelled bid.
+# ============================================================
+
+class BidCancelReq(BaseModel):
+    reason: str
+
+
+@api.post("/admin/auctions/{auction_id}/bids/{bid_id}/cancel")
+async def admin_cancel_bid(
+    auction_id: str, bid_id: str, req: BidCancelReq,
+    request: Request,
+    admin = Depends(require_permission("cancel_bid")),
+):
+    if not req.reason or not req.reason.strip():
+        raise HTTPException(status_code=400, detail="Reason is mandatory")
+    bid = await db.bids.find_one({"id": bid_id, "auction_id": auction_id}, {"_id": 0})
+    if not bid:
+        raise HTTPException(status_code=404, detail="Bid not found")
+    if bid.get("cancelled"):
+        raise HTTPException(status_code=400, detail="Bid already cancelled")
+
+    # Append-only reversal event — preserves original bid and creates
+    # a complete forensic audit trail. We capture IP/UA when available.
+    ip = request.client.host if request and request.client else None
+    ua = request.headers.get("user-agent") if request else None
+    reversal = {
+        "id": str(uuid.uuid4()),
+        "kind": "bid_cancellation",
+        "bid_id": bid_id,
+        "auction_id": auction_id,
+        "dealer_id": bid["dealer_id"],
+        "amount": bid["amount"],  # snapshot of cancelled amount
+        "reason": req.reason.strip(),
+        "operator_id": admin["id"],
+        "operator_ip": ip,
+        "operator_ua": ua,
+        "created_at": now_utc(),
+    }
+    await db.bid_reversals.insert_one(dict(reversal))
+
+    # Flag the bid as cancelled (NOT delete).
+    await db.bids.update_one(
+        {"id": bid_id},
+        {"$set": {"cancelled": True, "cancelled_at": now_utc(),
+                  "cancelled_by": admin["id"], "cancellation_reason": req.reason.strip()}},
+    )
+
+    # Recompute current_bid from highest non-cancelled bid on this auction.
+    next_top = await db.bids.find_one(
+        {"auction_id": auction_id, "cancelled": {"$ne": True}},
+        sort=[("amount", -1)],
+    )
+    set_doc: Dict[str, Any] = {}
+    if next_top:
+        set_doc["current_bid"] = next_top["amount"]
+        set_doc["top_bidder_id"] = next_top["dealer_id"]
+        set_doc["top_bidder_name"] = next_top.get("dealer_name", "Dealer")
+    else:
+        # No remaining bids — fall back to starting price, no top bidder.
+        a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
+        set_doc["current_bid"] = (a or {}).get("starting_bid", 0)
+        set_doc["top_bidder_id"] = None
+        set_doc["top_bidder_name"] = None
+    # total_bids tracks valid-only bids
+    valid_count = await db.bids.count_documents({"auction_id": auction_id, "cancelled": {"$ne": True}})
+    set_doc["total_bids"] = valid_count
+    await db.auctions.update_one({"id": auction_id}, {"$set": set_doc})
+
+    asyncio.create_task(audit(db, "bid_cancel", admin["id"], bid["dealer_id"], {
+        "bid_id": bid_id, "auction_id": auction_id, "amount": bid["amount"],
+        "reason": req.reason, "ip": ip,
+    }))
+    await manager.broadcast(auction_id, {
+        "type": "bid_cancelled", "bid_id": bid_id,
+        "current_bid": set_doc["current_bid"],
+        "top_bidder_id": set_doc.get("top_bidder_id"),
+    })
+    # Notify the affected dealer
+    await db.notifications.insert_one({
+        "id": str(uuid.uuid4()), "dealer_id": bid["dealer_id"],
+        "type": "bid_cancelled", "title": "Your bid was cancelled",
+        "body": f"Your bid of ₹{bid['amount']:,} was cancelled by Q Drives. Reason: {req.reason}",
+        "auction_id": auction_id, "read": False, "created_at": now_utc(),
+    })
+    asyncio.create_task(send_to_dealer(
+        db, bid["dealer_id"], "Your bid was cancelled",
+        f"₹{bid['amount']:,} cancelled. Reason: {req.reason}",
+        data={"type": "bid_cancelled", "auction_id": auction_id},
+    ))
+    return {"ok": True, "reversal_id": reversal["id"], "current_bid": set_doc["current_bid"]}
+
+
+# ============================================================
+# Live auction grid — operator real-time monitor data
+# ============================================================
+
+@api.get("/admin/auctions/live-grid")
+async def admin_live_grid(admin = Depends(get_current_admin)):
+    """Dense real-time grid for the operator console. Returns one row
+    per non-terminal auction with everything needed to monitor it.
+
+    Status on auction docs is computed at enrich-time (live/upcoming/ended)
+    so we filter by time window or explicit lifecycle states."""
+    now = now_utc()
+    # An auction is "monitorable" if:
+    #   • it is currently live (start_time <= now < end_time and not in a
+    #     terminal lifecycle state), OR
+    #   • it is in an explicit operator-managed state.
+    cursor = db.auctions.find(
+        {
+            "$or": [
+                {"status": {"$in": ["live", "paused", "scheduled",
+                                     "ended_pending_payment", "payment_received",
+                                     "vehicle_released", "dispute"]}},
+                # Time-window fallback for legacy docs without an explicit status
+                {"$and": [
+                    {"end_time": {"$gt": now}},
+                    {"$or": [{"status": None}, {"status": {"$exists": False}}]},
+                ]},
+                # Recently ended (within 7d) but no terminal state set
+                {"$and": [
+                    {"end_time": {"$lte": now, "$gte": now - timedelta(days=7)}},
+                    {"$or": [{"status": None}, {"status": {"$exists": False}}]},
+                ]},
+            ],
+        },
+        {"_id": 0},
+    ).sort("end_time", 1).limit(200)
+    items: List[Dict[str, Any]] = []
+    async for a in cursor:
+        car = await db.cars.find_one({"id": a["car_id"]}, {"_id": 0,
+            "make": 1, "model": 1, "year": 1, "registration_number": 1}) or {}
+        bidder = None
+        if a.get("top_bidder_id"):
+            b = await db.dealers.find_one({"id": a["top_bidder_id"]}, {"_id": 0,
+                "id": 1, "dealership_name": 1, "trust_score": 1, "city": 1, "max_bid_limit": 1})
+            if b:
+                bidder = {
+                    "id": b["id"],
+                    "dealership_name": b.get("dealership_name", ""),
+                    "trust_score": b.get("trust_score", 4.5),
+                    "city": b.get("city", ""),
+                    "max_bid_limit": b.get("max_bid_limit"),
+                }
+        # Bid velocity: bids in last 60 seconds
+        velocity = await db.bids.count_documents({
+            "auction_id": a["id"], "cancelled": {"$ne": True},
+            "created_at": {"$gte": now - timedelta(seconds=60)},
+        })
+        # Last bid timestamp
+        last_bid = await db.bids.find_one(
+            {"auction_id": a["id"], "cancelled": {"$ne": True}},
+            sort=[("created_at", -1)],
+        )
+        end = a.get("end_time")
+        if isinstance(end, str):
+            end = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        if end and end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        time_left_s = int((end - now).total_seconds()) if end else 0
+        items.append({
+            "id": a["id"],
+            "status": a.get("status"),
+            "car": {**car, "id": a["car_id"]},
+            "current_bid": a.get("current_bid", a.get("starting_bid", 0)),
+            "starting_bid": a.get("starting_bid", 0),
+            "reserve_price": a.get("reserve_price"),
+            "reserve_met": (a.get("current_bid", 0) or 0) >= (a.get("reserve_price") or 0),
+            "top_bidder": bidder,
+            "total_bids": a.get("total_bids", 0),
+            "watcher_count": a.get("watcher_count", 0),
+            "velocity_60s": velocity,
+            "last_bid_at": iso(last_bid["created_at"]) if last_bid and isinstance(last_bid.get("created_at"), datetime) else None,
+            "end_time": iso(end) if end else None,
+            "time_left_s": max(0, time_left_s),
+            "extension_count": a.get("extension_count", 0),
+            "paused_reason": a.get("paused_reason"),
+        })
+    return {"items": items, "ts": iso(now)}
+
+
+@api.get("/admin/auctions/{auction_id}/control-panel")
+async def admin_auction_control_panel(
+    auction_id: str, admin = Depends(get_current_admin),
+):
+    """Detail view for the operator with full bid book including
+    cancelled bids and reversals. Append-only forensic data."""
+    a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Auction not found")
+    car = await db.cars.find_one({"id": a["car_id"]}, {"_id": 0}) or {}
+    bids = []
+    async for b in db.bids.find({"auction_id": auction_id}, {"_id": 0}).sort("created_at", -1).limit(200):
+        d = await db.dealers.find_one({"id": b["dealer_id"]}, {"_id": 0,
+            "dealership_name": 1, "trust_score": 1, "city": 1})
+        bids.append({**b,
+            "created_at": iso(b["created_at"]) if isinstance(b.get("created_at"), datetime) else b.get("created_at"),
+            "cancelled_at": iso(b["cancelled_at"]) if isinstance(b.get("cancelled_at"), datetime) else b.get("cancelled_at"),
+            "dealer": d,
+        })
+    reversals = []
+    async for r in db.bid_reversals.find({"auction_id": auction_id}, {"_id": 0}).sort("created_at", -1).limit(50):
+        reversals.append({**r,
+            "created_at": iso(r["created_at"]) if isinstance(r.get("created_at"), datetime) else r.get("created_at"),
+        })
+    return {
+        "auction": serialize(a),
+        "car": serialize(car),
+        "bids": bids,
+        "reversals": reversals,
+    }
+
+
+# ============================================================
+# Dealer Risk Visibility feed
+# ============================================================
+
+@api.get("/admin/risk/dealers")
+async def admin_dealer_risk(admin = Depends(get_current_admin)):
+    """Aggregated risk indicators across the dealer network. Surfaces
+    suspended dealers, repeated denied logins, cancelled bids,
+    abnormal bidding frequency, high-value bidding spikes, and
+    inactive high-limit dealers."""
+    now = now_utc()
+    h24 = now - timedelta(hours=24)
+    d7 = now - timedelta(days=7)
+    d30 = now - timedelta(days=30)
+
+    suspended = await db.dealers.find(
+        {"suspended": True, "role": "dealer"}, {"_id": 0, "id": 1, "phone": 1, "dealership_name": 1, "city": 1},
+    ).limit(100).to_list(100)
+
+    # Repeat denied login attempts in 24h (already aggregated)
+    denied_pipeline = [
+        {"$match": {"action": {"$in": ["dealer_access_denied", "operator_access_denied"]}, "ts": {"$gte": h24}}},
+        {"$group": {"_id": "$meta.phone", "attempts": {"$sum": 1}}},
+        {"$match": {"attempts": {"$gte": 3}}},
+        {"$sort": {"attempts": -1}}, {"$limit": 20},
+    ]
+    repeat_denied = [{"phone": r["_id"], "attempts": r["attempts"]} async for r in db.audit_logs.aggregate(denied_pipeline) if r["_id"]]
+
+    # Cancelled bids in 7d, by dealer
+    cancel_pipeline = [
+        {"$match": {"created_at": {"$gte": d7}}},
+        {"$group": {"_id": "$dealer_id", "cancellations": {"$sum": 1}, "amount": {"$sum": "$amount"}}},
+        {"$sort": {"cancellations": -1}}, {"$limit": 10},
+    ]
+    cancellations = []
+    async for r in db.bid_reversals.aggregate(cancel_pipeline):
+        if not r["_id"]:
+            continue
+        d = await db.dealers.find_one({"id": r["_id"]}, {"_id": 0, "dealership_name": 1, "phone": 1})
+        cancellations.append({"dealer_id": r["_id"], "cancellations": r["cancellations"], "amount": r["amount"], "dealer": d or {}})
+
+    # Abnormal bidding frequency: >50 bids in 1h
+    freq_pipeline = [
+        {"$match": {"created_at": {"$gte": now - timedelta(hours=1)}, "cancelled": {"$ne": True}}},
+        {"$group": {"_id": "$dealer_id", "bids": {"$sum": 1}}},
+        {"$match": {"bids": {"$gte": 50}}},
+        {"$sort": {"bids": -1}}, {"$limit": 10},
+    ]
+    abnormal_freq = []
+    async for r in db.bids.aggregate(freq_pipeline):
+        d = await db.dealers.find_one({"id": r["_id"]}, {"_id": 0, "dealership_name": 1, "phone": 1})
+        abnormal_freq.append({"dealer_id": r["_id"], "bids_1h": r["bids"], "dealer": d or {}})
+
+    # High-value spikes: any single bid > 50L in 24h
+    spikes = []
+    async for b in db.bids.find({
+        "created_at": {"$gte": h24}, "cancelled": {"$ne": True}, "amount": {"$gte": 5000000},
+    }, {"_id": 0}).sort("amount", -1).limit(10):
+        d = await db.dealers.find_one({"id": b["dealer_id"]}, {"_id": 0, "dealership_name": 1})
+        spikes.append({
+            "bid_id": b["id"], "amount": b["amount"], "dealer_id": b["dealer_id"],
+            "dealership_name": (d or {}).get("dealership_name", ""),
+            "auction_id": b["auction_id"],
+            "created_at": iso(b["created_at"]) if isinstance(b.get("created_at"), datetime) else b.get("created_at"),
+        })
+
+    # Inactive high-limit dealers: max_bid_limit set but 0 bids in 30d
+    inactive = []
+    async for d in db.dealers.find(
+        {"role": "dealer", "max_bid_limit": {"$gte": 1000000}, "suspended": {"$ne": True}},
+        {"_id": 0, "id": 1, "phone": 1, "dealership_name": 1, "max_bid_limit": 1, "city": 1},
+    ).limit(200):
+        recent_bids = await db.bids.count_documents({"dealer_id": d["id"], "created_at": {"$gte": d30}})
+        if recent_bids == 0:
+            inactive.append({**d, "days_inactive": 30})
+
+    return {
+        "suspended": suspended,
+        "repeat_denied_24h": repeat_denied,
+        "cancellations_7d": cancellations,
+        "abnormal_frequency_1h": abnormal_freq,
+        "high_value_spikes_24h": spikes,
+        "inactive_high_limit": inactive[:10],
+        "ts": iso(now),
+    }
 
 
 @api.post("/admin/notifications/broadcast")
@@ -1171,6 +1803,8 @@ async def remove_approved_dealer(
     dealer = await db.dealers.find_one({"phone": phone}, {"_id": 0})
     if dealer:
         await db.dealers.update_one({"id": dealer["id"]}, {"$set": {"suspended": True}})
+        # Server-side session kill — every outstanding JWT for this dealer dies now.
+        asyncio.create_task(bump_token_version(dealer["id"], reason="allow_list_revoke", actor_id=admin["id"]))
     asyncio.create_task(audit(db, "allow_list_revoke", admin["id"],
                               dealer["id"] if dealer else None, {"phone": phone}))
     return {"ok": True}
@@ -1276,8 +1910,10 @@ SECURITY_AUDIT_ACTIONS = {
     "dealer_access_denied", "operator_access_denied",
     "allow_list_add", "allow_list_update", "allow_list_revoke",
     "dealer_status_change", "max_bid_change",
-    "auction_pause", "auction_cancel", "auction_extend",
+    "auction_pause", "auction_resume", "auction_extend",
+    "auction_cancel", "force_close", "settlement_state_change",
     "bid_cancel", "admin_broadcast", "operator_promotion",
+    "token_invalidation", "suspicious_activity_flag",
 }
 
 

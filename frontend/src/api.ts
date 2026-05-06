@@ -3,12 +3,37 @@ import { storage } from './storage';
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export const TOKEN_KEY = 'qdrives_token';
+export const REFRESH_TOKEN_KEY = 'qdrives_refresh_token';
+
+// Pluggable hook the auth provider sets to nuke session on hard 401s
+// (SESSION_INVALIDATED, DEALER_ACCOUNT_SUSPENDED). Avoids an import cycle
+// between auth.tsx and api.ts.
+let onSessionKilled: (() => void) | null = null;
+export function setOnSessionKilled(fn: (() => void) | null) {
+  onSessionKilled = fn;
+}
 
 async function getToken() {
   return await storage.getItem(TOKEN_KEY);
 }
 
-async function request<T = any>(path: string, options: RequestInit = {}): Promise<T> {
+async function tryRefresh(): Promise<string | null> {
+  try {
+    const rt = await storage.getItem(REFRESH_TOKEN_KEY);
+    if (!rt) return null;
+    const res = await fetch(`${BASE}/api/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${rt}` },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data?.token) await storage.setItem(TOKEN_KEY, data.token);
+    if (data?.refresh_token) await storage.setItem(REFRESH_TOKEN_KEY, data.refresh_token);
+    return data?.token || null;
+  } catch { return null; }
+}
+
+async function request<T = any>(path: string, options: RequestInit = {}, _retried = false): Promise<T> {
   const token = await getToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -21,7 +46,29 @@ async function request<T = any>(path: string, options: RequestInit = {}): Promis
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!res.ok) {
     const detail = (data && data.detail) || `Request failed (${res.status})`;
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    const detailStr = typeof detail === 'string' ? detail : JSON.stringify(detail);
+
+    // 401 with token-expiry → try a transparent refresh once.
+    if (res.status === 401 && !_retried && token && !path.startsWith('/auth/')) {
+      const isExpired = detailStr === 'Token expired';
+      if (isExpired) {
+        const newTok = await tryRefresh();
+        if (newTok) return request<T>(path, options, true);
+      }
+    }
+
+    // Hard kill on session invalidation / suspension / wrong tv.
+    if (res.status === 401 && (detailStr === 'SESSION_INVALIDATED' || detailStr === 'Wrong token kind')) {
+      try { await storage.removeItem(TOKEN_KEY); } catch {}
+      try { await storage.removeItem(REFRESH_TOKEN_KEY); } catch {}
+      onSessionKilled?.();
+    }
+    if (res.status === 403 && detailStr === 'DEALER_ACCOUNT_SUSPENDED') {
+      try { await storage.removeItem(TOKEN_KEY); } catch {}
+      try { await storage.removeItem(REFRESH_TOKEN_KEY); } catch {}
+      onSessionKilled?.();
+    }
+    throw new Error(detailStr);
   }
   return data as T;
 }

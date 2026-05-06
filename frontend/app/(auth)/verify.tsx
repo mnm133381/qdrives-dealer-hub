@@ -73,7 +73,7 @@ export default function VerifyOtp() {
         : await api.dealerVerifyOtp(String(phone), code);
 
       try { await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {}
-      await signIn(data.token, data.dealer);
+      await signIn(data.token, data.dealer, data.refresh_token);
 
       // Strict role isolation — operator endpoint always returns role=admin,
       // dealer endpoint always returns role=dealer. Route accordingly.

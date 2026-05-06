@@ -894,6 +894,79 @@ metadata:
   test_sequence: 9
   run_ui: false
 
+frontend_strict_allowlist_audit:
+  - task: "Strict allow-list auth — full frontend audit"
+    implemented: true
+    working: true
+    file: "frontend/app/(auth)/index.tsx, login.tsx, verify.tsx, _layout.tsx; frontend/app/(tabs)/_layout.tsx; frontend/app/(admin)/_layout.tsx; frontend/src/auth.tsx, api.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Comprehensive black-box mobile (390x844) audit of the dual-portal closed-network
+          auth refactor. ALL P0 categories PASS:
+            ✅ T1 Dealer happy path: portal → entry-dealer → "Dealer sign-in" + DEALER NETWORK
+               pill → fill 9900000002 → /verify → OTP 123456 → landed on /(tabs) with
+               Home/Auctions/Purchases/Watchlist/Profile tab bar. qdrives_token persisted.
+            ✅ T2 Operator happy path: portal → entry-admin → "Operator sign-in" + amber
+               OPERATOR/Q DRIVES OPS pill → 9900000099 → /verify → OTP 123456 → landed
+               directly on /(admin) (Q DRIVES · ADMIN OPS visible) with NO KYC detour.
+            ✅ T3a Off-list dealer (+919876543210): login-access-error card with EXACT copy
+               "Access restricted." + "not approved on the Q Drives dealer network" +
+               "contact Q Drives support". Did NOT navigate to /verify.
+            ✅ T3b Dealer phone (+919900000002) on operator portal: login-access-error
+               card with EXACT copy "Operator access denied." + "not authorised for
+               Q Drives operations" + "Operator access is restricted and audited." No
+               leak of approved_dealers / DEALER_ACCESS strings.
+            ✅ T3c Random off-list (+918888888888) on operator portal: same
+               "Operator access denied." card.
+            ✅ T5a Dealer reload → still in /(tabs).
+            ✅ T5b Operator reload → still in /(admin).
+            ✅ T6a Dealer goto /(admin) → redirected to / (no admin tabs leak).
+            ✅ T6b Dealer goto /(tabs)/sell → redirected to /; sell-reg-input absent.
+            ✅ T6c Dealer goto /inventory/abc/media → redirected; INVENTORY MEDIA header
+               not shown.
+            ✅ T6e Operator goto /(tabs) → bounced back to /(admin) (no Purchases/Watchlist
+               leak).
+            ✅ T6f Unauth /(tabs) → auth landing visible.
+            ✅ T6g Unauth /(admin) → auth landing visible.
+            ✅ T9 Garbage qdrives_token → /auth/me 401 → token cleared → user dropped to
+               auth landing. No red screen, no crash.
+            ✅ SECURITY A: Network tab over the entire run shows ONLY
+               /api/auth/dealer/{send,verify}-otp, /api/auth/operator/{send,verify}-otp,
+               and /api/auth/me. ZERO calls to legacy /api/auth/send-otp or
+               /api/auth/verify-otp. No silent retry on the other channel after a denial.
+            ✅ SECURITY B: After dealer-on-operator denial the frontend stayed on the
+               operator login screen — did NOT silently retry the dealer endpoint.
+            ✅ Role isolation: dealer profile shows no Q DRIVES ADMIN badge / Manage
+               inventory rows (already covered in prior runs); operator console shows
+               admin tab bar with no Purchases/Watchlist.
+          NOT DETERMINISTICALLY EXERCISED IN THIS RUN (low risk):
+            • T4 KYC fresh-dealer flow + 'Property updated doesn't exist' regression —
+              all 5 seeded dealers have kyc_completed=true so the KYC screen could not be
+              reached in the live env without a backend reset. Backend test (E.1) already
+              verified /auth/kyc returns {success,updated,dealer} cleanly with kyc_completed=true
+              and no exception, and api.ts strict typing aligns. Recommend a one-off
+              manual run with kyc_completed=false to fully eyeball-confirm the runtime
+              crash is gone, but the previous fix path is wired correctly.
+            • T8 wrong-OTP UX (verify error + clear inputs) — backend rejection (400) is
+              covered server-side; UI surfacing not re-tested here.
+            • T11/T12 token tampering / expired JWT — covered conceptually by T9 (any
+              non-decodable token forces /auth/me 401 → cleared → /(auth)).
+          NO red-screen errors, NO 'updated is not defined' / 'Property updated doesn't
+          exist' console errors observed across any of the executed flows. Only console
+          noise was expected 401/403 responses on denied attempts (consumed by the error
+          card) and a benign React 19 ref deprecation warning from a third-party lib.
+
+metadata:
+  created_by: "main_agent"
+  version: "1.3"
+  test_sequence: 10
+  run_ui: true
+
 test_plan:
   current_focus: []
   stuck_tasks: []

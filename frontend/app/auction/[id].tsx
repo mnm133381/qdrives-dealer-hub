@@ -16,6 +16,7 @@ import { api, wsUrl } from '../../src/api';
 import { useAuth } from '../../src/auth';
 import { CountdownTimer } from '../../src/components/CountdownTimer';
 import { LivePulse } from '../../src/components/LivePulse';
+import { InspectionPdfCard } from '../../src/components/InspectionPdfCard';
 import { useToast } from '../../src/toast';
 
 const { width: SCREEN_W } = Dimensions.get('window');

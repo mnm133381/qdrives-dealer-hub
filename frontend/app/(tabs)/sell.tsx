@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Search, Sparkles, Clock, ArrowRight, ShieldCheck, ChevronRight, FileCheck2, Camera as CameraIcon } from 'lucide-react-native';
+import { Search, Sparkles, Clock, ArrowRight, ShieldCheck, ChevronRight, FileCheck2 } from 'lucide-react-native';
 import { colors, radii, formatINRFull, formatINR } from '../../src/theme';
 import { api } from '../../src/api';
 import { useToast } from '../../src/toast';
@@ -112,6 +112,70 @@ export default function Sell() {
           <Text style={styles.sub}>Verified inventory. Maximum bidder reach. Settlement in 48 hours.</Text>
         </View>
 
+        {/* PRIMARY ACTION — Inspection Report card (above-the-fold, high-visibility) */}
+        <TouchableOpacity
+          activeOpacity={0.92}
+          onPress={() => router.push('/sell/inspection')}
+          testID="sell-inspection-cta"
+          style={[
+            styles.inspCard,
+            inspStats.status === 'in_progress' && styles.inspCardProgress,
+            inspStats.status === 'completed' && styles.inspCardDone,
+          ]}
+        >
+          <View style={styles.inspTopRow}>
+            <View style={[
+              styles.inspBadge,
+              inspStats.status === 'in_progress' && styles.inspBadgeProgress,
+              inspStats.status === 'completed' && styles.inspBadgeDone,
+            ]}>
+              {inspStats.status === 'completed' ? (
+                <ShieldCheck size={12} color={colors.success} />
+              ) : inspStats.status === 'in_progress' ? (
+                <FileCheck2 size={12} color={colors.warning} />
+              ) : (
+                <FileCheck2 size={12} color={colors.red} />
+              )}
+              <Text style={[
+                styles.inspBadgeText,
+                inspStats.status === 'completed' && { color: colors.success },
+                inspStats.status === 'in_progress' && { color: colors.warning },
+                inspStats.status === 'not_started' && { color: colors.red },
+              ]}>
+                {inspStats.status === 'completed' ? 'COMPLETED' : inspStats.status === 'in_progress' ? 'IN PROGRESS' : 'NOT STARTED'}
+              </Text>
+            </View>
+            <Text style={styles.inspPercent}>{inspStats.percent}%</Text>
+          </View>
+
+          <Text style={styles.inspTitle}>Complete inspection report</Text>
+          <Text style={styles.inspSub}>
+            {inspStats.status === 'completed'
+              ? 'All sections verified · ready to launch'
+              : inspStats.status === 'in_progress'
+              ? `${inspStats.completed} of ${inspStats.total} sections complete · keep going`
+              : 'Verified reports earn up to 18% higher bids on Q Drives'}
+          </Text>
+
+          <View style={styles.inspProgressTrack}>
+            <View
+              style={[
+                styles.inspProgressFill,
+                { width: `${inspStats.percent}%` },
+                inspStats.status === 'completed' && { backgroundColor: colors.success },
+                inspStats.status === 'in_progress' && { backgroundColor: colors.warning },
+              ]}
+            />
+          </View>
+
+          <View style={styles.inspCtaRow}>
+            <Text style={styles.inspCtaText}>
+              {inspStats.status === 'completed' ? 'Review inspection' : inspStats.status === 'in_progress' ? 'Continue inspection' : 'Start inspection'}
+            </Text>
+            <ChevronRight size={16} color={inspStats.status === 'completed' ? colors.success : inspStats.status === 'in_progress' ? colors.warning : colors.red} />
+          </View>
+        </TouchableOpacity>
+
         {/* Step 1: Reg lookup */}
         <View style={styles.section}>
           <Text style={styles.label}>Registration number</Text>
@@ -142,18 +206,12 @@ export default function Sell() {
           )}
         </View>
 
-        {/* Step 2: Photos placeholder (managed inside inspection report) */}
+        {/* Step 2: Photos quick-status (managed inside inspection report) */}
         <View style={styles.section}>
-          <Text style={styles.label}>Photos & inspection</Text>
-          <View style={styles.uploadGrid}>
-            {[0, 1, 2, 3].map((i) => (
-              <View key={i} style={styles.uploadCell}>
-                <CameraIcon size={18} color={colors.textChrome} />
-                <Text style={styles.uploadLabel}>{i === 0 ? 'Front' : i === 1 ? 'Back' : i === 2 ? 'Side' : 'Interior'}</Text>
-              </View>
-            ))}
+          <View style={styles.photosHeader}>
+            <Text style={styles.label}>Photos</Text>
+            <Text style={styles.photosLink}>{(draft.photos.photoCount || 0)}/4 in inspection</Text>
           </View>
-          <Text style={styles.helper}>Photos are captured inside the inspection report</Text>
         </View>
 
         {/* Step 3: AI estimate */}
@@ -336,4 +394,6 @@ const styles = StyleSheet.create({
   inspProgressFill: { height: '100%', backgroundColor: colors.red, borderRadius: 3 },
   inspCtaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 },
   inspCtaText: { color: colors.textPrimary, fontSize: 13, fontWeight: '800', letterSpacing: 0.4 },
+  photosHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  photosLink: { color: colors.textMuted, fontSize: 11, fontWeight: '700', letterSpacing: 0.4 },
 });

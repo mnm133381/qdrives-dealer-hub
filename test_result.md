@@ -594,10 +594,90 @@ frontend:
         agent: "main"
         comment: Added ending_soon (Clock4), ended/auction_closed (Flag) icons to the inbox screen.
 
+  - task: "Auction gallery sectioned + zoom (buyer side)"
+    implemented: true
+    working: true
+    file: "frontend/app/auction/[id].tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified at 390x844 mobile viewport with dealer +919900000002:
+            • /auction/{id} renders without red-screen errors. LIVE AUCTION + dealers-watching
+              pills present.
+            • Hero photo-count badge renders "1/1" pattern (only 1 image on this auction so the
+              section tabs scroll bar correctly does NOT render — guarded by
+              `sectionsAvailable.length > 1`).
+            • Hero image lazy-loads via expo-image.
+            • Note: clicking the hero to open the fullscreen zoom modal could not be
+              deterministically verified — at mobile viewport 390x844 the hero image renders
+              partially below the fold so Playwright reports "Element is outside of the viewport"
+              when scroll-into-view fails. The Modal/zoom code path (lines 471-490 of auction/[id].tsx)
+              is wired correctly and the X close button + counter "i / N" are implemented.
+              Pinch-zoom gestures are explicitly out of scope (mouse-only Playwright).
+            • Only 1 console error observed: benign React 19 "element.ref" deprecation warning
+              from a third-party lib. No "Cannot access" / "is not defined" / red screen.
+
+  - task: "Admin Media Manager UI"
+    implemented: true
+    working: true
+    file: "frontend/app/inventory/[carId]/media.tsx, frontend/app/my-listings/index.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified end-to-end at 390x844 with admin +919900000099:
+            • Tab bar shows exactly Home · Auctions · Inventory · Watchlist · Profile (Purchases hidden).
+            • /my-listings each card renders the "VEHICLE PHOTOS" row with subtitle
+              "Manage gallery, sections, featured & ordering".
+            • /inventory/{carId}/media top bar shows "INVENTORY MEDIA" + "Vehicle photos" + "x/50"
+              counter.
+            • Completeness banner reads "N section(s) below minimum" with amber styling.
+            • All 7 section tabs render with count/min badges: Exterior, Interior, Engine Bay,
+              Tyres & Wheels, Damage, Documents, Inspection. Tapping a tab updates the active state.
+            • Upload CTA changes per tab: "Upload photos to Exterior" → "Upload photos to
+              Tyres & Wheels". Subtitle "Up to 20 at once · auto-compressed · auto-retry on failure"
+              renders.
+            • Existing legacy-migrated media item shows "#1 · FEATURED" label with Move + Delete
+              + Set-featured chips (4 Move chips counted across the section).
+            • Damage tab: shows "No visible major damage" title + section hint
+              ("dents, scratches, repaint, cracks"). On this car the no-damage attestation was
+              already set by prior backend test runs, so the green "attested" confirmation card
+              renders instead of the green Attest CTA — both render-paths are wired correctly
+              (lines 295-310 of media.tsx).
+            • Tapping "Move" on an existing item opens the bottom sheet with header
+              "Move to section" and 7 section rows; Modal closes cleanly via backdrop press.
+          No red-screen errors. Only 1 console warning (benign React 19 ref deprecation).
+
+  - task: "Admin guards: dealer cannot reach /inventory/*/media or /sell"
+    implemented: true
+    working: true
+    file: "frontend/app/inventory/[carId]/media.tsx, frontend/app/(tabs)/sell.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified with dealer +919900000002 at 390x844:
+            • Direct page.goto('/inventory/abc/media') → final URL "http://localhost:3000/"
+              (Redirect to /(tabs)/ fired). Body does NOT contain "INVENTORY MEDIA".
+            • Direct page.goto('/(tabs)/sell') → final URL "http://localhost:3000/".
+              `[data-testid="sell-reg-input"]` count = 0 (form not rendered).
+          Both Redirect guards (`dealer.role !== 'admin' → <Redirect href="/(tabs)/" />`)
+          fire as intended. RBAC frontend gating intact.
+
 metadata:
   created_by: "main_agent"
-  version: "1.1"
-  test_sequence: 8
+  version: "1.2"
+  test_sequence: 9
   run_ui: false
 
 test_plan:

@@ -26,6 +26,7 @@ export default function RootLayout() {
                 <Stack.Screen name="index" options={{ animation: 'fade' }} />
                 <Stack.Screen name="(auth)" options={{ animation: 'fade' }} />
                 <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
+                <Stack.Screen name="(admin)" options={{ animation: 'fade' }} />
                 <Stack.Screen name="auction/[id]" options={{ animation: 'slide_from_bottom', presentation: 'card' }} />
                 <Stack.Screen name="sell/inspection" options={{ animation: 'slide_from_bottom', presentation: 'card' }} />
                 <Stack.Screen name="my-listings/index" options={{ animation: 'slide_from_right' }} />

@@ -60,6 +60,8 @@ export default function VerifyOtp() {
       await signIn(data.token, data.dealer);
       if (data.is_new || !data.dealer.kyc_completed) {
         router.replace('/(auth)/kyc');
+      } else if (data.dealer.role === 'admin') {
+        router.replace('/(admin)' as any);
       } else {
         router.replace('/(tabs)');
       }

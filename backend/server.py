@@ -180,6 +180,18 @@ class AttestNoDamageReq(BaseModel):
     no_damage_attested: bool
 
 
+class DealerVerifyReq(BaseModel):
+    verified: Optional[bool] = None
+    kyc_completed: Optional[bool] = None
+    suspended: Optional[bool] = None
+
+
+class BroadcastReq(BaseModel):
+    title: str
+    body: str
+    audience: Optional[str] = "all"  # "all" | "verified" | "active"
+
+
 # ---------- WebSocket Manager ----------
 class ConnectionManager:
     def __init__(self):
@@ -620,6 +632,194 @@ async def test_push(req: TestPushReq, dealer = Depends(get_current_dealer)):
         data={"type": "test"},
     ))
     return {"success": True}
+
+
+# ---------- Admin Operations ----------
+@api.get("/admin/dashboard")
+async def admin_dashboard(admin = Depends(get_current_admin)):
+    """Operational dashboard for the Q Drives admin shell."""
+    now = now_utc()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    [
+        live_count, upcoming_count, ended_today,
+        total_dealers, verified_dealers, suspended_dealers,
+        total_inventory, listings_today, bids_today,
+    ] = await asyncio.gather(
+        db.auctions.count_documents({"status": "live"}),
+        db.auctions.count_documents({"status": "upcoming"}),
+        db.auctions.count_documents({"status": "ended", "end_time": {"$gte": today_start}}),
+        db.dealers.count_documents({"role": {"$ne": "admin"}}),
+        db.dealers.count_documents({"role": {"$ne": "admin"}, "verified": True}),
+        db.dealers.count_documents({"role": {"$ne": "admin"}, "suspended": True}),
+        db.cars.count_documents({}),
+        db.cars.count_documents({"created_at": {"$gte": today_start}}),
+        db.bids.count_documents({"created_at": {"$gte": today_start}}),
+    )
+
+    # Today's GMV (sum of current_bid for ended-today auctions where reserve met)
+    gmv_pipeline = [
+        {"$match": {"status": "ended", "end_time": {"$gte": today_start}}},
+        {"$project": {"current_bid": 1, "reserve_price": 1, "won": {"$gte": ["$current_bid", "$reserve_price"]}}},
+        {"$match": {"won": True}},
+        {"$group": {"_id": None, "total": {"$sum": "$current_bid"}, "n": {"$sum": 1}}},
+    ]
+    gmv_today = 0
+    deals_today = 0
+    async for doc in db.auctions.aggregate(gmv_pipeline):
+        gmv_today = doc.get("total") or 0
+        deals_today = doc.get("n") or 0
+
+    # Top dealers by purchases
+    top_pipeline = [
+        {"$match": {"status": "ended", "top_bidder_id": {"$ne": None}}},
+        {"$group": {"_id": "$top_bidder_id", "wins": {"$sum": 1}, "spend": {"$sum": "$current_bid"}}},
+        {"$sort": {"spend": -1}},
+        {"$limit": 5},
+    ]
+    top_dealers: List[Dict[str, Any]] = []
+    async for doc in db.auctions.aggregate(top_pipeline):
+        d = await db.dealers.find_one({"id": doc["_id"]}, {"_id": 0, "id": 1, "dealership_name": 1, "city": 1, "trust_score": 1})
+        if d:
+            top_dealers.append({**d, "wins": doc["wins"], "spend": doc["spend"]})
+
+    # Recent admin-relevant activity (last 5 ended auctions)
+    recent: List[Dict[str, Any]] = []
+    async for a in db.auctions.find({"status": "ended"}).sort("end_time", -1).limit(5):
+        car = await db.cars.find_one({"id": a["car_id"]}, {"_id": 0, "make": 1, "model": 1, "year": 1, "registration_number": 1})
+        recent.append({
+            "id": a["id"],
+            "car": car or {},
+            "final_bid": a.get("current_bid", 0),
+            "reserve_price": a.get("reserve_price", 0),
+            "ended_at": a.get("end_time").isoformat() if a.get("end_time") else None,
+            "reserve_met": (a.get("current_bid", 0) >= a.get("reserve_price", 0)),
+        })
+
+    return {
+        "auctions": {
+            "live": live_count, "upcoming": upcoming_count, "ended_today": ended_today,
+        },
+        "dealers": {
+            "total": total_dealers, "verified": verified_dealers, "suspended": suspended_dealers,
+            "pending_verification": max(total_dealers - verified_dealers, 0),
+        },
+        "inventory": {
+            "total": total_inventory, "listings_today": listings_today,
+        },
+        "activity": {
+            "bids_today": bids_today, "deals_today": deals_today, "gmv_today_inr": gmv_today,
+        },
+        "top_dealers": top_dealers,
+        "recent_outcomes": recent,
+    }
+
+
+@api.get("/admin/dealers")
+async def admin_dealers(
+    q: Optional[str] = None,
+    status_filter: Optional[str] = None,  # 'verified' | 'pending' | 'suspended'
+    admin = Depends(get_current_admin),
+):
+    """List dealers (excluding other admins) with filters for the approval queue."""
+    query: Dict[str, Any] = {"role": {"$ne": "admin"}}
+    if status_filter == "verified":
+        query["verified"] = True
+        query["suspended"] = {"$ne": True}
+    elif status_filter == "pending":
+        query["verified"] = {"$ne": True}
+    elif status_filter == "suspended":
+        query["suspended"] = True
+    if q:
+        query["$or"] = [
+            {"phone": {"$regex": q, "$options": "i"}},
+            {"dealership_name": {"$regex": q, "$options": "i"}},
+            {"full_name": {"$regex": q, "$options": "i"}},
+            {"city": {"$regex": q, "$options": "i"}},
+        ]
+    items = await db.dealers.find(query, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
+    # Enrich with quick metrics
+    out = []
+    for d in items:
+        bids = await db.bids.count_documents({"dealer_id": d["id"]})
+        wins = await db.auctions.count_documents({"top_bidder_id": d["id"], "status": "ended"})
+        out.append({**serialize(d), "bids_count": bids, "wins_count": wins})
+    return out
+
+
+@api.post("/admin/dealers/{dealer_id}/verify")
+async def admin_verify_dealer(
+    dealer_id: str, req: DealerVerifyReq, admin = Depends(get_current_admin),
+):
+    """Approve / suspend / re-verify a dealer."""
+    target = await db.dealers.find_one({"id": dealer_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    if target.get("role") == "admin":
+        raise HTTPException(status_code=400, detail="Cannot mutate admin accounts")
+
+    update: Dict[str, Any] = {}
+    if req.verified is not None:
+        update["verified"] = bool(req.verified)
+        if req.verified:
+            update["suspended"] = False
+    if req.kyc_completed is not None:
+        update["kyc_completed"] = bool(req.kyc_completed)
+    if req.suspended is not None:
+        update["suspended"] = bool(req.suspended)
+    if not update:
+        return serialize(target)
+    await db.dealers.update_one({"id": dealer_id}, {"$set": update})
+    updated = await db.dealers.find_one({"id": dealer_id}, {"_id": 0})
+
+    # Push verification status change
+    if req.verified is True:
+        title = "Dealer status verified"
+        body = f"Welcome, {updated.get('dealership_name') or 'dealer'}. You are now an active Q Drives dealer."
+        await db.notifications.insert_one({
+            "id": str(uuid.uuid4()), "dealer_id": dealer_id, "type": "verification",
+            "title": title, "body": body, "auction_id": None,
+            "read": False, "created_at": now_utc(),
+        })
+        asyncio.create_task(send_to_dealer(db, dealer_id, title, body, data={"type": "verification"}))
+    elif req.suspended is True:
+        title = "Account suspended"
+        body = "Your Q Drives account has been suspended. Contact support for details."
+        await db.notifications.insert_one({
+            "id": str(uuid.uuid4()), "dealer_id": dealer_id, "type": "suspended",
+            "title": title, "body": body, "auction_id": None,
+            "read": False, "created_at": now_utc(),
+        })
+        asyncio.create_task(send_to_dealer(db, dealer_id, title, body, data={"type": "suspended"}))
+    return serialize(updated)
+
+
+@api.post("/admin/notifications/broadcast")
+async def admin_broadcast(req: BroadcastReq, admin = Depends(get_current_admin)):
+    """Broadcast a push to all (verified|active) dealers."""
+    audience = (req.audience or "all").lower()
+    q: Dict[str, Any] = {"role": {"$ne": "admin"}}
+    if audience == "verified":
+        q["verified"] = True
+        q["suspended"] = {"$ne": True}
+    elif audience == "active":
+        q["suspended"] = {"$ne": True}
+    ids = [d["id"] async for d in db.dealers.find(q, {"id": 1, "_id": 0})]
+    if not ids:
+        return {"sent": 0}
+    # Persist notification per dealer + dispatch push fan-out
+    docs = []
+    now = now_utc()
+    for did in ids:
+        docs.append({
+            "id": str(uuid.uuid4()), "dealer_id": did, "type": "broadcast",
+            "title": req.title, "body": req.body, "auction_id": None,
+            "read": False, "created_at": now,
+        })
+    if docs:
+        await db.notifications.insert_many(docs)
+    asyncio.create_task(send_to_dealers(db, ids, req.title, req.body, data={"type": "broadcast"}))
+    return {"sent": len(ids)}
 
 
 # ---------- Auction Lifecycle Scheduler (ending-soon / ended winner) ----------

@@ -1,269 +1,326 @@
 """
-Backend tests for Q Drives vehicle media platform.
-Targets public ingress URL (EXPO_PUBLIC_BACKEND_URL).
-Auth: mock OTP 123456. Admin: +919900000099, Dealer: +919900000002.
-"""
-import io
-import sys
-import httpx
-import traceback
+Backend tests for Q Drives admin endpoints + role-based UX.
 
-BASE = "https://qdrives-dealer-hub.preview.emergentagent.com"
-API = BASE + "/api"
+Targets the public ingress URL (EXPO_PUBLIC_BACKEND_URL) at /api.
+"""
+import sys
+import requests
+from typing import Dict, Any, Tuple
+
+# Resolve base URL from frontend env (preserves the contract)
+FRONTEND_ENV = "/app/frontend/.env"
+BASE = None
+with open(FRONTEND_ENV) as f:
+    for line in f:
+        if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
+            BASE = line.strip().split("=", 1)[1].strip('"')
+            break
+if not BASE:
+    print("ERROR: missing EXPO_PUBLIC_BACKEND_URL")
+    sys.exit(1)
+API = f"{BASE}/api"
+print(f"[INFO] API base: {API}")
 
 ADMIN_PHONE = "+919900000099"
 DEALER_PHONE = "+919900000002"
 OTP = "123456"
 
-results = []
+failures = []
+passes = []
 
 
-def log(name, ok, detail=""):
-    results.append((name, ok, detail))
-    prefix = "PASS" if ok else "FAIL"
-    print(f"[{prefix}] {name} :: {detail}")
+def check(cond: bool, label: str, detail: str = ""):
+    if cond:
+        passes.append(label)
+        print(f"  PASS {label}")
+    else:
+        failures.append((label, detail))
+        print(f"  FAIL {label} :: {detail}")
 
 
-def login(phone: str):
-    r = httpx.post(f"{API}/auth/send-otp", json={"phone": phone}, timeout=30)
+def login(phone: str) -> Tuple[str, Dict[str, Any]]:
+    r = requests.post(f"{API}/auth/send-otp", json={"phone": phone}, timeout=20)
     r.raise_for_status()
-    r = httpx.post(f"{API}/auth/verify-otp", json={"phone": phone, "otp": OTP}, timeout=30)
+    r = requests.post(f"{API}/auth/verify-otp", json={"phone": phone, "otp": OTP}, timeout=20)
     r.raise_for_status()
     data = r.json()
     return data["token"], data["dealer"]
 
 
-def make_jpeg(color: str = "red") -> bytes:
-    from PIL import Image
-    buf = io.BytesIO()
-    Image.new("RGB", (64, 64), color).save(buf, "JPEG")
-    return buf.getvalue()
+def auth(tok: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {tok}"}
 
 
-def main():
-    admin_tok, admin_dealer = login(ADMIN_PHONE)
-    dealer_tok, dealer_dealer = login(DEALER_PHONE)
-    log("login admin+dealer", True, f"admin role={admin_dealer.get('role')} dealer role={dealer_dealer.get('role')}")
+# =========================================================================
+print("\n[1] Login admin + dealer")
+admin_token, admin_d = login(ADMIN_PHONE)
+dealer_token, dealer_d = login(DEALER_PHONE)
+check(admin_d.get("role") == "admin", "admin login -> role=admin",
+      f"got role={admin_d.get('role')}")
+check(dealer_d.get("role") == "dealer", "dealer login -> role=dealer",
+      f"got role={dealer_d.get('role')}")
 
-    admin_h = {"Authorization": f"Bearer {admin_tok}"}
-    dealer_h = {"Authorization": f"Bearer {dealer_tok}"}
+# =========================================================================
+print("\n[2] GET /api/admin/dashboard")
+r = requests.get(f"{API}/admin/dashboard", headers=auth(admin_token), timeout=20)
+check(r.status_code == 200, "admin/dashboard 200", f"status={r.status_code} body={r.text[:200]}")
+if r.status_code == 200:
+    d = r.json()
+    auctions = d.get("auctions", {})
+    dealers = d.get("dealers", {})
+    inventory = d.get("inventory", {})
+    activity = d.get("activity", {})
+    for k in ("live", "upcoming", "ended_today"):
+        v = auctions.get(k)
+        check(isinstance(v, int) and v >= 0, f"auctions.{k} non-neg int", f"{k}={v}")
+    for k in ("total", "verified", "suspended", "pending_verification"):
+        v = dealers.get(k)
+        check(isinstance(v, int) and v >= 0, f"dealers.{k} non-neg int", f"{k}={v}")
+    check(dealers.get("total", 0) >= 5, "dealers.total >= 5", f"total={dealers.get('total')}")
+    for k in ("total", "listings_today"):
+        v = inventory.get(k)
+        check(isinstance(v, int) and v >= 0, f"inventory.{k} non-neg int", f"{k}={v}")
+    check(inventory.get("total", 0) >= 12, "inventory.total >= 12",
+          f"total={inventory.get('total')}")
+    for k in ("bids_today", "deals_today", "gmv_today_inr"):
+        v = activity.get(k)
+        check(isinstance(v, int) and v >= 0, f"activity.{k} non-neg int", f"{k}={v}")
+    check(isinstance(d.get("top_dealers"), list), "top_dealers is list")
+    check(isinstance(d.get("recent_outcomes"), list), "recent_outcomes is list")
 
-    r = httpx.get(f"{API}/auctions", timeout=30)
-    r.raise_for_status()
-    auctions = r.json()
-    assert auctions, "no auctions"
-    car_id = auctions[0]["car"]["id"]
-    log("pick first auction car", True, f"car_id={car_id}")
+# Dealer 403
+r = requests.get(f"{API}/admin/dashboard", headers=auth(dealer_token), timeout=20)
+check(r.status_code == 403, "admin/dashboard dealer 403", f"status={r.status_code}")
+check("Admin access required" in r.text, "dealer error detail mentions admin",
+      f"body={r.text[:200]}")
 
-    # ===== 1. List media =====
-    r = httpx.get(f"{API}/cars/{car_id}/media", timeout=30)
-    if r.status_code != 200:
-        log("GET media 200", False, f"{r.status_code} {r.text[:200]}")
-        return
-    items = r.json()
-    log("GET media non-empty list", isinstance(items, list) and len(items) >= 1, f"len={len(items)}")
-    first = items[0] if items else {}
-    required = ["id", "car_id", "section", "order", "is_featured", "provider", "url", "thumb_url"]
-    missing_keys = [k for k in required if k not in first]
-    log("media item required fields", not missing_keys, f"missing={missing_keys}")
-    log("first item is_featured=true, provider=external",
-        first.get("is_featured") is True and first.get("provider") == "external",
-        f"is_featured={first.get('is_featured')} provider={first.get('provider')}")
+# No token 401
+r = requests.get(f"{API}/admin/dashboard", timeout=20)
+check(r.status_code in (401, 403), "admin/dashboard no token -> 401/403",
+      f"status={r.status_code}")
 
-    legacy_exterior_id = None
-    for it in items:
-        if it.get("provider") == "external" and it.get("section") == "exterior":
-            legacy_exterior_id = it["id"]
-            break
-    log("auto-migrated external exterior item found", legacy_exterior_id is not None, f"id={legacy_exterior_id}")
+# =========================================================================
+print("\n[3] GET /api/admin/dealers")
+r = requests.get(f"{API}/admin/dealers", headers=auth(admin_token), timeout=20)
+check(r.status_code == 200, "admin/dealers 200", f"status={r.status_code}")
+dealers_list = r.json() if r.status_code == 200 else []
+check(isinstance(dealers_list, list), "admin/dealers returns list")
+required = {"id", "dealership_name", "phone", "verified", "kyc_completed",
+            "bids_count", "wins_count"}
+if dealers_list:
+    sample = dealers_list[0]
+    missing = required - set(sample.keys())
+    check(not missing, "admin/dealers item has required fields",
+          f"missing={missing} sample_keys={list(sample.keys())}")
+    bad_bid = [d for d in dealers_list if not isinstance(d.get("bids_count"), int)]
+    bad_win = [d for d in dealers_list if not isinstance(d.get("wins_count"), int)]
+    check(not bad_bid, "all dealers have int bids_count", f"bad={bad_bid[:1]}")
+    check(not bad_win, "all dealers have int wins_count", f"bad={bad_win[:1]}")
 
-    r = httpx.get(f"{API}/cars/{car_id}/media?section=interior", timeout=30)
-    log("GET media?section=interior 200 list (not 500)",
-        r.status_code == 200 and isinstance(r.json(), list),
-        f"status={r.status_code} len={len(r.json()) if r.status_code==200 else 'n/a'}")
+# Admin must be excluded
+admin_phones_in_list = [d for d in dealers_list if d.get("phone") == ADMIN_PHONE]
+check(len(admin_phones_in_list) == 0, "admin account excluded from /admin/dealers",
+      f"found admin={admin_phones_in_list}")
+roles = [d.get("role") for d in dealers_list]
+check(all(rr != "admin" for rr in roles), "no role=admin entries",
+      f"roles={set(roles)}")
 
-    # ===== 2. Completeness =====
-    r = httpx.get(f"{API}/cars/{car_id}/media/completeness", headers=dealer_h, timeout=30)
-    log("GET completeness dealer 200", r.status_code == 200, f"{r.status_code}")
-    comp = r.json()
-    log("completeness valid=false", comp.get("valid") is False, f"valid={comp.get('valid')}")
-    log("completeness counts dict", isinstance(comp.get("counts"), dict), f"counts={comp.get('counts')}")
-    missing = comp.get("missing") or []
-    shape_ok = len(missing) > 0 and all("section" in m and "have" in m and "need" in m for m in missing)
-    log("missing entries have section/have/need", shape_ok, f"missing={missing}")
-    damage_entry = next((m for m in missing if m["section"] == "damage"), None)
-    log("damage entry needs_attestation=true",
-        damage_entry is not None and damage_entry.get("needs_attestation") is True,
-        f"damage_entry={damage_entry}")
+# Status filter pending
+r = requests.get(f"{API}/admin/dealers", params={"status_filter": "pending"},
+                 headers=auth(admin_token), timeout=20)
+check(r.status_code == 200, "admin/dealers status_filter=pending 200")
+pending = r.json() if r.status_code == 200 else []
+all_pending_unverified = all(not d.get("verified") for d in pending)
+check(all_pending_unverified, "all pending have verified=false",
+      f"counter-examples={[d for d in pending if d.get('verified')]}")
 
-    # ===== 3. Upload =====
-    jpeg_bytes = make_jpeg("red")
+# Status filter verified
+r = requests.get(f"{API}/admin/dealers", params={"status_filter": "verified"},
+                 headers=auth(admin_token), timeout=20)
+check(r.status_code == 200, "admin/dealers status_filter=verified 200")
+verified = r.json() if r.status_code == 200 else []
+all_verified = all(d.get("verified") and not d.get("suspended") for d in verified)
+check(all_verified, "verified filter -> verified=true and not suspended",
+      f"len={len(verified)}")
 
-    # invalid section
-    r = httpx.post(f"{API}/media/upload", headers=admin_h,
-                   data={"car_id": car_id, "section": "foo", "width": "64", "height": "64"},
-                   files={"file": ("img.jpg", jpeg_bytes, "image/jpeg")}, timeout=60)
-    log("upload invalid section -> 400", r.status_code == 400, f"{r.status_code} {r.text[:160]}")
+# q=Royal
+r = requests.get(f"{API}/admin/dealers", params={"q": "Royal"},
+                 headers=auth(admin_token), timeout=20)
+check(r.status_code == 200, "admin/dealers q=Royal 200")
+royal = r.json() if r.status_code == 200 else []
+check(any("Royal" in (d.get("dealership_name") or "") for d in royal),
+      "q=Royal returns at least one Royal Drives Co.", f"len={len(royal)}")
 
-    # dealer
-    r = httpx.post(f"{API}/media/upload", headers=dealer_h,
-                   data={"car_id": car_id, "section": "interior", "width": "64", "height": "64"},
-                   files={"file": ("img.jpg", jpeg_bytes, "image/jpeg")}, timeout=60)
-    log("upload dealer -> 403 Admin required",
-        r.status_code == 403 and "Admin" in r.text, f"{r.status_code} {r.text[:160]}")
+# Dealer 403
+r = requests.get(f"{API}/admin/dealers", headers=auth(dealer_token), timeout=20)
+check(r.status_code == 403, "admin/dealers dealer 403", f"status={r.status_code}")
 
-    # admin
-    r = httpx.post(f"{API}/media/upload", headers=admin_h,
-                   data={"car_id": car_id, "section": "interior", "width": "64", "height": "64"},
-                   files={"file": ("img.jpg", jpeg_bytes, "image/jpeg")}, timeout=60)
-    log("upload admin -> 200", r.status_code == 200, f"{r.status_code} {r.text[:200]}")
-    uploaded = r.json() if r.status_code == 200 else {}
-    interior_id = uploaded.get("id")
-    log("provider=gridfs", uploaded.get("provider") == "gridfs", f"provider={uploaded.get('provider')}")
-    log("section=interior", uploaded.get("section") == "interior", f"section={uploaded.get('section')}")
-    log("is_featured=false (had featured already)", uploaded.get("is_featured") is False,
-        f"is_featured={uploaded.get('is_featured')}")
-    expected_url = f"/api/media/{interior_id}/file"
-    log("url=/api/media/{id}/file", uploaded.get("url") == expected_url, f"url={uploaded.get('url')}")
-    log("thumb_url falls back to /file (no thumb)", uploaded.get("thumb_url") == expected_url,
-        f"thumb_url={uploaded.get('thumb_url')}")
+# =========================================================================
+print("\n[4] POST /api/admin/dealers/{id}/verify")
+target = None
+for d in dealers_list:
+    if d.get("phone") != DEALER_PHONE and d.get("role") != "admin":
+        target = d
+        break
+if not target and dealers_list:
+    target = dealers_list[0]
+check(target is not None, "found a non-admin dealer to mutate")
+target_id = target["id"]
+print(f"  target dealer: {target.get('phone')} id={target_id}")
 
-    # ===== 4. Fetch file & thumb =====
-    r = httpx.get(f"{API}/media/{interior_id}/file", timeout=30)
-    log("GET /media/{id}/file 200", r.status_code == 200, f"status={r.status_code} len={len(r.content)}")
-    log("file content-type image/jpeg",
-        r.headers.get("content-type", "").startswith("image/jpeg"),
-        f"ct={r.headers.get('content-type')}")
-    log("file body bytes == uploaded", r.content == jpeg_bytes,
-        f"body_len={len(r.content)} up_len={len(jpeg_bytes)}")
+# Verify true
+r = requests.post(f"{API}/admin/dealers/{target_id}/verify",
+                  json={"verified": True}, headers=auth(admin_token), timeout=20)
+check(r.status_code == 200, "verify {verified:true} -> 200",
+      f"status={r.status_code} body={r.text[:200]}")
+if r.status_code == 200:
+    body = r.json()
+    check(body.get("verified") is True, "response.verified=true",
+          f"got={body.get('verified')}")
+    check(body.get("suspended") is False, "response.suspended=false after verify",
+          f"got={body.get('suspended')}")
 
-    r = httpx.get(f"{API}/media/{interior_id}/thumb", timeout=30)
-    log("GET /media/{id}/thumb 200 (fallback)", r.status_code == 200, f"status={r.status_code}")
-    log("thumb body == uploaded (no thumb sent)", r.content == jpeg_bytes,
-        f"body_len={len(r.content)}")
+# Suspend true
+r = requests.post(f"{API}/admin/dealers/{target_id}/verify",
+                  json={"suspended": True}, headers=auth(admin_token), timeout=20)
+check(r.status_code == 200, "verify {suspended:true} -> 200")
+if r.status_code == 200:
+    body = r.json()
+    check(body.get("suspended") is True, "response.suspended=true",
+          f"got={body.get('suspended')}")
 
-    # ===== 5. Reorder =====
-    r = httpx.get(f"{API}/cars/{car_id}/media", timeout=30)
-    items = r.json()
-    ids_in_order = [it["id"] for it in items]
-    ordered = [interior_id, legacy_exterior_id]
-    other_ids = [i for i in ids_in_order if i not in ordered]
-    payload_ids = ordered + other_ids
+# Reinstate
+r = requests.post(f"{API}/admin/dealers/{target_id}/verify",
+                  json={"suspended": False}, headers=auth(admin_token), timeout=20)
+check(r.status_code == 200, "verify {suspended:false} -> 200")
+if r.status_code == 200:
+    body = r.json()
+    check(body.get("suspended") is False, "reinstated suspended=false",
+          f"got={body.get('suspended')}")
 
-    r = httpx.post(f"{API}/cars/{car_id}/media/reorder", headers=dealer_h,
-                   json={"ordered_ids": payload_ids}, timeout=30)
-    log("reorder dealer -> 403", r.status_code == 403, f"{r.status_code}")
+# Dealer caller 403
+r = requests.post(f"{API}/admin/dealers/{target_id}/verify",
+                  json={"verified": True}, headers=auth(dealer_token), timeout=20)
+check(r.status_code == 403, "dealer cannot verify others (403)",
+      f"status={r.status_code}")
 
-    r = httpx.post(f"{API}/cars/{car_id}/media/reorder", headers=admin_h,
-                   json={"ordered_ids": payload_ids}, timeout=30)
-    log("reorder admin -> 200", r.status_code == 200, f"{r.status_code}")
+# Invalid id 404
+r = requests.post(f"{API}/admin/dealers/does-not-exist-xyz/verify",
+                  json={"verified": True}, headers=auth(admin_token), timeout=20)
+check(r.status_code == 404, "invalid dealer id 404", f"status={r.status_code}")
 
-    r = httpx.get(f"{API}/cars/{car_id}/media", timeout=30)
-    items2 = r.json()
-    by_id = {it["id"]: it for it in items2}
-    log("interior order=0", by_id.get(interior_id, {}).get("order") == 0,
-        f"order={by_id.get(interior_id, {}).get('order')}")
-    log("exterior (legacy) order=1", by_id.get(legacy_exterior_id, {}).get("order") == 1,
-        f"order={by_id.get(legacy_exterior_id, {}).get('order')}")
+# Try to mutate admin -> 400
+admin_id = admin_d["id"]
+r = requests.post(f"{API}/admin/dealers/{admin_id}/verify",
+                  json={"suspended": True}, headers=auth(admin_token), timeout=20)
+check(r.status_code == 400, "mutate admin account -> 400", f"status={r.status_code}")
+check("Cannot mutate admin" in r.text, "400 detail mentions 'Cannot mutate admin'",
+      f"body={r.text[:200]}")
 
-    # ===== 6. Featured =====
-    r = httpx.post(f"{API}/cars/{car_id}/media/featured/{interior_id}", headers=dealer_h, timeout=30)
-    log("featured dealer -> 403", r.status_code == 403, f"{r.status_code}")
+# Verify the verification notification was inserted for target
+target_token, _ = login(target["phone"])
+r = requests.get(f"{API}/notifications", headers=auth(target_token), timeout=20)
+if r.status_code == 200:
+    notifs = r.json()
+    has_verif = any(n.get("type") == "verification" for n in notifs)
+    check(has_verif, "verification notification inserted for target",
+          f"types={[n.get('type') for n in notifs[:5]]}")
 
-    r = httpx.post(f"{API}/cars/{car_id}/media/featured/{interior_id}", headers=admin_h, timeout=30)
-    log("featured admin -> 200", r.status_code == 200, f"{r.status_code}")
+# =========================================================================
+print("\n[5] POST /api/admin/notifications/broadcast")
+# Capture target dealer's unread count before broadcast (target is verified above)
+r = requests.get(f"{API}/notifications/unread-count", headers=auth(target_token), timeout=20)
+before_unread = r.json().get("unread", 0) if r.status_code == 200 else 0
+print(f"  target unread before: {before_unread}")
 
-    r = httpx.get(f"{API}/cars/{car_id}/media", timeout=30)
-    items3 = r.json()
-    flags = {it["id"]: it.get("is_featured") for it in items3}
-    log("interior is_featured=true", flags.get(interior_id) is True, f"val={flags.get(interior_id)}")
-    log("legacy exterior is_featured=false", flags.get(legacy_exterior_id) is False, f"val={flags.get(legacy_exterior_id)}")
-    log("exactly one featured", sum(1 for v in flags.values() if v) == 1,
-        f"count={sum(1 for v in flags.values() if v)}")
+# audience=verified
+r = requests.post(f"{API}/admin/notifications/broadcast",
+                  json={"title": "Test broadcast", "body": "Hello dealers",
+                        "audience": "verified"},
+                  headers=auth(admin_token), timeout=20)
+check(r.status_code == 200, "broadcast verified -> 200",
+      f"status={r.status_code} body={r.text[:200]}")
+sent_verified = 0
+if r.status_code == 200:
+    sent_verified = r.json().get("sent", 0)
+    check(isinstance(sent_verified, int) and sent_verified >= 1,
+          "broadcast verified sent >= 1", f"sent={sent_verified}")
 
-    # ===== 7. Patch section =====
-    r = httpx.patch(f"{API}/media/{interior_id}", headers=admin_h, json={"section": "engine"}, timeout=30)
-    log("PATCH section=engine 200", r.status_code == 200, f"{r.status_code} {r.text[:200]}")
-    patched = r.json() if r.status_code == 200 else {}
-    log("PATCH returned section=engine", patched.get("section") == "engine",
-        f"section={patched.get('section')}")
+# Confirm side-effect: target unread incremented (target was reinstated to verified=true)
+r = requests.get(f"{API}/notifications/unread-count", headers=auth(target_token), timeout=20)
+after_unread = r.json().get("unread", 0) if r.status_code == 200 else 0
+print(f"  target unread after verified broadcast: {after_unread}")
+check(after_unread >= before_unread + 1,
+      "target dealer unread count incremented after verified broadcast",
+      f"before={before_unread} after={after_unread}")
 
-    r = httpx.get(f"{API}/cars/{car_id}/media", timeout=30)
-    by_id4 = {it["id"]: it for it in r.json()}
-    log("GET confirms section=engine",
-        by_id4.get(interior_id, {}).get("section") == "engine",
-        f"section={by_id4.get(interior_id, {}).get('section')}")
+# audience=all
+r = requests.post(f"{API}/admin/notifications/broadcast",
+                  json={"title": "All hands", "body": "Heads up",
+                        "audience": "all"},
+                  headers=auth(admin_token), timeout=20)
+check(r.status_code == 200, "broadcast all -> 200")
+sent_all = r.json().get("sent", 0) if r.status_code == 200 else 0
+check(sent_all >= sent_verified, "broadcast all >= verified count",
+      f"all={sent_all} verified={sent_verified}")
 
-    r = httpx.patch(f"{API}/media/{interior_id}", headers=admin_h, json={"section": "invalid_foo"}, timeout=30)
-    log("PATCH invalid section -> 400", r.status_code == 400, f"{r.status_code}")
+# Dealer 403
+r = requests.post(f"{API}/admin/notifications/broadcast",
+                  json={"title": "x", "body": "y", "audience": "all"},
+                  headers=auth(dealer_token), timeout=20)
+check(r.status_code == 403, "broadcast dealer 403", f"status={r.status_code}")
 
-    # ===== 8. Attest no-damage =====
-    r = httpx.post(f"{API}/cars/{car_id}/attest-no-damage", headers=admin_h,
-                   json={"no_damage_attested": True}, timeout=30)
-    log("attest-no-damage admin -> 200", r.status_code == 200, f"{r.status_code}")
+# =========================================================================
+print("\n[6] Regression smoke")
+endpoints = [
+    ("GET", "/auctions", None, dealer_token, 200),
+    ("GET", "/dashboard/stats", None, dealer_token, 200),
+    ("GET", "/notifications", None, dealer_token, 200),
+    ("GET", "/cars", None, dealer_token, 200),
+    ("GET", "/purchases", None, dealer_token, 200),
+    ("GET", "/auth/me", None, dealer_token, 200),
+]
+for method, path, body, tok, expected in endpoints:
+    if method == "GET":
+        rr = requests.get(f"{API}{path}", headers=auth(tok) if tok else {}, timeout=20)
+    else:
+        rr = requests.post(f"{API}{path}", json=body, headers=auth(tok) if tok else {}, timeout=20)
+    check(rr.status_code == expected, f"{method} {path} -> {expected}",
+          f"status={rr.status_code}")
 
-    r = httpx.get(f"{API}/cars/{car_id}/media/completeness", headers=admin_h, timeout=30)
-    comp2 = r.json()
-    log("completeness.no_damage_attested=true", comp2.get("no_damage_attested") is True,
-        f"val={comp2.get('no_damage_attested')}")
-    miss2 = comp2.get("missing") or []
-    log("damage entry removed from missing",
-        not any(m["section"] == "damage" for m in miss2),
-        f"missing sections={[m['section'] for m in miss2]}")
+# POST /api/cars admin guard
+car_payload = {
+    "registration_number": "MH99TT0001",
+    "make": "Hyundai",
+    "model": "Verna",
+    "year": 2023,
+    "fuel_type": "Petrol",
+    "transmission": "Automatic",
+    "km_driven": 18000,
+    "owners": 1,
+    "reserve_price": 1500000,
+    "starting_bid": 1300000,
+}
+r = requests.post(f"{API}/cars", json=car_payload, headers=auth(dealer_token), timeout=20)
+check(r.status_code == 403, "POST /cars dealer 403", f"status={r.status_code}")
+r = requests.post(f"{API}/cars", json=car_payload, headers=auth(admin_token), timeout=20)
+check(r.status_code == 200, "POST /cars admin 200", f"status={r.status_code} body={r.text[:200]}")
 
-    # ===== 9. Delete =====
-    r = httpx.delete(f"{API}/media/{legacy_exterior_id}", headers=dealer_h, timeout=30)
-    log("DELETE exterior dealer -> 403", r.status_code == 403, f"{r.status_code}")
+# Media GET (public)
+auctions = requests.get(f"{API}/auctions", timeout=20).json()
+if auctions:
+    car_id = auctions[0].get("car_id")
+    if car_id:
+        r = requests.get(f"{API}/cars/{car_id}/media", timeout=20)
+        check(r.status_code == 200, "GET /cars/{id}/media 200 (public)",
+              f"status={r.status_code}")
 
-    r = httpx.delete(f"{API}/media/{interior_id}", headers=admin_h, timeout=30)
-    log("DELETE interior admin -> 200", r.status_code == 200, f"{r.status_code}")
-
-    r = httpx.delete(f"{API}/media/{interior_id}", headers=admin_h, timeout=30)
-    log("DELETE interior again -> 404", r.status_code == 404, f"{r.status_code}")
-
-    # ===== 10. Regression =====
-    r = httpx.get(f"{API}/auctions", timeout=30)
-    log("GET /auctions still works", r.status_code == 200 and len(r.json()) > 0, f"{r.status_code}")
-
-    r = httpx.get(f"{API}/cars/{car_id}", timeout=30)
-    log("GET /cars/{id} still works",
-        r.status_code == 200 and r.json().get("id") == car_id, f"{r.status_code}")
-
-    payload = {
-        "registration_number": "MH02TEST9999",
-        "make": "Hyundai", "model": "Verna", "variant": "SX(O)",
-        "year": 2023, "manufacturing_year": 2023, "registration_year": 2023,
-        "fuel_type": "Petrol", "transmission": "Automatic",
-        "km_driven": 18500, "color": "Titan Grey", "owners": 1,
-        "insurance_validity": "12/2026", "rto_details": "MH02 - Mumbai West",
-        "notes": "Regression test listing",
-        "reserve_price": 1250000, "starting_bid": 1000000,
-        "images": [], "description": "",
-        "duration_minutes": 60,
-    }
-    r = httpx.post(f"{API}/cars", headers=admin_h, json=payload, timeout=30)
-    log("POST /cars admin creates listing",
-        r.status_code == 200 and "car" in r.json() and "auction" in r.json(),
-        f"{r.status_code} {r.text[:200]}")
-
-    print()
-    print("=" * 60)
-    total = len(results)
-    passed = sum(1 for _, ok, _ in results if ok)
-    print(f"TOTAL {passed}/{total} assertions passed")
-    print("=" * 60)
-    if passed != total:
-        print("FAILURES:")
-        for n, ok, d in results:
-            if not ok:
-                print(f"  - {n} :: {d}")
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print(f"FATAL: {e}")
-        traceback.print_exc()
-        sys.exit(2)
+# =========================================================================
+print("\n========== SUMMARY ==========")
+print(f"Passed: {len(passes)}")
+print(f"Failed: {len(failures)}")
+if failures:
+    print("\nFailures:")
+    for label, detail in failures:
+        print(f"  - {label} :: {detail}")
+sys.exit(0 if not failures else 1)

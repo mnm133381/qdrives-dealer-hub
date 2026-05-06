@@ -383,6 +383,77 @@ backend:
           Storage singleton initialised on app startup; no regressions on existing
           /inspections GridFS bucket (separate "inspections" bucket).
 
+  - task: "Admin dashboard endpoint"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified end-to-end via /app/backend_test.py against the public
+          ingress URL (64/64 assertions passed for the full admin suite).
+          GET /api/admin/dashboard with admin token (+919900000099) → 200
+          with all required nested keys: auctions {live, upcoming, ended_today}
+          (all non-neg ints), dealers {total>=5, verified, suspended,
+          pending_verification} (all non-neg), inventory {total>=12,
+          listings_today}, activity {bids_today, deals_today, gmv_today_inr}.
+          top_dealers and recent_outcomes are lists. Dealer token (+919900000002)
+          → 403 with detail "Admin access required". No token → 401.
+
+  - task: "Admin dealer approvals + suspend"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          GET /api/admin/dealers (admin) → 200 list with all required fields:
+          id, dealership_name, phone, verified, kyc_completed, plus enrichment
+          bids_count + wins_count (both ints). Admin account (+919900000099)
+          and any role=admin docs are excluded. Filters status_filter=pending /
+          verified / suspended all behave correctly (verified=true entries
+          have suspended != true). q=Royal matches "Royal Drives Co.".
+          Dealer caller → 403.
+          POST /api/admin/dealers/{id}/verify exercised end-to-end:
+            • {verified:true} → 200, returns updated dealer with verified=true
+              and suspended=false. A type="verification" notification doc is
+              inserted for the target (verified via target's GET /notifications).
+            • {suspended:true} → 200, suspended=true.
+            • {suspended:false} → 200, reinstated.
+            • Dealer caller → 403.
+            • Unknown id → 404.
+            • Mutating the admin account itself → 400 with detail
+              "Cannot mutate admin accounts".
+
+  - task: "Admin broadcast notifications"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          POST /api/admin/notifications/broadcast (admin):
+            • audience="verified" → 200 {sent:N} where N>=1. Verified dealer's
+              unread-count incremented by exactly 1 after the call (2 → 3),
+              confirming a DB notification was persisted.
+            • audience="all" → 200 with sent >= verified count (sanity check).
+            • Dealer caller → 403.
+          Push fan-out is fire-and-forget via send_to_dealers (asyncio.create_task);
+          DB persistence is synchronous and verified via unread-count side
+          effect.
+
   - task: "Vehicle media CRUD endpoints"
     implemented: true
     working: true
@@ -800,3 +871,32 @@ agent_communication:
         • Regression: /auctions, /cars/{id}, POST /cars (admin) all still work.
       No backend errors in supervisor logs during the run.
       Please summarise & finish — do NOT re-fix.
+  - agent: "testing"
+    message: |
+      Admin endpoints + role-based UX backend support PASS — 64/64
+      assertions via /app/backend_test.py against public ingress URL.
+        ✅ GET /api/admin/dashboard: admin → 200 with auctions{live,upcoming,
+           ended_today}, dealers{total>=5,verified,suspended,
+           pending_verification}, inventory{total>=12,listings_today},
+           activity{bids_today,deals_today,gmv_today_inr}, top_dealers[],
+           recent_outcomes[]. Dealer → 403 "Admin access required".
+           No token → 401.
+        ✅ GET /api/admin/dealers: list with required fields incl.
+           bids_count + wins_count (ints). Admin (+919900000099)
+           and any role=admin docs excluded. status_filter=pending
+           (all verified=false), verified (all verified=true & not
+           suspended), q=Royal returns Royal Drives Co. Dealer → 403.
+        ✅ POST /api/admin/dealers/{id}/verify: {verified:true} → 200
+           with verified=true, suspended=false; verification notif
+           inserted (confirmed via target's GET /notifications).
+           {suspended:true}/{suspended:false} → 200. Dealer → 403.
+           Bad id → 404. Mutating admin id → 400 "Cannot mutate admin
+           accounts".
+        ✅ POST /api/admin/notifications/broadcast: audience=verified
+           → 200 sent>=1; target unread-count incremented (2→3).
+           audience=all → 200 with sent>=verified count. Dealer → 403.
+        ✅ Regression: /auctions, /dashboard/stats, /notifications,
+           /cars, /purchases, /auth/me, /cars/{id}/media all 200.
+           POST /cars dealer→403, admin→200.
+      No regressions, no backend errors. Please summarise & finish —
+      do NOT re-fix.

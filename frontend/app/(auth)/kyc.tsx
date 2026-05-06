@@ -32,7 +32,7 @@ export default function Kyc() {
     try {
       await api.submitKyc(form);
       await refresh();
-      router.replace('/(tabs)');
+      router.replace(updated.role === 'admin' ? ('/(admin)' as any) : '/(tabs)');
     } catch (e: any) {
       Alert.alert('Failed', e.message);
     } finally {

@@ -1,10 +1,16 @@
 import React from 'react';
 import { View, Text, ActivityIndicator, StyleSheet, Platform } from 'react-native';
 import { Tabs, Redirect } from 'expo-router';
-import { Home, Gavel, PlusCircle, Heart, User, ShoppingBag } from 'lucide-react-native';
+import { Home, Gavel, Heart, User, ShoppingBag } from 'lucide-react-native';
 import { colors } from '../../src/theme';
 import { useAuth } from '../../src/auth';
 
+/**
+ * Dealer (bidder) marketplace shell.
+ *
+ * Admins are redirected to the dedicated `/(admin)` shell. Dealers see a
+ * cinematic auction-first marketplace with no seller-leaning surfaces.
+ */
 export default function TabsLayout() {
   const { dealer, loading } = useAuth();
 
@@ -18,8 +24,7 @@ export default function TabsLayout() {
   }
   if (!dealer) return <Redirect href="/(auth)/login" />;
   if (!dealer.kyc_completed) return <Redirect href="/(auth)/kyc" />;
-
-  const isAdmin = dealer.role === 'admin';
+  if (dealer.role === 'admin') return <Redirect href="/(admin)" />;
 
   return (
     <Tabs
@@ -38,59 +43,14 @@ export default function TabsLayout() {
         tabBarLabelStyle: { fontSize: 11, fontWeight: '700', letterSpacing: 0.4 },
       }}
     >
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: 'Home',
-          tabBarIcon: ({ color, size }) => <Home size={size - 2} color={color} strokeWidth={2} />,
-        }}
-      />
-      <Tabs.Screen
-        name="auctions"
-        options={{
-          title: 'Auctions',
-          tabBarIcon: ({ color, size }) => <Gavel size={size - 2} color={color} strokeWidth={2} />,
-        }}
-      />
-
-      {/* Sell tab is admin-only; for dealers it's hidden via href:null */}
-      <Tabs.Screen
-        name="sell"
-        options={isAdmin ? {
-          title: 'Inventory',
-          tabBarIcon: () => (
-            <View style={styles.sellWrap}>
-              <PlusCircle size={32} color={colors.red} fill={colors.red} strokeWidth={2} />
-              <View style={styles.plusInner} />
-            </View>
-          ),
-          tabBarLabel: 'Inventory',
-        } : { href: null }}
-      />
-
-      {/* Purchases tab is dealer-only */}
-      <Tabs.Screen
-        name="purchases"
-        options={!isAdmin ? {
-          title: 'Purchases',
-          tabBarIcon: ({ color, size }) => <ShoppingBag size={size - 2} color={color} strokeWidth={2} />,
-        } : { href: null }}
-      />
-
-      <Tabs.Screen
-        name="watchlist"
-        options={{
-          title: 'Watchlist',
-          tabBarIcon: ({ color, size }) => <Heart size={size - 2} color={color} strokeWidth={2} />,
-        }}
-      />
-      <Tabs.Screen
-        name="profile"
-        options={{
-          title: 'Profile',
-          tabBarIcon: ({ color, size }) => <User size={size - 2} color={color} strokeWidth={2} />,
-        }}
-      />
+      <Tabs.Screen name="index" options={{ title: 'Home', tabBarIcon: ({ color, size }) => <Home size={size - 2} color={color} strokeWidth={2} /> }} />
+      <Tabs.Screen name="auctions" options={{ title: 'Auctions', tabBarIcon: ({ color, size }) => <Gavel size={size - 2} color={color} strokeWidth={2} /> }} />
+      <Tabs.Screen name="purchases" options={{ title: 'Purchases', tabBarIcon: ({ color, size }) => <ShoppingBag size={size - 2} color={color} strokeWidth={2} /> }} />
+      <Tabs.Screen name="watchlist" options={{ title: 'Watchlist', tabBarIcon: ({ color, size }) => <Heart size={size - 2} color={color} strokeWidth={2} /> }} />
+      <Tabs.Screen name="profile" options={{ title: 'Profile', tabBarIcon: ({ color, size }) => <User size={size - 2} color={color} strokeWidth={2} /> }} />
+      {/* Sell route still exists at /(tabs)/sell but is HIDDEN here for dealers; admins
+         use the /(admin)/launch tab. The screen itself redirects non-admin users. */}
+      <Tabs.Screen name="sell" options={{ href: null }} />
     </Tabs>
   );
 }
@@ -98,6 +58,4 @@ export default function TabsLayout() {
 const styles = StyleSheet.create({
   loader: { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center', gap: 14 },
   loadingText: { color: colors.textMuted, fontSize: 12, letterSpacing: 1.5, fontWeight: '700' },
-  sellWrap: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
-  plusInner: { position: 'absolute', width: 14, height: 2, backgroundColor: '#fff', borderRadius: 1 },
 });

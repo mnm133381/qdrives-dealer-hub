@@ -63,6 +63,20 @@ export const api = {
       body: JSON.stringify({ no_damage_attested: val }),
     }),
 
+  // ---- Admin operations ----
+  adminDashboard: () => request<any>('/admin/dashboard'),
+  adminDealers: (params?: { q?: string; status_filter?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.q) qs.set('q', params.q);
+    if (params?.status_filter) qs.set('status_filter', params.status_filter);
+    const s = qs.toString();
+    return request<any[]>(`/admin/dealers${s ? `?${s}` : ''}`);
+  },
+  adminVerifyDealer: (id: string, payload: { verified?: boolean; suspended?: boolean; kyc_completed?: boolean }) =>
+    request(`/admin/dealers/${id}/verify`, { method: 'POST', body: JSON.stringify(payload) }),
+  adminBroadcast: (payload: { title: string; body: string; audience?: string }) =>
+    request<{ sent: number }>('/admin/notifications/broadcast', { method: 'POST', body: JSON.stringify(payload) }),
+
   notifications: () => request('/notifications'),
   markNotificationsRead: () => request('/notifications/mark-read', { method: 'POST' }),
   unreadCount: () => request<{ unread: number }>('/notifications/unread-count'),

@@ -43,6 +43,7 @@ export const api = {
   watchlist: () => request('/watchlist'),
   addWatch: (id: string) => request(`/watchlist/${id}`, { method: 'POST' }),
   removeWatch: (id: string) => request(`/watchlist/${id}`, { method: 'DELETE' }),
+  purchases: () => request<{ won: any[]; active: any[] }>('/purchases'),
 
   notifications: () => request('/notifications'),
   markNotificationsRead: () => request('/notifications/mark-read', { method: 'POST' }),

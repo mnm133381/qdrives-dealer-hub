@@ -288,6 +288,72 @@ backend:
               rto_details, notes, rc_verified=false).
           No regressions; backward compatibility intact.
 
+  - task: "Role-based access control (admin vs dealer)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Added `role` field on dealer ('admin' | 'dealer'). Bootstrapped via env var
+          ADMIN_PHONES (auto-promotes on verify-otp + idempotent on existing accounts).
+          New get_current_admin dependency raises 403 for non-admin.
+          Locked endpoints to admin only:
+            • POST /api/cars
+            • POST /api/inspections/upload (was: seller-only — now admin only)
+          Seed data updated: all listings owned by Q Drives admin (+919900000099).
+          Existing demo data wiped + re-seeded so all auctions show seller=Q Drives Inventory.
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified end-to-end via /app/test_rbac_purchases.py against public ingress URL
+          (all 22 assertions green).
+            • Admin bootstrap: +919900000099 → dealer.role="admin". +919900000002 → "dealer".
+              A brand-new phone (+9198765xxxxx) auto-creates a dealer with role="dealer".
+            • POST /api/cars with admin token → 200 OK, returns {car, auction};
+              car.seller_id matches the admin dealer id.
+            • POST /api/cars with dealer token → 403 {"detail":"Admin access required"}.
+            • POST /api/cars with no token → 401 {"detail":"Not authenticated"}.
+            • POST /api/inspections/upload with dealer token (multipart, 360-byte dummy PDF
+              with %PDF-1.4 header) → 403 "Admin access required".
+            • POST /api/inspections/upload with admin token → 200 OK;
+              GET /api/inspections/by-car/{car_id} then returns the inspection record.
+              (Note: the endpoint for fetching inspection is /inspections/by-car/{car_id},
+              not /cars/{car_id}/inspection-pdf mentioned in the review request.)
+
+  - task: "Purchases endpoint"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          GET /api/purchases returns { won: [...], active: [...] } where:
+            • won = ended auctions where dealer was top bidder (with reserve_met flag)
+            • active = currently live auctions where dealer is currently leading
+          Used by the new dealer Purchases tab.
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified via /app/test_rbac_purchases.py.
+            • GET /api/purchases as +919900000002 (no wins yet) returned 200 with
+              shape {"won": [...], "active": [...]} — won=[] initially.
+            • Placed a bid on a live auction (current_bid + 5000). Subsequent
+              GET /api/purchases returned active[] containing that auction with
+              status="live", current_bid matching the new bid, plus car/seconds_remaining
+              fields present. won[] remained empty (auction still live).
+            • Regression: all /api/auctions entries show seller.dealership_name == "Q Drives Inventory"
+              (single admin seller). /api/dashboard/stats works for dealer token.
+              /api/notifications/register-token still accepts valid ExponentPushToken[...] → 200.
+
 frontend:
   - task: "Notifications client module"
     implemented: true
@@ -387,7 +453,25 @@ agent_communication:
            dashboard, market pulse, network activity, AI price estimate must still work.
   - agent: "testing"
     message: |
-      All 7 backend tasks PASS. Ran /app/backend_test.py against the public ingress URL
+      RBAC + Purchases tasks PASS. Ran /app/test_rbac_purchases.py against public
+      ingress URL — 22/22 assertions green.
+        • Admin bootstrap via ADMIN_PHONES works: +919900000099→role=admin,
+          +919900000002→role=dealer, brand-new phone→role=dealer.
+        • POST /api/cars admin-only: admin 200 (car.seller_id==admin.id),
+          dealer 403 {"detail":"Admin access required"}, no-token 401.
+        • POST /api/inspections/upload admin-only: dealer 403 with same detail;
+          admin 200; verified by GET /api/inspections/by-car/{car_id}.
+          (Note: original review mentioned GET /api/cars/{car_id}/inspection-pdf,
+           which isn't implemented — the actual endpoint is /inspections/by-car/{id}.
+           Functional behavior is equivalent.)
+        • GET /api/purchases: shape {won, active} correct; initial won=[] for
+          +919900000002; after a +₹5000 bid on a live auction, active[] included
+          that auction with matching current_bid, status="live", car and
+          seconds_remaining populated.
+        • Regression: all /auctions show seller.dealership_name == "Q Drives Inventory";
+          /dashboard/stats still 200 for dealer; /notifications/register-token
+          still 200 for valid Expo token.
+      No critical issues. Please summarise & finish — do NOT re-fix.
       (24/24 assertions green). Highlights:
         • register-token: 200 valid, 400 invalid, 401 unauth.
         • unregister-token: 200 (existing) + idempotent 200 (empty).

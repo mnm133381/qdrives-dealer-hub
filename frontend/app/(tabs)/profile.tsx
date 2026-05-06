@@ -56,6 +56,7 @@ export default function Profile() {
   };
 
   if (!dealer) return null;
+  const isAdmin = dealer.role === 'admin';
   return (
     <View style={[styles.root, { paddingTop: insets.top + 10 }]}>
       <ScrollView contentContainerStyle={{ paddingBottom: 60 }}>
@@ -69,6 +70,12 @@ export default function Profile() {
                 {dealer.verified && <BadgeCheck size={18} color={colors.success} />}
               </View>
               <Text style={styles.dealerInfo}>{dealer.full_name} · {dealer.city}</Text>
+              {isAdmin && (
+                <View style={styles.adminBadge}>
+                  <ShieldCheck size={11} color={colors.red} />
+                  <Text style={styles.adminBadgeText}>Q DRIVES ADMIN</Text>
+                </View>
+              )}
               <View style={styles.starRow}>
                 <Star size={12} color={colors.warning} fill={colors.warning} />
                 <Text style={styles.rating}>{(dealer.trust_score || 4.5).toFixed(1)}</Text>
@@ -87,22 +94,27 @@ export default function Profile() {
         <View style={styles.statsRow}>
           <BigStat label="LIVE BIDS" value={`${stats?.your_bids ?? 0}`} />
           <BigStat label="WINS" value={`${stats?.your_wins ?? 0}`} />
-          <BigStat label="LISTINGS" value={`${dealer.total_listed}`} />
+          {isAdmin
+            ? <BigStat label="INVENTORY" value={`${dealer.total_listed}`} />
+            : <BigStat label="WATCHING" value={`${stats?.watching ?? 0}`} />}
         </View>
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Account</Text>
+          <Row label="Role" value={isAdmin ? 'Q Drives Admin' : 'Dealer'} valueColor={isAdmin ? colors.red : colors.textPrimary} />
           <Row label="Verification" value={dealer.kyc_completed ? 'Verified' : 'Pending'} valueColor={dealer.kyc_completed ? colors.success : colors.warning} />
           <Row label="Phone" value={dealer.phone} />
           <Row label="GST" value={(dealer as any).gst_number || 'Not provided'} />
           <Row label="PAN" value={(dealer as any).pan_number || 'Not provided'} />
         </View>
 
-        <TouchableOpacity onPress={() => router.push('/my-listings')} style={styles.menuItem} testID="profile-my-listings">
-          <FileText size={18} color={colors.textChrome} />
-          <Text style={styles.menuText}>My listings & inspection PDFs</Text>
-          <ChevronRight size={16} color={colors.textMuted} />
-        </TouchableOpacity>
+        {isAdmin && (
+          <TouchableOpacity onPress={() => router.push('/my-listings')} style={styles.menuItem} testID="profile-my-listings">
+            <FileText size={18} color={colors.textChrome} />
+            <Text style={styles.menuText}>Manage inventory & inspection PDFs</Text>
+            <ChevronRight size={16} color={colors.textMuted} />
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity onPress={() => router.push('/notifications')} style={[styles.menuItem, { marginTop: 8 }]} testID="profile-notifications">
           <Bell size={18} color={colors.textChrome} />
@@ -174,6 +186,8 @@ const styles = StyleSheet.create({
   starRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 6 },
   rating: { color: colors.textPrimary, fontSize: 13, fontWeight: '700' },
   ratingMuted: { color: colors.textMuted, fontSize: 12 },
+  adminBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(185,28,28,0.10)', borderColor: 'rgba(185,28,28,0.4)', borderWidth: 1, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, alignSelf: 'flex-start', marginTop: 6 },
+  adminBadgeText: { color: colors.red, fontSize: 9, fontWeight: '900', letterSpacing: 1.2 },
 
   statsGrid: { flexDirection: 'row', gap: 8, paddingHorizontal: 20, marginTop: 20 },
   statCard: { flex: 1, backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: 1, borderRadius: radii.md, padding: 12 },

@@ -3,7 +3,7 @@ import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput,
   KeyboardAvoidingView, Platform, ActivityIndicator,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, Redirect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Sparkles, Clock, ArrowRight, ShieldCheck, ChevronRight, FileCheck2,
@@ -15,6 +15,7 @@ import { useToast } from '../../src/toast';
 import { useInspection, inspectionStats } from '../../src/inspection';
 import { storage } from '../../src/storage';
 import { Select } from '../../src/components/Select';
+import { useAuth } from '../../src/auth';
 
 const STOCK_GALLERY = [
   'https://images.unsplash.com/photo-1768965468641-39e87aa78a9d?w=1400&q=85',
@@ -130,8 +131,14 @@ export default function Sell() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const toast = useToast();
+  const { dealer } = useAuth();
   const { draft, pdfDraft, setPdfDraft } = useInspection();
   const inspStats = inspectionStats(draft);
+
+  // Admin-only access — non-admin dealers cannot create listings
+  if (dealer && dealer.role !== 'admin') {
+    return <Redirect href="/(tabs)/" />;
+  }
 
   const [form, setForm] = useState<FormShape>(EMPTY_FORM);
   const [errors, setErrors] = useState<Errors>({});

@@ -1,8 +1,7 @@
 import React from 'react';
-import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, Text, ActivityIndicator, StyleSheet, Platform } from 'react-native';
 import { Tabs, Redirect } from 'expo-router';
-import { Home, Gavel, PlusCircle, Heart, User } from 'lucide-react-native';
-import { Platform } from 'react-native';
+import { Home, Gavel, PlusCircle, Heart, User, ShoppingBag } from 'lucide-react-native';
 import { colors } from '../../src/theme';
 import { useAuth } from '../../src/auth';
 
@@ -19,6 +18,8 @@ export default function TabsLayout() {
   }
   if (!dealer) return <Redirect href="/(auth)/login" />;
   if (!dealer.kyc_completed) return <Redirect href="/(auth)/kyc" />;
+
+  const isAdmin = dealer.role === 'admin';
 
   return (
     <Tabs
@@ -51,19 +52,31 @@ export default function TabsLayout() {
           tabBarIcon: ({ color, size }) => <Gavel size={size - 2} color={color} strokeWidth={2} />,
         }}
       />
+
+      {/* Sell tab is admin-only; for dealers it's hidden via href:null */}
       <Tabs.Screen
         name="sell"
-        options={{
-          title: 'Sell',
+        options={isAdmin ? {
+          title: 'Inventory',
           tabBarIcon: () => (
             <View style={styles.sellWrap}>
               <PlusCircle size={32} color={colors.red} fill={colors.red} strokeWidth={2} />
               <View style={styles.plusInner} />
             </View>
           ),
-          tabBarLabel: 'Sell',
-        }}
+          tabBarLabel: 'Inventory',
+        } : { href: null }}
       />
+
+      {/* Purchases tab is dealer-only */}
+      <Tabs.Screen
+        name="purchases"
+        options={!isAdmin ? {
+          title: 'Purchases',
+          tabBarIcon: ({ color, size }) => <ShoppingBag size={size - 2} color={color} strokeWidth={2} />,
+        } : { href: null }}
+      />
+
       <Tabs.Screen
         name="watchlist"
         options={{

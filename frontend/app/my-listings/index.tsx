@@ -5,7 +5,7 @@
  */
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, ActivityIndicator, RefreshControl } from 'react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, Redirect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import { ArrowLeft, FileText, Upload, ChevronRight, ShieldCheck, FileX, Eye } from 'lucide-react-native';
@@ -22,6 +22,12 @@ export default function MyListings() {
   const insets = useSafeAreaInsets();
   const { dealer } = useAuth();
   const toast = useToast();
+
+  // Admin-only — dealers can't manage Q Drives inventory.
+  if (dealer && dealer.role !== 'admin') {
+    return <Redirect href="/(tabs)/" />;
+  }
+
   const [auctions, setAuctions] = useState<AuctionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);

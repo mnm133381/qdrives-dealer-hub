@@ -32,6 +32,11 @@ inspections_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="inspections")
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGO = "HS256"
 MOCK_OTP = "123456"
+ADMIN_PHONES = {p.strip() for p in os.environ.get("ADMIN_PHONES", "").split(",") if p.strip()}
+
+
+def is_admin_phone(phone: str) -> bool:
+    return phone.strip() in ADMIN_PHONES
 
 app = FastAPI(title="Q Drives API")
 api = APIRouter(prefix="/api")
@@ -75,6 +80,13 @@ async def get_current_dealer(creds: Optional[HTTPAuthorizationCredentials] = Dep
     dealer = await db.dealers.find_one({"id": dealer_id}, {"_id": 0})
     if not dealer:
         raise HTTPException(status_code=401, detail="Dealer not found")
+    return dealer
+
+
+async def get_current_admin(dealer = Depends(get_current_dealer)) -> Dict[str, Any]:
+    """Admin-only guard. Raises 403 unless dealer.role == 'admin'."""
+    if (dealer.get("role") or "dealer") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
     return dealer
 
 
@@ -215,10 +227,20 @@ async def verify_otp(req: VerifyOtpReq):
             "bid_success_rate": 0,
             "total_purchases": 0,
             "total_listed": 0,
+            "role": "admin" if is_admin_phone(phone) else "dealer",
             "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80",
             "created_at": now_utc(),
         }
         await db.dealers.insert_one(dict(dealer))
+    else:
+        # Auto-promote / demote based on env var so admin elevation is idempotent.
+        desired_role = "admin" if is_admin_phone(phone) else (dealer.get("role") or "dealer")
+        if dealer.get("role") != desired_role and is_admin_phone(phone):
+            await db.dealers.update_one({"id": dealer["id"]}, {"$set": {"role": "admin"}})
+            dealer["role"] = "admin"
+        elif not dealer.get("role"):
+            await db.dealers.update_one({"id": dealer["id"]}, {"$set": {"role": "dealer"}})
+            dealer["role"] = "dealer"
     token = create_jwt(dealer["id"])
     return {
         "token": token,
@@ -404,7 +426,7 @@ async def get_car(car_id: str):
 
 
 @api.post("/cars")
-async def create_car(req: CarCreateReq, dealer = Depends(get_current_dealer)):
+async def create_car(req: CarCreateReq, dealer = Depends(get_current_admin)):
     car_id = str(uuid.uuid4())
     # Use registration_year as primary "year" (sale year) when provided,
     # otherwise fall back to req.year for backward compat.
@@ -492,6 +514,31 @@ async def add_watchlist(auction_id: str, dealer = Depends(get_current_dealer)):
 async def remove_watchlist(auction_id: str, dealer = Depends(get_current_dealer)):
     await db.watchlist.delete_one({"dealer_id": dealer["id"], "auction_id": auction_id})
     return {"success": True, "watching": False}
+
+
+# ---------- Purchases (won auctions) ----------
+@api.get("/purchases")
+async def get_purchases(dealer = Depends(get_current_dealer)):
+    """
+    Returns auctions where the current dealer is the top bidder. Splits into
+    `won` (auction ended + reserve met) and `active` (still live, currently winning).
+    Used by the dealer Purchases tab.
+    """
+    auctions = await db.auctions.find(
+        {"top_bidder_id": dealer["id"]}, {"_id": 0}
+    ).sort("end_time", -1).limit(100).to_list(100)
+    won, active = [], []
+    for a in auctions:
+        ea = await _enrich_auction(a)
+        final_bid = ea.get("current_bid", 0) or 0
+        reserve = ea.get("reserve_price", 0) or 0
+        if ea["status"] == "ended":
+            ea["reserve_met"] = final_bid >= reserve
+            ea["outcome"] = "won" if ea["reserve_met"] else "reserve_not_met"
+            won.append(ea)
+        elif ea["status"] == "live":
+            active.append(ea)
+    return {"won": won, "active": active}
 
 
 # ---------- Notifications ----------
@@ -787,7 +834,7 @@ async def upload_inspection_pdf(
     car_id: str = Form(...),
     version: Optional[str] = Form("v1"),
     file: UploadFile = File(...),
-    dealer = Depends(get_current_dealer),
+    dealer = Depends(get_current_admin),
 ):
     # Validate file
     if file.content_type not in ("application/pdf", "application/x-pdf"):
@@ -802,12 +849,10 @@ async def upload_inspection_pdf(
     if len(contents) < 200:
         raise HTTPException(status_code=400, detail="PDF file looks empty/corrupt")
 
-    # Validate associated car + ownership
+    # Validate associated car (admin can attach to any Q Drives listing)
     car = await db.cars.find_one({"id": car_id}, {"_id": 0})
     if not car:
         raise HTTPException(status_code=404, detail="Car not found")
-    if car.get("seller_id") != dealer["id"]:
-        raise HTTPException(status_code=403, detail="Only the seller can attach an inspection PDF")
 
     # Persist into GridFS
     safe_name = (file.filename or f"inspection-{car_id}.pdf").replace("/", "_")
@@ -994,11 +1039,12 @@ app.add_middleware(
 
 # ---------- Seed Data ----------
 SEED_DEALERS = [
-    {"phone": "+919900000001", "full_name": "Rahul Mehta", "dealership_name": "Apex Premium Motors", "city": "Mumbai", "verified": True, "trust_score": 4.9, "bid_success_rate": 78.0, "total_purchases": 142, "total_listed": 38, "kyc_completed": True, "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80"},
-    {"phone": "+919900000002", "full_name": "Arjun Singh", "dealership_name": "Royal Drives Co.", "city": "Delhi", "verified": True, "trust_score": 4.7, "bid_success_rate": 65.0, "total_purchases": 88, "total_listed": 22, "kyc_completed": True, "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80"},
-    {"phone": "+919900000003", "full_name": "Vikram Patel", "dealership_name": "Velocity Wheels", "city": "Bangalore", "verified": True, "trust_score": 4.6, "bid_success_rate": 71.0, "total_purchases": 64, "total_listed": 19, "kyc_completed": True, "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80"},
-    {"phone": "+919900000004", "full_name": "Karan Kapoor", "dealership_name": "Drive Republic", "city": "Pune", "verified": True, "trust_score": 4.5, "bid_success_rate": 58.0, "total_purchases": 41, "total_listed": 15, "kyc_completed": True, "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80"},
-    {"phone": "+919900000005", "full_name": "Sameer Joshi", "dealership_name": "Nexus AutoTrade", "city": "Hyderabad", "verified": True, "trust_score": 4.8, "bid_success_rate": 73.0, "total_purchases": 102, "total_listed": 27, "kyc_completed": True, "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80"},
+    {"phone": "+919900000099", "full_name": "Q Drives Admin", "dealership_name": "Q Drives Inventory", "city": "Mumbai", "verified": True, "trust_score": 5.0, "bid_success_rate": 0, "total_purchases": 0, "total_listed": 0, "kyc_completed": True, "role": "admin", "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80"},
+    {"phone": "+919900000001", "full_name": "Rahul Mehta", "dealership_name": "Apex Premium Motors", "city": "Mumbai", "verified": True, "trust_score": 4.9, "bid_success_rate": 78.0, "total_purchases": 142, "total_listed": 38, "kyc_completed": True, "role": "dealer", "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80"},
+    {"phone": "+919900000002", "full_name": "Arjun Singh", "dealership_name": "Royal Drives Co.", "city": "Delhi", "verified": True, "trust_score": 4.7, "bid_success_rate": 65.0, "total_purchases": 88, "total_listed": 22, "kyc_completed": True, "role": "dealer", "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80"},
+    {"phone": "+919900000003", "full_name": "Vikram Patel", "dealership_name": "Velocity Wheels", "city": "Bangalore", "verified": True, "trust_score": 4.6, "bid_success_rate": 71.0, "total_purchases": 64, "total_listed": 19, "kyc_completed": True, "role": "dealer", "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80"},
+    {"phone": "+919900000004", "full_name": "Karan Kapoor", "dealership_name": "Drive Republic", "city": "Pune", "verified": True, "trust_score": 4.5, "bid_success_rate": 58.0, "total_purchases": 41, "total_listed": 15, "kyc_completed": True, "role": "dealer", "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80"},
+    {"phone": "+919900000005", "full_name": "Sameer Joshi", "dealership_name": "Nexus AutoTrade", "city": "Hyderabad", "verified": True, "trust_score": 4.8, "bid_success_rate": 73.0, "total_purchases": 102, "total_listed": 27, "kyc_completed": True, "role": "dealer", "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80"},
 ]
 
 CAR_IMAGES = [
@@ -1039,9 +1085,17 @@ CAR_CATALOG = [
 
 async def seed_data():
     if await db.dealers.count_documents({}) > 0:
+        # Idempotent admin upgrade — make sure ADMIN_PHONES still resolve to admin
+        # in case someone seeded earlier without role markers.
+        for ph in ADMIN_PHONES:
+            await db.dealers.update_one({"phone": ph}, {"$set": {"role": "admin"}})
+        await db.dealers.update_many(
+            {"role": {"$exists": False}}, {"$set": {"role": "dealer"}}
+        )
         return
     logger.info("Seeding Q Drives demo data...")
     dealer_ids = []
+    admin_id: Optional[str] = None
     for d in SEED_DEALERS:
         doc = {
             "id": str(uuid.uuid4()),
@@ -1050,13 +1104,22 @@ async def seed_data():
             "pan_number": "ABCDE" + str(random.randint(1000, 9999)) + "F",
             "created_at": now_utc(),
         }
+        if d.get("role") == "admin" or is_admin_phone(d["phone"]):
+            doc["role"] = "admin"
+            admin_id = doc["id"]
         await db.dealers.insert_one(doc)
-        dealer_ids.append(doc["id"])
+        if doc.get("role") != "admin":
+            dealer_ids.append(doc["id"])
+
+    # Fallback if no admin entry was provided in seed
+    if admin_id is None and dealer_ids:
+        admin_id = dealer_ids[0]
+        await db.dealers.update_one({"id": admin_id}, {"$set": {"role": "admin"}})
 
     now = now_utc()
     for i, c in enumerate(CAR_CATALOG):
         car_id = str(uuid.uuid4())
-        seller_id = random.choice(dealer_ids)
+        seller_id = admin_id  # Q Drives is the only seller in the curated marketplace
         primary = CAR_IMAGES[i % len(CAR_IMAGES)]
         gallery = [primary, random.choice(CAR_IMAGES), random.choice(INTERIOR_IMAGES), random.choice(CAR_IMAGES)]
         car = {

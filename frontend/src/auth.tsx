@@ -19,6 +19,7 @@ type Dealer = {
   bid_success_rate: number;
   total_purchases: number;
   total_listed: number;
+  role?: 'admin' | 'dealer';
   avatar_url?: string;
 };
 

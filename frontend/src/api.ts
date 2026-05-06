@@ -182,6 +182,28 @@ export const api = {
       method: 'POST', body: JSON.stringify({ note }),
     }),
 
+  // ---- Phase 2C lifecycle ----
+  inventoryWithdraw: (id: string, reason: string) =>
+    request<{ ok: boolean; status: string }>(`/inventory/${id}/withdraw`, {
+      method: 'POST', body: JSON.stringify({ reason }),
+    }),
+  inventoryArchive: (id: string, note?: string) =>
+    request<{ ok: boolean; status: string }>(`/inventory/${id}/archive`, {
+      method: 'POST', body: JSON.stringify({ note: note || '' }),
+    }),
+  inventorySetReserve: (id: string, reserve_price: number) =>
+    request<{ ok: boolean; reserve_price: number }>(`/inventory/${id}/reserve`, {
+      method: 'POST', body: JSON.stringify({ reserve_price }),
+    }),
+  adminInventoryLock: (id: string, locked: boolean, reason?: string) =>
+    request<{ ok: boolean; operator_lock: boolean }>(`/admin/inventory/${id}/lock`, {
+      method: 'POST', body: JSON.stringify({ locked, reason: reason || '' }),
+    }),
+  adminInventoryLifecycle: (id: string) =>
+    request<{ auction_id: string; current_status: string; operator_lock: boolean; canonical: any; events: any[] }>(
+      `/admin/inventory/${id}/lifecycle`,
+    ),
+
   // ---- Allow-list (closed-network dealer onboarding) ----
   adminApprovedDealers: (params?: { q?: string; status_filter?: string }) => {
     const qs = new URLSearchParams();

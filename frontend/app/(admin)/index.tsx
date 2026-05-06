@@ -22,6 +22,7 @@ import {
   Activity, TrendingUp, Inbox, CheckCircle2, Truck, FileWarning, UserPlus,
 } from 'lucide-react-native';
 import { colors, radii, formatINR } from '../../src/theme';
+import { formatCountdown, statusBadge } from '../../src/lifecycle';
 import { api } from '../../src/api';
 import { AdminHeader } from '../../src/components/AdminHeader';
 import { ReasonModal } from '../../src/components/ReasonModal';
@@ -268,14 +269,13 @@ function AuctionRow({ a, now, onTap, onPause, onResume, onExtend, onForceClose, 
   // recompute time_left dynamically (avoids polling for second-level updates)
   const endMs = a.end_time ? new Date(a.end_time).getTime() : 0;
   const timeLeft = Math.max(0, Math.floor((endMs - now) / 1000));
-  const m = Math.floor(timeLeft / 60), s = timeLeft % 60;
-  const tStr = timeLeft > 0 ? `${m}:${s.toString().padStart(2, '0')}` : '0:00';
+  const tStr = formatCountdown(timeLeft);
   const ending = timeLeft > 0 && timeLeft <= 60;
   const isLive = a.status === 'live';
   const isPaused = a.status === 'paused';
-  const isPending = a.status === 'ended_pending_payment';
-  const statusTint = isLive ? colors.success : isPaused ? colors.warning : isPending ? colors.warning : colors.textMuted;
-  const statusLabel = (a.status || 'unknown').toUpperCase().replace(/_/g, ' ');
+  const badge = statusBadge(a.status);
+  const statusTint = badge.tint;
+  const statusLabel = badge.label;
 
   return (
     <TouchableOpacity onPress={onTap} activeOpacity={0.85} style={styles.row} testID={`live-row-${a.id}`}>

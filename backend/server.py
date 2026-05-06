@@ -1507,6 +1507,256 @@ async def admin_resume_auction(
     return {"ok": True}
 
 
+# ============================================================
+# Phase 2C — Inventory Lifecycle Endpoints
+#   • withdraw — seller-initiated removal (audit-permanent, no hard delete)
+#   • archive  — terminal historical state (only on already-ended auctions)
+#   • lock/unlock — operator override prevents downstream seller-side edits
+#   • reserve-edit — pre-bid only
+# All endpoints capture {actor_id, role, ip, user_agent, before_state,
+# after_state} on every transition.
+# ============================================================
+INVENTORY_TERMINAL = {"settled", "cancelled", "withdrawn", "archived"}
+INVENTORY_PRE_LIVE = {"scheduled", "draft"}
+
+
+def _client_ctx(request: Request) -> Dict[str, Any]:
+    """Best-effort extraction of operator IP + user-agent for audit trail."""
+    return {
+        "ip": (request.client.host if request and request.client else None),
+        "user_agent": (request.headers.get("user-agent") if request else None),
+    }
+
+
+async def _check_inventory_lock(a: Dict[str, Any], admin: Dict[str, Any]) -> None:
+    """Raise if the auction has been operator-locked AND the caller is NOT a
+    super_admin. Operator overrides bypass the lock."""
+    if a.get("operator_lock") and admin.get("role") != "super_admin":
+        raise HTTPException(status_code=423, detail="INVENTORY_LOCKED_BY_OPERATOR")
+
+
+class InventoryWithdrawReq(BaseModel):
+    reason: str
+
+
+@api.post("/inventory/{auction_id}/withdraw")
+async def inventory_withdraw(
+    request: Request,
+    auction_id: str, req: InventoryWithdrawReq,
+    admin = Depends(require_permission("manage_inventory")),
+):
+    """Seller-initiated withdrawal. Mandatory reason ≥10 chars when the
+    auction is live or has already received any bid (transparency to bidders).
+    Settlement-state auctions are immutable and cannot be withdrawn."""
+    a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Auction not found")
+    await _check_inventory_lock(a, admin)
+    eff = await _effective_status(a)
+    if eff in INVENTORY_TERMINAL:
+        raise HTTPException(status_code=400, detail=f"Auction is in terminal state ({eff}) — cannot withdraw")
+    # Settlement-pipeline states (post-end) are immutable.
+    if eff in ("ended_pending_payment", "payment_received", "vehicle_released", "dispute"):
+        raise HTTPException(status_code=400, detail="SETTLEMENT_LOCKED — withdraw not allowed in settlement pipeline")
+    bids_count = await db.bids.count_documents({"auction_id": auction_id})
+    require_long_reason = (eff == "live" or bids_count > 0)
+    reason = (req.reason or "").strip()
+    if require_long_reason and len(reason) < 10:
+        raise HTTPException(status_code=400, detail="REASON_TOO_SHORT — withdraw with bids/live requires reason ≥10 chars")
+    if not require_long_reason and len(reason) < 5:
+        raise HTTPException(status_code=400, detail="REASON_TOO_SHORT — minimum 5 chars")
+
+    before_state = {"status": a.get("status"), "end_time": iso(a.get("end_time")) if isinstance(a.get("end_time"), datetime) else a.get("end_time")}
+    update = {
+        "status": "withdrawn",
+        "withdraw_reason": reason,
+        "withdrawn_at": now_utc(),
+        "withdrawn_by": admin["id"],
+        "status_changed_at": now_utc(),
+        "status_changed_by": admin["id"],
+    }
+    await db.auctions.update_one({"id": auction_id}, {"$set": update})
+    after_state = {"status": "withdrawn", "had_bids": bids_count}
+    asyncio.create_task(audit(db, "inventory_withdrawn", admin["id"], auction_id, {
+        **_client_ctx(request),
+        "role": admin.get("role"),
+        "reason": reason, "had_bids": bids_count,
+        "before_state": before_state, "after_state": after_state,
+    }))
+    try:
+        await manager.broadcast(auction_id, {"type": "inventory_withdrawn", "reason": reason})
+        await manager.broadcast_ops({"type": "inventory_withdrawn", "auction_id": auction_id, "reason": reason})
+    except Exception:
+        pass
+    return {"ok": True, "status": "withdrawn"}
+
+
+class InventoryArchiveReq(BaseModel):
+    note: Optional[str] = None
+
+
+@api.post("/inventory/{auction_id}/archive")
+async def inventory_archive(
+    request: Request,
+    auction_id: str, req: InventoryArchiveReq,
+    admin = Depends(require_permission("manage_inventory")),
+):
+    """Move a terminal-state auction (settled / cancelled / withdrawn) into
+    the archived bucket. Cannot archive a still-trading auction."""
+    a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Auction not found")
+    await _check_inventory_lock(a, admin)
+    eff = await _effective_status(a)
+    if eff not in {"settled", "cancelled", "withdrawn", "ended"}:
+        raise HTTPException(status_code=400, detail=f"Cannot archive auction in state '{eff}' — must be terminal")
+    before_state = {"status": eff}
+    await db.auctions.update_one(
+        {"id": auction_id},
+        {"$set": {
+            "previous_status_before_archive": eff,
+            "status": "archived",
+            "archived_at": now_utc(),
+            "archived_by": admin["id"],
+            "archive_note": (req.note or "").strip() or None,
+            "status_changed_at": now_utc(),
+            "status_changed_by": admin["id"],
+        }},
+    )
+    asyncio.create_task(audit(db, "inventory_archived", admin["id"], auction_id, {
+        **_client_ctx(request), "role": admin.get("role"),
+        "note": (req.note or "").strip() or None,
+        "before_state": before_state, "after_state": {"status": "archived"},
+    }))
+    return {"ok": True, "status": "archived"}
+
+
+class InventoryLockReq(BaseModel):
+    locked: bool
+    reason: Optional[str] = None
+
+
+@api.post("/admin/inventory/{auction_id}/lock")
+async def admin_inventory_lock(
+    request: Request,
+    auction_id: str, req: InventoryLockReq,
+    admin = Depends(require_permission("manage_inventory")),
+):
+    """Operator override — sets/clears `operator_lock` on an auction.
+    While locked, downstream lifecycle actions (withdraw / archive /
+    reserve-edit) are blocked for everyone EXCEPT super_admin. Used to
+    freeze inventory under investigation or pending-dispute."""
+    a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Auction not found")
+    if a.get("operator_lock") == bool(req.locked):
+        return {"ok": True, "operator_lock": bool(req.locked), "no_change": True}
+    before_state = {"operator_lock": bool(a.get("operator_lock"))}
+    await db.auctions.update_one(
+        {"id": auction_id},
+        {"$set": {
+            "operator_lock": bool(req.locked),
+            "operator_lock_reason": (req.reason or "").strip() or None,
+            "operator_lock_at": now_utc() if req.locked else None,
+            "operator_lock_by": admin["id"] if req.locked else None,
+            "status_changed_at": now_utc(),
+            "status_changed_by": admin["id"],
+        }},
+    )
+    asyncio.create_task(audit(db, "inventory_locked" if req.locked else "inventory_unlocked",
+                              admin["id"], auction_id, {
+        **_client_ctx(request), "role": admin.get("role"),
+        "reason": (req.reason or "").strip() or None,
+        "before_state": before_state, "after_state": {"operator_lock": bool(req.locked)},
+    }))
+    try:
+        await manager.broadcast_ops({"type": "inventory_lock_change", "auction_id": auction_id, "locked": bool(req.locked)})
+    except Exception:
+        pass
+    return {"ok": True, "operator_lock": bool(req.locked)}
+
+
+class ReservePriceReq(BaseModel):
+    reserve_price: int
+
+
+@api.post("/inventory/{auction_id}/reserve")
+async def inventory_set_reserve(
+    request: Request,
+    auction_id: str, req: ReservePriceReq,
+    admin = Depends(require_permission("manage_inventory")),
+):
+    """Edit reserve price. STRICT business rule: editable ONLY before the
+    first bid is placed. Once any bid has hit the ledger, the reserve is
+    immutable to preserve trust."""
+    a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Auction not found")
+    await _check_inventory_lock(a, admin)
+    bids_count = await db.bids.count_documents({"auction_id": auction_id})
+    if bids_count > 0:
+        raise HTTPException(status_code=400, detail="RESERVE_LOCKED — bids already placed; reserve cannot change")
+    if req.reserve_price <= 0:
+        raise HTTPException(status_code=400, detail="reserve_price must be positive")
+    before_state = {"reserve_price": a.get("reserve_price")}
+    await db.auctions.update_one(
+        {"id": auction_id},
+        {"$set": {"reserve_price": int(req.reserve_price)}},
+    )
+    asyncio.create_task(audit(db, "reserve_price_changed", admin["id"], auction_id, {
+        **_client_ctx(request), "role": admin.get("role"),
+        "before_state": before_state,
+        "after_state": {"reserve_price": int(req.reserve_price)},
+    }))
+    return {"ok": True, "reserve_price": int(req.reserve_price)}
+
+
+@api.get("/admin/inventory/{auction_id}/lifecycle")
+async def inventory_lifecycle_timeline(
+    auction_id: str,
+    admin = Depends(require_permission("view_audit")),
+):
+    """Return the full audit-derived lifecycle timeline for an auction,
+    plus the canonical timestamps from the auction doc itself. Read-only."""
+    a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Auction not found")
+    actions = [
+        "auction_pause", "auction_resume", "auction_extend",
+        "auction_cancel", "force_close", "settlement_state_change",
+        "settlement_note_add", "inventory_withdrawn", "inventory_archived",
+        "inventory_locked", "inventory_unlocked", "reserve_price_changed",
+    ]
+    timeline: List[Dict[str, Any]] = []
+    cur = db.audit_logs.find({"target_id": auction_id, "action": {"$in": actions}}, {"_id": 0}).sort("ts", 1).limit(200)
+    async for ev in cur:
+        timeline.append({
+            "action": ev.get("action"),
+            "actor_id": ev.get("actor_id"),
+            "ts": iso(ev.get("ts")) if isinstance(ev.get("ts"), datetime) else ev.get("ts"),
+            "meta": ev.get("meta") or {},
+        })
+    canonical = {
+        "created_at": iso(a.get("created_at")) if isinstance(a.get("created_at"), datetime) else a.get("created_at"),
+        "start_time": iso(a.get("start_time")) if isinstance(a.get("start_time"), datetime) else a.get("start_time"),
+        "end_time": iso(a.get("end_time")) if isinstance(a.get("end_time"), datetime) else a.get("end_time"),
+        "ended_at": iso(a.get("ended_at")) if isinstance(a.get("ended_at"), datetime) else a.get("ended_at"),
+        "paused_at": iso(a.get("paused_at")) if isinstance(a.get("paused_at"), datetime) else a.get("paused_at"),
+        "resumed_at": iso(a.get("resumed_at")) if isinstance(a.get("resumed_at"), datetime) else a.get("resumed_at"),
+        "withdrawn_at": iso(a.get("withdrawn_at")) if isinstance(a.get("withdrawn_at"), datetime) else a.get("withdrawn_at"),
+        "archived_at": iso(a.get("archived_at")) if isinstance(a.get("archived_at"), datetime) else a.get("archived_at"),
+        "settled_at": iso(a.get("settled_at")) if isinstance(a.get("settled_at"), datetime) else a.get("settled_at"),
+        "cancelled_at": iso(a.get("cancelled_at")) if isinstance(a.get("cancelled_at"), datetime) else a.get("cancelled_at"),
+    }
+    return {
+        "auction_id": auction_id,
+        "current_status": await _effective_status(a),
+        "operator_lock": bool(a.get("operator_lock")),
+        "canonical": canonical,
+        "events": timeline,
+    }
+
+
 @api.post("/admin/auctions/{auction_id}/extend")
 async def admin_extend_auction(
     auction_id: str, req: AuctionExtendReq,
@@ -2392,6 +2642,8 @@ SECURITY_AUDIT_ACTIONS = {
     "auction_pause", "auction_resume", "auction_extend",
     "auction_cancel", "force_close", "settlement_state_change",
     "settlement_note_add", "dealer_approved", "dealer_signup",
+    "inventory_withdrawn", "inventory_archived",
+    "inventory_locked", "inventory_unlocked", "reserve_price_changed",
     "bid_cancel", "admin_broadcast", "operator_promotion",
     "token_invalidation", "suspicious_activity_flag",
 }

@@ -3,17 +3,19 @@
  * Sellers manage their listed cars here — including replacing the
  * inspection PDF for any of their auctions.
  */
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, ActivityIndicator, RefreshControl } from 'react-native';
 import { useRouter, useFocusEffect, Redirect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
-import { ArrowLeft, FileText, Upload, ChevronRight, ShieldCheck, FileX, Eye } from 'lucide-react-native';
+import { ArrowLeft, FileText, Upload, ChevronRight, ShieldCheck, FileX, Eye, Pause, Play, XCircle, Archive, Lock, Edit3 } from 'lucide-react-native';
 import { colors, formatINR, radii } from '../../src/theme';
 import { api, inspectionPdfUrl } from '../../src/api';
 import { useAuth } from '../../src/auth';
 import { useToast } from '../../src/toast';
-import { Linking, Platform } from 'react-native';
+import { Linking, Platform, Alert } from 'react-native';
+import { ReasonModal } from '../../src/components/ReasonModal';
+import { statusBadge } from '../../src/lifecycle';
 
 type AuctionRow = any;
 
@@ -32,6 +34,9 @@ export default function MyListings() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [uploadingFor, setUploadingFor] = useState<string | null>(null);
+  type Tab = 'active' | 'paused' | 'sold' | 'withdrawn' | 'drafts';
+  const [tab, setTab] = useState<Tab>('active');
+  const [reasonModal, setReasonModal] = useState<{ kind: 'withdraw' | 'archive'; auction: any } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -45,6 +50,58 @@ export default function MyListings() {
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
+
+  // Filter by tab
+  const filtered = useMemo(() => auctions.filter((a) => {
+    const s = (a.status || 'live') as string;
+    if (tab === 'paused')    return s === 'paused';
+    if (tab === 'withdrawn') return s === 'withdrawn' || s === 'archived';
+    if (tab === 'sold')      return ['settled', 'payment_received', 'vehicle_released', 'ended_pending_payment', 'dispute', 'cancelled'].includes(s);
+    if (tab === 'drafts')    return s === 'draft' || s === 'scheduled';
+    return s === 'live'; // active
+  }), [auctions, tab]);
+
+  const counts = useMemo(() => ({
+    active:   auctions.filter((a) => (a.status || 'live') === 'live').length,
+    paused:   auctions.filter((a) => a.status === 'paused').length,
+    sold:     auctions.filter((a) => ['settled','payment_received','vehicle_released','ended_pending_payment','dispute','cancelled'].includes(a.status)).length,
+    withdrawn:auctions.filter((a) => a.status === 'withdrawn' || a.status === 'archived').length,
+    drafts:   auctions.filter((a) => a.status === 'draft' || a.status === 'scheduled').length,
+  }), [auctions]);
+
+  // ---- Lifecycle actions ----
+  const onPause = async (a: any) => {
+    try { await api.adminPauseAuction(a.id, 'Seller paused listing'); toast.show('Listing paused', 'success'); load(); }
+    catch (e: any) { toast.show(e.message || 'Failed', 'error'); }
+  };
+  const onResume = async (a: any) => {
+    try { await api.adminResumeAuction(a.id); toast.show('Listing resumed', 'success'); load(); }
+    catch (e: any) { toast.show(e.message || 'Failed', 'error'); }
+  };
+  const onWithdrawSubmit = async (reason: string) => {
+    if (!reasonModal) return;
+    try {
+      await api.inventoryWithdraw(reasonModal.auction.id, reason);
+      toast.show('Listing withdrawn', 'success');
+      setReasonModal(null); load();
+    } catch (e: any) { toast.show(e.message || 'Failed', 'error'); }
+  };
+  const onArchiveSubmit = async (note: string) => {
+    if (!reasonModal) return;
+    try {
+      await api.inventoryArchive(reasonModal.auction.id, note);
+      toast.show('Listing archived', 'success');
+      setReasonModal(null); load();
+    } catch (e: any) { toast.show(e.message || 'Failed', 'error'); }
+  };
+  const onEditReserve = async (a: any) => {
+    Alert.prompt?.('Edit reserve price', `Current: ${formatINR(a.reserve_price || 0)}\nReserve can only be edited before the first bid.`, async (txt) => {
+      const n = parseInt((txt || '').replace(/[^0-9]/g, ''), 10);
+      if (!n || n <= 0) return;
+      try { await api.inventorySetReserve(a.id, n); toast.show('Reserve updated', 'success'); load(); }
+      catch (e: any) { toast.show(e.message || 'Failed', 'error'); }
+    }, 'plain-text');
+  };
 
   const replacePdf = async (a: AuctionRow) => {
     try {
@@ -88,34 +145,117 @@ export default function MyListings() {
         </View>
       </View>
 
+      {/* Lifecycle segmented tabs */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabsRow}>
+        {([
+          { k: 'active',    label: 'ACTIVE',    n: counts.active,    tint: colors.success },
+          { k: 'paused',    label: 'PAUSED',    n: counts.paused,    tint: colors.warning },
+          { k: 'sold',      label: 'SOLD',      n: counts.sold,      tint: colors.silver },
+          { k: 'withdrawn', label: 'WITHDRAWN', n: counts.withdrawn, tint: colors.warning },
+          { k: 'drafts',    label: 'DRAFTS',    n: counts.drafts,    tint: colors.textMuted },
+        ] as const).map((t) => (
+          <TouchableOpacity
+            key={t.k}
+            onPress={() => setTab(t.k as Tab)}
+            style={[styles.tab, tab === t.k && { borderColor: t.tint, backgroundColor: t.tint + '14' }]}
+            testID={`my-listings-tab-${t.k}`}
+          >
+            <Text style={[styles.tabText, tab === t.k && { color: t.tint }]}>{t.label}</Text>
+            <View style={[styles.tabCount, tab === t.k && { backgroundColor: t.tint }]}>
+              <Text style={[styles.tabCountText, tab === t.k && { color: '#fff' }]}>{t.n}</Text>
+            </View>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+
       <ScrollView
-        contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
+        contentContainerStyle={{ padding: 20, paddingTop: 10, paddingBottom: 40 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.red} />}
       >
         {loading ? (
           <View style={styles.empty}><ActivityIndicator color={colors.red} /></View>
-        ) : auctions.length === 0 ? (
+        ) : filtered.length === 0 ? (
           <View style={styles.empty}>
             <FileText size={28} color={colors.textMuted} />
-            <Text style={styles.emptyTitle}>No listings yet</Text>
-            <Text style={styles.emptySub}>Use the Sell tab to launch your first auction.</Text>
+            <Text style={styles.emptyTitle}>No {tab} listings</Text>
+            <Text style={styles.emptySub}>Switch tab or use the Sell tab to launch a new auction.</Text>
           </View>
         ) : (
-          auctions.map((a) => {
+          filtered.map((a) => {
             const car = a.car || {};
             const insp = a.inspection_pdf;
             const isUploading = uploadingFor === a.id;
+            const badge = statusBadge(a.status);
+            const isLive = a.status === 'live';
+            const isPaused = a.status === 'paused';
+            const isWithdrawn = a.status === 'withdrawn';
+            const isTerminal = ['settled', 'cancelled', 'archived', 'withdrawn'].includes(a.status || '');
+            const hasBids = (a.total_bids || 0) > 0;
+            const lockedByOperator = !!a.operator_lock;
             return (
               <View key={a.id} style={styles.card} testID={`my-listing-${a.id}`}>
                 <TouchableOpacity onPress={() => router.push(`/auction/${a.id}`)} style={styles.cardHead} activeOpacity={0.85}>
                   <Image source={{ uri: car.images?.[0] }} style={styles.thumb} />
                   <View style={{ flex: 1, marginLeft: 12 }}>
-                    <Text style={styles.cardTitle} numberOfLines={1}>{car.year} {car.make} {car.model}</Text>
+                    <View style={styles.titleRow}>
+                      <Text style={styles.cardTitle} numberOfLines={1}>{car.year} {car.make} {car.model}</Text>
+                      <View style={[styles.statusPill, { borderColor: badge.tint + '55', backgroundColor: badge.tint + '15' }]}>
+                        <Text style={[styles.statusPillText, { color: badge.tint }]}>{badge.label}</Text>
+                      </View>
+                    </View>
                     <Text style={styles.cardSub} numberOfLines={1}>{car.registration_number} · {(car.km_driven || 0).toLocaleString('en-IN')} km</Text>
                     <Text style={styles.cardPrice}>{formatINR(a.current_bid || a.starting_bid)}</Text>
+                    {lockedByOperator && (
+                      <View style={styles.lockedRow}>
+                        <Lock size={10} color={colors.red} />
+                        <Text style={styles.lockedText}>OPERATOR LOCKED</Text>
+                      </View>
+                    )}
                   </View>
                   <ChevronRight size={16} color={colors.textMuted} />
                 </TouchableOpacity>
+
+                {/* Lifecycle controls */}
+                {!isTerminal && !lockedByOperator && (
+                  <>
+                    <View style={styles.divider} />
+                    <View style={styles.lifecycleRow}>
+                      {isLive && (
+                        <TouchableOpacity onPress={() => onPause(a)} style={[styles.lcBtn, styles.lcBtnWarn]} testID={`my-listing-${a.id}-pause`}>
+                          <Pause size={12} color={colors.warning} />
+                          <Text style={[styles.lcBtnText, { color: colors.warning }]}>Pause</Text>
+                        </TouchableOpacity>
+                      )}
+                      {isPaused && (
+                        <TouchableOpacity onPress={() => onResume(a)} style={[styles.lcBtn, styles.lcBtnGood]} testID={`my-listing-${a.id}-resume`}>
+                          <Play size={12} color={colors.success} />
+                          <Text style={[styles.lcBtnText, { color: colors.success }]}>Resume</Text>
+                        </TouchableOpacity>
+                      )}
+                      <TouchableOpacity onPress={() => setReasonModal({ kind: 'withdraw', auction: a })} style={[styles.lcBtn, styles.lcBtnDanger]} testID={`my-listing-${a.id}-withdraw`}>
+                        <XCircle size={12} color={colors.red} />
+                        <Text style={[styles.lcBtnText, { color: colors.red }]}>Withdraw</Text>
+                      </TouchableOpacity>
+                      {!hasBids && a.reserve_price !== undefined && (
+                        <TouchableOpacity onPress={() => onEditReserve(a)} style={[styles.lcBtn, styles.lcBtnSilver]} testID={`my-listing-${a.id}-reserve`}>
+                          <Edit3 size={12} color={colors.silver} />
+                          <Text style={[styles.lcBtnText, { color: colors.silver }]}>Reserve</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  </>
+                )}
+                {(['settled', 'cancelled', 'withdrawn', 'ended'] as string[]).includes(a.status || '') && (
+                  <>
+                    <View style={styles.divider} />
+                    <View style={styles.lifecycleRow}>
+                      <TouchableOpacity onPress={() => setReasonModal({ kind: 'archive', auction: a })} style={[styles.lcBtn, styles.lcBtnSilver]} testID={`my-listing-${a.id}-archive`}>
+                        <Archive size={12} color={colors.silver} />
+                        <Text style={[styles.lcBtnText, { color: colors.silver }]}>Archive</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                )}
 
                 <View style={styles.divider} />
 
@@ -179,6 +319,19 @@ export default function MyListings() {
           })
         )}
       </ScrollView>
+
+      {/* Reason modal for withdraw / archive — both audited */}
+      {reasonModal && (
+        <ReasonModal
+          visible
+          title={reasonModal.kind === 'withdraw' ? 'Withdraw listing' : 'Archive listing'}
+          kicker={reasonModal.kind === 'withdraw' ? 'AUDITED · WITHDRAW' : 'AUDITED · ARCHIVE'}
+          cta={reasonModal.kind === 'withdraw' ? 'Withdraw listing' : 'Archive vehicle'}
+          danger={reasonModal.kind === 'withdraw'}
+          onClose={() => setReasonModal(null)}
+          onSubmit={(text) => reasonModal.kind === 'withdraw' ? onWithdrawSubmit(text) : onArchiveSubmit(text)}
+        />
+      )}
     </View>
   );
 }
@@ -189,6 +342,26 @@ const styles = StyleSheet.create({
   iconBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   kicker: { color: colors.red, fontSize: 10, fontWeight: '900', letterSpacing: 1.6 },
   title: { color: colors.textPrimary, fontSize: 22, fontWeight: '800', marginTop: 2, letterSpacing: -0.4 },
+
+  tabsRow: { paddingHorizontal: 20, gap: 8, paddingTop: 4, paddingBottom: 8 },
+  tab: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 11, paddingVertical: 7, borderRadius: 999, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border },
+  tabText: { color: colors.textChrome, fontSize: 10, fontWeight: '900', letterSpacing: 1 },
+  tabCount: { paddingHorizontal: 6, paddingVertical: 1, borderRadius: 999, backgroundColor: colors.border },
+  tabCountText: { color: colors.textPrimary, fontSize: 10, fontWeight: '900', fontVariant: ['tabular-nums'] },
+
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  statusPill: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 999, borderWidth: 1, marginLeft: 'auto' },
+  statusPillText: { fontSize: 9, fontWeight: '900', letterSpacing: 0.8 },
+  lockedRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
+  lockedText: { color: colors.red, fontSize: 9, fontWeight: '900', letterSpacing: 0.8 },
+
+  lifecycleRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, padding: 12 },
+  lcBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 999, borderWidth: 1, backgroundColor: colors.bgCard },
+  lcBtnText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
+  lcBtnWarn:   { borderColor: 'rgba(245,158,11,0.45)', backgroundColor: 'rgba(245,158,11,0.08)' },
+  lcBtnDanger: { borderColor: 'rgba(185,28,28,0.45)',  backgroundColor: 'rgba(185,28,28,0.06)'  },
+  lcBtnGood:   { borderColor: 'rgba(16,185,129,0.45)', backgroundColor: 'rgba(16,185,129,0.08)' },
+  lcBtnSilver: { borderColor: 'rgba(160,160,170,0.45)', backgroundColor: 'rgba(160,160,170,0.06)' },
 
   empty: { alignItems: 'center', paddingVertical: 80, gap: 12 },
   emptyTitle: { color: colors.textChrome, fontSize: 16, fontWeight: '700' },

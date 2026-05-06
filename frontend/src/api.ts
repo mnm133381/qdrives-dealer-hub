@@ -1,15 +1,11 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { storage } from './storage';
 
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export const TOKEN_KEY = 'qdrives_token';
 
 async function getToken() {
-  try {
-    return await AsyncStorage.getItem(TOKEN_KEY);
-  } catch {
-    return null;
-  }
+  return await storage.getItem(TOKEN_KEY);
 }
 
 async function request<T = any>(path: string, options: RequestInit = {}): Promise<T> {

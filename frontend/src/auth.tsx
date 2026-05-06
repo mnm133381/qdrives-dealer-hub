@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { storage } from './storage';
 import { api, TOKEN_KEY } from './api';
 
 type Dealer = {
@@ -38,34 +38,57 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [dealer, setDealer] = useState<Dealer | null>(null);
 
   const refresh = useCallback(async () => {
+    let token: string | null = null;
     try {
-      const token = await AsyncStorage.getItem(TOKEN_KEY);
-      if (!token) {
-        setDealer(null);
-        return;
-      }
+      token = await storage.getItem(TOKEN_KEY);
+    } catch (e) {
+      // storage failure should never crash the app — proceed unauthed.
+      // eslint-disable-next-line no-console
+      console.warn('[auth] storage read failed:', e);
+      token = null;
+    }
+    if (!token) {
+      setDealer(null);
+      return;
+    }
+    try {
       const me = await api.me();
       setDealer(me);
-    } catch {
+    } catch (e) {
+      // Token invalid / network error — clear and let the user re-auth.
+      // eslint-disable-next-line no-console
+      console.warn('[auth] /me failed, clearing token:', e);
       setDealer(null);
-      await AsyncStorage.removeItem(TOKEN_KEY);
+      try { await storage.removeItem(TOKEN_KEY); } catch {}
     }
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      await refresh();
-      setLoading(false);
+      try {
+        await refresh();
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     })();
+    return () => { cancelled = true; };
   }, [refresh]);
 
   const signIn = useCallback(async (token: string, d: Dealer) => {
-    await AsyncStorage.setItem(TOKEN_KEY, token);
+    try {
+      await storage.setItem(TOKEN_KEY, token);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[auth] storage write failed (using in-memory):', e);
+    }
     setDealer(d);
   }, []);
 
   const signOut = useCallback(async () => {
-    await AsyncStorage.removeItem(TOKEN_KEY);
+    try {
+      await storage.removeItem(TOKEN_KEY);
+    } catch {}
     setDealer(null);
   }, []);
 

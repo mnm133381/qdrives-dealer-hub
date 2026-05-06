@@ -1800,6 +1800,38 @@ phase_2b_frontend:
           Manual smoke tests pass: pipeline returns 2 items (1 paid + 1
           cancelled) with by_state counts; note add: <5 chars → 400; ok →
           200 with timestamped immutable entry.
+      - working: true
+        agent: "testing"
+        comment: |
+          [PHASE 2B+ SETTLEMENT PIPELINE BACKEND — 40/42 PASS]
+          Tested both new endpoints + WS broadcast.
+
+          ✅ A. AUTH GATING (6/6) — anon/dealer/operator gating on both endpoints.
+          ✅ B. PIPELINE PAYLOAD CORRECTNESS — every key present, by_state
+             sums match, sla_hours=48, high_value_threshold=1000000, RFC3339 ts,
+             items≤300, terminal items filtered to window.
+          ✅ B.4–B.7 — payment_overdue / high_value_unsettled / dispute_flag /
+             suspended_dealer / settlement_age_h all correct.
+          ✅ C. NOTE APPEND — 5-char min, whitespace stripped, 404 on unknown
+             auction, append-only (no DELETE/PATCH), ascending order, 3×
+             sequential growth, correct operator_id / operator_name /
+             created_at.
+          ❌ D.1 (FIXED) — settlement_note_add was missing from
+             SECURITY_AUDIT_ACTIONS whitelist so /admin/audit-logs?action=
+             returned 0. Fixed in same session: added to whitelist; re-run
+             confirms 7 entries surface, latest matches operator_id +
+             target_id + meta.note_id/text.
+          ⚠️ F. WS BROADCAST (PRE-EXISTING BUG, FIXED) — initial snapshot
+             on /api/ws/auction/{id}?token=... was disconnecting with
+             "Object of type datetime is not JSON serializable" because
+             nested car/seller datetime fields weren't being recursively
+             serialized. Fixed by wrapping send_json with jsonable_encoder
+             on snapshot + extending ConnectionManager.broadcast() and
+             broadcast_ops() to encode payload before send. Verified
+             post-fix: WS snapshot connects cleanly, type=snapshot, full
+             auction dict + nested car returned.
+
+          ✅ Backend Phase 2B+ now fully GREEN.
 
   - task: "Phase 2B+ Settlement Pipeline Tracker UI"
     implemented: true

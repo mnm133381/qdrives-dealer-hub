@@ -17,6 +17,7 @@ from typing import List, Optional, Dict, Any
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, status, UploadFile, File, Form, Query
 from fastapi.responses import StreamingResponse, RedirectResponse
+from fastapi.encoders import jsonable_encoder
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
@@ -373,14 +374,19 @@ class ConnectionManager:
 
     async def broadcast(self, auction_id: str, payload: dict):
         """Broadcast to every subscriber of an auction room. Backwards-compat
-        signature — accepts the bare auction_id and prefixes it internally."""
+        signature — accepts the bare auction_id and prefixes it internally.
+
+        Payload is run through jsonable_encoder so nested datetime values
+        survive serialization without raising.
+        """
         room_key = f"auction:{auction_id}"
         if room_key not in self.rooms:
             return
+        encoded = jsonable_encoder(payload)
         dead: List[WebSocket] = []
         for c in list(self.rooms[room_key]):
             try:
-                await c["ws"].send_json(payload)
+                await c["ws"].send_json(encoded)
             except Exception:
                 dead.append(c["ws"])
         for ws in dead:
@@ -391,10 +397,11 @@ class ConnectionManager:
         room_key = "ops"
         if room_key not in self.rooms:
             return
+        encoded = jsonable_encoder(payload)
         dead: List[WebSocket] = []
         for c in list(self.rooms[room_key]):
             try:
-                await c["ws"].send_json(payload)
+                await c["ws"].send_json(encoded)
             except Exception:
                 dead.append(c["ws"])
         for ws in dead:
@@ -2152,6 +2159,7 @@ SECURITY_AUDIT_ACTIONS = {
     "dealer_status_change", "max_bid_change",
     "auction_pause", "auction_resume", "auction_extend",
     "auction_cancel", "force_close", "settlement_state_change",
+    "settlement_note_add",
     "bid_cancel", "admin_broadcast", "operator_promotion",
     "token_invalidation", "suspicious_activity_flag",
 }
@@ -2810,11 +2818,12 @@ async def ws_auction(websocket: WebSocket, auction_id: str):
     await manager.connect(room_key, websocket, dealer_id=dealer["id"], role=role, tv=tv)
 
     try:
-        # On connect, send latest snapshot
+        # On connect, send latest snapshot. Use jsonable_encoder to handle
+        # nested datetime values inside enriched auction (car/seller/etc).
         a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
         if a:
             ea = await _enrich_auction(a)
-            await websocket.send_json({"type": "snapshot", "auction": ea})
+            await websocket.send_json({"type": "snapshot", "auction": jsonable_encoder(ea)})
         while True:
             try:
                 await asyncio.wait_for(websocket.receive_text(), timeout=30)

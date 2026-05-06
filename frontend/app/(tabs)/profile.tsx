@@ -108,12 +108,12 @@ export default function Profile() {
           <Row label="Role" value={isAdmin ? 'Q Drives Admin' : 'Dealer'} valueColor={isAdmin ? colors.red : colors.textPrimary} />
           {!isAdmin && (
             <Row
-              label="Account status"
+              label="Approval"
               value={
                 dealer.status === 'approved' ? 'Approved' :
-                dealer.status === 'pending' ? 'Pending approval' :
+                dealer.status === 'pending' ? 'Pending Approval' :
                 dealer.status === 'suspended' ? 'Suspended' :
-                dealer.status === 'revoked' ? 'Revoked' : '—'
+                dealer.status === 'revoked' ? 'Revoked' : 'Pending Approval'
               }
               valueColor={
                 dealer.status === 'approved' ? colors.success :
@@ -122,7 +122,24 @@ export default function Profile() {
               }
             />
           )}
-          <Row label="Verification" value={dealer.kyc_completed ? 'Verified' : 'Pending'} valueColor={dealer.kyc_completed ? colors.success : colors.warning} />
+          {!isAdmin && (() => {
+            // Verification is INDEPENDENT of marketplace approval. Only show
+            // "Verified" when the operator has explicitly verified the
+            // dealer (verification_status='verified'). KYC submission alone
+            // never auto-promotes to verified.
+            const v = (dealer as any).verification_status as string | undefined;
+            const label =
+              v === 'verified' ? 'Verified' :
+              v === 'kyc_pending' ? 'KYC Pending' :
+              v === 'rejected' ? 'KYC Rejected' :
+              'Unverified';
+            const tint =
+              v === 'verified' ? colors.success :
+              v === 'kyc_pending' ? colors.warning :
+              v === 'rejected' ? colors.red :
+              colors.textMuted;
+            return <Row label="Verification" value={label} valueColor={tint} />;
+          })()}
           <Row label="Phone" value={dealer.phone} />
           <Row label="GST" value={(dealer as any).gst_number || 'Not provided'} />
           <Row label="PAN" value={(dealer as any).pan_number || 'Not provided'} />

@@ -517,6 +517,10 @@ async def dealer_verify_otp(req: VerifyOtpReq):
         is_new = True
         # Default new signup: pending status, no bid power, browse-only.
         initial_status = "approved" if auto_approve else "pending"
+        # Verification ALWAYS starts unverified — operator must explicitly
+        # mark verified after KYC review. Auto-approve presets land on
+        # 'verified' since the operator pre-curated them.
+        initial_verification = "verified" if auto_approve else "unverified"
         dealer = {
             "id": str(uuid.uuid4()), "phone": phone,
             "full_name": (preset or {}).get("seed_full_name", ""),
@@ -526,6 +530,7 @@ async def dealer_verify_otp(req: VerifyOtpReq):
             "kyc_completed": False, "verified": (initial_status == "approved"),
             "suspended": False,
             "status": initial_status,
+            "verification_status": initial_verification,
             "previous_status": None,
             "approved_at": now_utc() if initial_status == "approved" else None,
             "approved_by": "system_preset" if initial_status == "approved" else None,
@@ -673,9 +678,14 @@ async def submit_kyc(req: KycReq, dealer = Depends(get_current_dealer)):
         "gst_number": req.gst_number or "",
         "pan_number": req.pan_number or "",
         "kyc_completed": True,
-        # NOTE: verified / status are NOT touched here. Approval is an
-        # operator-controlled business event, not a side-effect of KYC.
+        # State separation: KYC submission flips verification_status to
+        # 'kyc_pending' (operator review queue). Approval is independent.
+        # If dealer was already 'verified' (e.g. preset), do not downgrade.
+        # `verified` (legacy bool) is NOT touched here.
     }
+    current_v = dealer.get("verification_status") or "unverified"
+    if current_v != "verified":
+        update["verification_status"] = "kyc_pending"
     await db.dealers.update_one({"id": dealer["id"]}, {"$set": update})
     updated = await db.dealers.find_one({"id": dealer["id"]}, {"_id": 0})
 
@@ -755,7 +765,13 @@ async def _enrich_auction(a: dict) -> dict:
 
 @api.get("/auctions")
 async def list_auctions(status_filter: Optional[str] = None, limit: int = 50):
-    cursor = db.auctions.find({}).sort("start_time", -1).limit(limit)
+    # Phase 2C hygiene — public marketplace must NEVER surface archived,
+    # withdrawn, or hidden inventory. These are operator-only artefacts.
+    base_query: Dict[str, Any] = {
+        "hidden_from_marketplace": {"$ne": True},
+        "status": {"$nin": ["archived", "withdrawn", "draft"]},
+    }
+    cursor = db.auctions.find(base_query).sort("start_time", -1).limit(limit)
     auctions = await cursor.to_list(limit)
     enriched = [await _enrich_auction(a) for a in auctions]
     if status_filter:
@@ -1293,6 +1309,15 @@ async def admin_approve_dealer(
         "approved_at": now_utc(),
         "approved_by": admin["id"],
     }
+    # Verification is independent. If the dealer submitted KYC (or had
+    # legacy kyc_completed=True), this approval implicitly attests to it.
+    # Otherwise, leave verification_status as-is (operator can verify
+    # separately later via the dedicated endpoint).
+    prev_verification = target.get("verification_status") or "unverified"
+    if target.get("kyc_completed"):
+        update["verification_status"] = "verified"
+        update["verified_at"] = now_utc()
+        update["verified_by"] = admin["id"]
     if req.max_bid_limit is not None:
         if req.max_bid_limit <= 0:
             raise HTTPException(status_code=400, detail="max_bid_limit must be positive")
@@ -1963,6 +1988,10 @@ async def admin_live_grid(admin = Depends(get_current_admin)):
     #   • it is in an explicit operator-managed state.
     cursor = db.auctions.find(
         {
+            # Phase 2C hygiene — exclude archived/withdrawn/hidden inventory
+            # from operator dashboard. Cleanup migration sets these flags.
+            "hidden_from_live_ops": {"$ne": True},
+            "status": {"$nin": ["archived", "withdrawn"]},
             "$or": [
                 {"status": {"$in": ["live", "paused", "scheduled",
                                      "ended_pending_payment", "payment_received",
@@ -3689,6 +3718,94 @@ async def seed_allow_lists() -> None:
                 "[migration] purged false approval notifications for non-approved dealers: %s",
                 purged.deleted_count,
             )
+
+    # ============================================================
+    # Phase 2C cleanup — Ghost / orphaned inventory migration.
+    #   Identifies legacy auctions with no valid seller, no live linkage,
+    #   or pre-lifecycle-version seed data and moves them to
+    #   status='archived' + hidden flags. Audit-permanent. Idempotent.
+    # ============================================================
+    # Phase 2C ghost-inventory cleanup. Two ghost classes:
+    #   (a) Truly orphaned: seller_id missing or doesn't resolve to any
+    #       operator/dealer record.
+    #   (b) Pre-lifecycle seed: status field never set (status=null) — these
+    #       are bulk-seeded test units that predate the lifecycle system and
+    #       leak into Live Ops via the legacy time-window fallback. They
+    #       have no traceable lifecycle history and create fake liquidity.
+    legacy_query = {
+        "migration_tag": {"$ne": "legacy_cleanup_phase2c"},  # idempotent
+        "status": {"$nin": ["archived", "withdrawn"]},
+        "$or": [
+            {"seller_id": {"$exists": False}},
+            {"seller_id": None},
+            {"legacy_seed": True},
+            # Pre-lifecycle ghosts: the seed pipeline never assigned a
+            # status — the new lifecycle system explicitly sets one on
+            # creation. Anything left as null is legacy-by-definition.
+            {"status": None},
+            {"status": {"$exists": False}},
+        ],
+    }
+    archived_ids: List[str] = []
+    async for a in db.auctions.find(legacy_query, {"id": 1, "_id": 0, "status": 1, "seller_id": 1}):
+        archived_ids.append(a["id"])
+    if archived_ids:
+        result = await db.auctions.update_many(
+            {"id": {"$in": archived_ids}},
+            {"$set": {
+                "previous_status_before_archive": None,
+                "status": "archived",
+                "archived_at": now_utc(),
+                "archived_by": "system_migration",
+                "hidden_from_marketplace": True,
+                "hidden_from_live_ops": True,
+                "migration_tag": "legacy_cleanup_phase2c",
+                "archive_note": "Auto-archived: orphaned/legacy inventory (no valid seller or pre-lifecycle seed)",
+                "status_changed_at": now_utc(),
+                "status_changed_by": "system_migration",
+            }},
+        )
+        for aid in archived_ids:
+            asyncio.create_task(audit(db, "inventory_archived", "system_migration", aid, {
+                "role": "system",
+                "reason": "legacy_cleanup_phase2c",
+                "before_state": {"status": "legacy"},
+                "after_state": {"status": "archived", "hidden_from_marketplace": True, "hidden_from_live_ops": True},
+            }))
+        logger.info("[migration] legacy_cleanup_phase2c — archived %s ghost auctions: %s",
+                    result.modified_count, archived_ids[:10])
+
+    # ============================================================
+    # Phase 2C — Dealer verification/approval state separation.
+    # The new model decouples KYC verification from marketplace approval:
+    #   verification_status ∈ {unverified, kyc_pending, verified, rejected}
+    #   approval_status     ∈ {pending, approved, suspended, revoked}
+    # Backfill from legacy fields without inventing trust:
+    #   • If kyc_completed=True AND status=='approved' → verification_status=verified
+    #     (operator-approved dealers with full KYC are honestly verified).
+    #   • If kyc_completed=True AND status!='approved' → verification_status='kyc_pending'
+    #     (KYC submitted but operator hasn't reviewed yet — never auto-verify).
+    #   • Otherwise → verification_status='unverified'.
+    # approval_status mirrors existing `status` field (canonical).
+    # ============================================================
+    backfill_verified = await db.dealers.update_many(
+        {"role": "dealer", "verification_status": {"$exists": False},
+         "kyc_completed": True, "status": "approved"},
+        {"$set": {"verification_status": "verified",
+                  "verified_at": now_utc(), "verified_by": "system_backfill"}},
+    )
+    backfill_kyc_pending = await db.dealers.update_many(
+        {"role": "dealer", "verification_status": {"$exists": False},
+         "kyc_completed": True, "status": {"$ne": "approved"}},
+        {"$set": {"verification_status": "kyc_pending"}},
+    )
+    backfill_unverified = await db.dealers.update_many(
+        {"role": "dealer", "verification_status": {"$exists": False}},
+        {"$set": {"verification_status": "unverified"}},
+    )
+    if backfill_verified.modified_count or backfill_kyc_pending.modified_count or backfill_unverified.modified_count:
+        logger.info("[migration] verification_status backfill — verified=%s kyc_pending=%s unverified=%s",
+                    backfill_verified.modified_count, backfill_kyc_pending.modified_count, backfill_unverified.modified_count)
 
 
 @app.on_event("shutdown")

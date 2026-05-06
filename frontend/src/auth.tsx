@@ -25,6 +25,7 @@ type Dealer = {
   max_bid_limit?: number | null;
   suspended?: boolean;
   status?: 'pending' | 'approved' | 'suspended' | 'revoked';
+  verification_status?: 'unverified' | 'kyc_pending' | 'verified' | 'rejected';
   approved_at?: string | null;
   approved_by?: string | null;
   previous_status?: string | null;

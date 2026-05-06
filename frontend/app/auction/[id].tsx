@@ -8,7 +8,7 @@ import * as Haptics from 'expo-haptics';
 import Animated, { useSharedValue, useAnimatedStyle, withSequence, withTiming, withDelay } from 'react-native-reanimated';
 import {
   ArrowLeft, Heart, Share2, Trophy, ShieldCheck, AlertTriangle, Activity,
-  Calendar, Gauge, Fuel, Settings2, Users, ChevronRight,
+  Calendar, Gauge, Fuel, Settings2, Users, ChevronRight, Eye, Lock, Sparkles,
 } from 'lucide-react-native';
 import { colors, formatINR, formatINRFull, radii } from '../../src/theme';
 import { api, wsUrl } from '../../src/api';
@@ -165,12 +165,20 @@ export default function AuctionScreen() {
             </View>
           </View>
 
-          {isLive && (
-            <View style={styles.heroLiveBadge}>
-              <LivePulse size={6} />
-              <Text style={styles.heroLiveText}>LIVE AUCTION</Text>
-            </View>
-          )}
+          <View style={styles.heroBadgeRow}>
+            {isLive && (
+              <View style={styles.heroLiveBadge}>
+                <LivePulse size={6} />
+                <Text style={styles.heroLiveText}>LIVE AUCTION</Text>
+              </View>
+            )}
+            {isLive && (
+              <View style={styles.heroViewers}>
+                <Eye size={11} color={colors.textChrome} />
+                <Text style={styles.heroViewersText}>{auction.interested_dealers || 0} dealers watching</Text>
+              </View>
+            )}
+          </View>
 
           {/* Image dots */}
           <View style={styles.dots}>
@@ -218,6 +226,24 @@ export default function AuctionScreen() {
           <ScoreCard label="INSPECTION" value={`${(car.inspection_score || 0).toFixed(1)}/10`} accent={colors.success} />
           <ScoreCard label="LIQUIDITY" value="HIGH" accent={colors.warning} />
           <ScoreCard label="MARGIN EST." value="+8.2%" accent={colors.success} />
+        </View>
+
+        {/* Trust strip */}
+        <View style={styles.trustStrip}>
+          <View style={styles.trustItem}>
+            <Lock size={13} color={colors.silver} />
+            <Text style={styles.trustItemText}>Escrow protected</Text>
+          </View>
+          <View style={styles.trustDivider} />
+          <View style={styles.trustItem}>
+            <ShieldCheck size={13} color={colors.success} />
+            <Text style={styles.trustItemText}>RC verified</Text>
+          </View>
+          <View style={styles.trustDivider} />
+          <View style={styles.trustItem}>
+            <Sparkles size={13} color={colors.warning} />
+            <Text style={styles.trustItemText}>48-hr settlement</Text>
+          </View>
         </View>
 
         {/* Inspection details */}
@@ -383,12 +409,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row', justifyContent: 'space-between',
   },
   iconRound: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(11,11,13,0.6)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
-  heroLiveBadge: {
-    position: 'absolute', top: 70, left: 16,
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: colors.red, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999,
-  },
-  heroLiveText: { color: '#fff', fontSize: 10, fontWeight: '800', letterSpacing: 1.4 },
+  heroBadgeRow: { position: 'absolute', top: 70, left: 16, right: 16, flexDirection: 'row', gap: 8, alignItems: 'center' },
+  heroLiveBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.red, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999 },
+  heroLiveText: { color: '#fff', fontSize: 10, fontWeight: '900', letterSpacing: 1.6 },
+  heroViewers: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, backgroundColor: 'rgba(11,11,13,0.65)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  heroViewersText: { color: colors.textChrome, fontSize: 10, fontWeight: '700', letterSpacing: 0.4 },
   dots: { position: 'absolute', top: HERO_H / 2 - 6, alignSelf: 'center', flexDirection: 'row', gap: 6 },
   dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.3)' },
   dotActive: { backgroundColor: colors.red, width: 14 },
@@ -412,6 +437,11 @@ const styles = StyleSheet.create({
   specIconRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 4 },
   specLabel: { color: colors.textMuted, fontSize: 10, fontWeight: '700', letterSpacing: 0.5 },
   specValue: { color: colors.textPrimary, fontSize: 14, fontWeight: '700' },
+
+  trustStrip: { marginHorizontal: 20, marginTop: 14, padding: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: 1, borderRadius: radii.md },
+  trustItem: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  trustItemText: { color: colors.textChrome, fontSize: 11, fontWeight: '700', letterSpacing: 0.3 },
+  trustDivider: { width: StyleSheet.hairlineWidth, height: 24, backgroundColor: colors.border },
 
   scoreRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 20, marginTop: 16 },
   scoreCard: { flex: 1, backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: 1, borderRadius: radii.md, padding: 12 },

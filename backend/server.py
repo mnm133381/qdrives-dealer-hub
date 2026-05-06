@@ -525,6 +525,27 @@ async def ai_price_estimate(req: PriceEstimateReq):
         }
 
 
+# ---------- Network activity (public ticker) ----------
+@api.get("/network/activity")
+async def network_activity(limit: int = 12):
+    bids = await db.bids.find({}, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
+    items = []
+    for b in bids:
+        a = await db.auctions.find_one({"id": b["auction_id"]}, {"_id": 0})
+        if not a:
+            continue
+        car = await db.cars.find_one({"id": a["car_id"]}, {"_id": 0}) or {}
+        items.append({
+            "id": b["id"],
+            "amount": b["amount"],
+            "dealer_name": b.get("dealer_name", "Dealer"),
+            "auction_id": a["id"],
+            "car_short": f"{car.get('year', '')} {car.get('make', '')} {car.get('model', '')}".strip(),
+            "created_at": iso(b["created_at"]) if isinstance(b.get("created_at"), datetime) else b.get("created_at"),
+        })
+    return items
+
+
 # ---------- Live market pulse (public) ----------
 @api.get("/market/pulse")
 async def market_pulse():

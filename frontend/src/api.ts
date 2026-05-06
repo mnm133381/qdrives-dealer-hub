@@ -53,6 +53,7 @@ export const api = {
 
   dashboard: () => request('/dashboard/stats'),
   marketPulse: () => request('/market/pulse'),
+  networkActivity: () => request('/network/activity'),
   priceEstimate: (payload: any) => request('/ai/price-estimate', { method: 'POST', body: JSON.stringify(payload) }),
 };
 

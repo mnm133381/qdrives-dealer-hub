@@ -36,16 +36,20 @@ export default function Login() {
       <ImageBackground
         source={{ uri: 'https://images.unsplash.com/photo-1761229170508-f4791c297af8?w=1400&q=85' }}
         style={styles.hero}
-        imageStyle={{ opacity: 0.55 }}
+        imageStyle={{ opacity: 0.65 }}
       >
         <View style={styles.heroOverlay} />
+        <View style={styles.heroVignette} />
         <View style={styles.heroContent}>
           <View style={styles.brandRow}>
             <View style={styles.shieldMini}><Text style={styles.qMini}>Q</Text></View>
             <Text style={styles.brand}>Q DRIVES</Text>
+            <View style={styles.brandPill}>
+              <Text style={styles.brandPillText}>DEALER NETWORK</Text>
+            </View>
           </View>
-          <Text style={styles.heroTitle}>Wholesale auctions{'\n'}for serious dealers.</Text>
-          <Text style={styles.heroSub}>Live bidding. Verified inventory. Faster settlement.</Text>
+          <Text style={styles.heroTitle}>The trading floor{'\n'}for serious dealers.</Text>
+          <Text style={styles.heroSub}>Live auctions · Verified inventory · 48-hr settlement</Text>
         </View>
       </ImageBackground>
 
@@ -104,18 +108,22 @@ function Benefit({ icon, text }: { icon: React.ReactNode; text: string }) {
 }
 
 const styles = StyleSheet.create({
-  hero: { height: 320, justifyContent: 'flex-end' },
-  heroOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(11,11,13,0.55)' },
-  heroContent: { padding: 24, paddingBottom: 32 },
-  brandRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 50 },
+  hero: { height: 360, justifyContent: 'flex-end' },
+  heroOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(11,11,13,0.45)' },
+  heroVignette: { ...StyleSheet.absoluteFillObject, backgroundColor: 'transparent', shadowColor: '#000', shadowOpacity: 0.9 },
+  heroContent: { padding: 24, paddingBottom: 40 },
+  brandRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 60 },
   shieldMini: {
     width: 32, height: 38, borderRadius: 8, backgroundColor: colors.red,
     alignItems: 'center', justifyContent: 'center',
+    shadowColor: colors.red, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.6, shadowRadius: 12, elevation: 8,
   },
   qMini: { color: '#fff', fontSize: 18, fontWeight: '900' },
-  brand: { color: colors.textPrimary, fontSize: 14, fontWeight: '800', letterSpacing: 4 },
-  heroTitle: { color: colors.textPrimary, fontSize: 32, fontWeight: '800', letterSpacing: -1, lineHeight: 38 },
-  heroSub: { color: colors.textChrome, fontSize: 14, marginTop: 10, lineHeight: 20 },
+  brand: { color: colors.textPrimary, fontSize: 14, fontWeight: '900', letterSpacing: 4 },
+  brandPill: { paddingHorizontal: 8, paddingVertical: 3, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' },
+  brandPillText: { color: colors.textChrome, fontSize: 9, fontWeight: '800', letterSpacing: 1.4 },
+  heroTitle: { color: colors.textPrimary, fontSize: 34, fontWeight: '800', letterSpacing: -1, lineHeight: 40 },
+  heroSub: { color: colors.textChrome, fontSize: 13, marginTop: 12, lineHeight: 18, letterSpacing: 0.3, fontWeight: '500' },
 
   sheet: {
     flex: 1, backgroundColor: colors.bgCard,

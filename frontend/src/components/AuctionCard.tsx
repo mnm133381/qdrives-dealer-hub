@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet, Image, Pressable } from 'reac
 import { colors, formatINR, radii, spacing } from '../theme';
 import { CountdownTimer } from './CountdownTimer';
 import { LivePulse } from './LivePulse';
-import { Heart, Gauge, Calendar, Fuel } from 'lucide-react-native';
+import { Heart, Gauge, Calendar, Fuel, Eye, Flame, ShieldCheck, BadgeCheck } from 'lucide-react-native';
 
 type Props = {
   auction: any;
@@ -15,12 +15,15 @@ type Props = {
 
 export function AuctionCard({ auction, onPress, onWatch, watching, testID }: Props) {
   const car = auction.car || {};
+  const seller = auction.seller || {};
   const isLive = auction.status === 'live';
   const reserveMet = (auction.current_bid || 0) >= (auction.reserve_price || 0);
+  const isHot = (auction.total_bids || 0) >= 10;
+  const viewerCount = auction.interested_dealers || 0;
 
   return (
     <TouchableOpacity
-      activeOpacity={0.9}
+      activeOpacity={0.92}
       onPress={onPress}
       testID={testID}
       style={styles.card}
@@ -30,60 +33,104 @@ export function AuctionCard({ auction, onPress, onWatch, watching, testID }: Pro
           source={{ uri: (car.images && car.images[0]) || 'https://images.unsplash.com/photo-1768965468641-39e87aa78a9d?w=1200&q=80' }}
           style={styles.image}
         />
-        <View style={styles.imageOverlay} />
+        <View style={styles.imageGradTop} />
+        <View style={styles.imageGradBottom} />
 
-        {isLive && (
-          <View style={styles.liveBadge}>
-            <LivePulse size={6} />
-            <Text style={styles.liveText}>LIVE</Text>
+        {/* Top row: live + hot, watch */}
+        <View style={styles.topRow}>
+          <View style={styles.topLeft}>
+            {isLive && (
+              <View style={styles.liveBadge}>
+                <LivePulse size={6} />
+                <Text style={styles.liveText}>LIVE</Text>
+              </View>
+            )}
+            {auction.status === 'upcoming' && (
+              <View style={[styles.statusBadge, { borderColor: colors.warning }]}>
+                <Text style={[styles.statusText, { color: colors.warning }]}>UPCOMING</Text>
+              </View>
+            )}
+            {auction.status === 'ended' && (
+              <View style={[styles.statusBadge, { borderColor: colors.textMuted }]}>
+                <Text style={[styles.statusText, { color: colors.textSecondary }]}>ENDED</Text>
+              </View>
+            )}
+            {isLive && isHot && (
+              <View style={styles.hotBadge}>
+                <Flame size={10} color="#fff" />
+                <Text style={styles.hotText}>HOT</Text>
+              </View>
+            )}
           </View>
-        )}
-        {auction.status === 'upcoming' && (
-          <View style={[styles.statusBadge, { backgroundColor: 'rgba(245,158,11,0.18)', borderColor: colors.warning }]}>
-            <Text style={[styles.statusText, { color: colors.warning }]}>UPCOMING</Text>
-          </View>
-        )}
-        {auction.status === 'ended' && (
-          <View style={[styles.statusBadge, { backgroundColor: 'rgba(100,116,139,0.18)', borderColor: colors.textMuted }]}>
-            <Text style={[styles.statusText, { color: colors.textSecondary }]}>ENDED</Text>
-          </View>
-        )}
+          {onWatch && (
+            <Pressable onPress={onWatch} style={styles.heart} hitSlop={10} testID={`${testID}-watch`}>
+              <Heart size={16} color={watching ? colors.red : colors.textChrome} fill={watching ? colors.red : 'transparent'} />
+            </Pressable>
+          )}
+        </View>
 
-        {onWatch && (
-          <Pressable onPress={onWatch} style={styles.heart} hitSlop={10} testID={`${testID}-watch`}>
-            <Heart size={18} color={watching ? colors.red : colors.textChrome} fill={watching ? colors.red : 'transparent'} />
-          </Pressable>
-        )}
+        {/* Reg plate at bottom-right */}
+        <View style={styles.regPlate}>
+          <Text style={styles.regText}>{car.registration_number || 'REG —'}</Text>
+        </View>
 
+        {/* Title overlay */}
         <View style={styles.bottomGradientInfo}>
           <Text style={styles.titleOverlay} numberOfLines={1}>
             {car.year} {car.make} {car.model}
           </Text>
           <Text style={styles.variantOverlay} numberOfLines={1}>
-            {car.variant} · {car.color}
+            {car.variant ? `${car.variant} · ` : ''}{car.color}
           </Text>
         </View>
       </View>
 
       <View style={styles.body}>
-        <View style={styles.metaRow}>
-          <Meta icon={<Calendar size={12} color={colors.textSecondary} />} text={`${car.year || ''}`} />
-          <Meta icon={<Gauge size={12} color={colors.textSecondary} />} text={`${(car.km_driven || 0).toLocaleString('en-IN')} km`} />
-          <Meta icon={<Fuel size={12} color={colors.textSecondary} />} text={car.fuel_type || ''} />
+        {/* Seller / trust strip */}
+        <View style={styles.trustStrip}>
+          {seller.verified ? (
+            <BadgeCheck size={12} color={colors.success} />
+          ) : (
+            <ShieldCheck size={12} color={colors.textMuted} />
+          )}
+          <Text style={styles.trustText} numberOfLines={1}>
+            {seller.dealership_name || 'Verified Dealer'}{seller.city ? ` · ${seller.city}` : ''}
+          </Text>
+          {isLive && (
+            <View style={styles.viewerPill}>
+              <Eye size={10} color={colors.textChrome} />
+              <Text style={styles.viewerText}>{viewerCount}</Text>
+            </View>
+          )}
         </View>
+
+        {/* Meta row */}
+        <View style={styles.metaRow}>
+          <Meta icon={<Calendar size={11} color={colors.textSecondary} />} text={`${car.year || ''}`} />
+          <View style={styles.metaDot} />
+          <Meta icon={<Gauge size={11} color={colors.textSecondary} />} text={`${(car.km_driven || 0).toLocaleString('en-IN')} km`} />
+          <View style={styles.metaDot} />
+          <Meta icon={<Fuel size={11} color={colors.textSecondary} />} text={car.fuel_type || ''} />
+        </View>
+
+        <View style={styles.divider} />
 
         <View style={styles.priceRow}>
           <View style={{ flex: 1 }}>
             <Text style={styles.bidLabel}>{isLive ? 'CURRENT BID' : auction.status === 'upcoming' ? 'STARTING' : 'FINAL BID'}</Text>
             <Text style={styles.bidValue}>{formatINR(auction.current_bid || auction.starting_bid)}</Text>
+            <Text style={styles.bidsNote}>{auction.total_bids || 0} bids · {auction.interested_dealers || 0} watching</Text>
           </View>
           <View style={styles.timerWrap}>
             {isLive ? (
-              <CountdownTimer endTime={auction.end_time} compact />
+              <>
+                <Text style={styles.endsIn}>ENDS IN</Text>
+                <CountdownTimer endTime={auction.end_time} compact />
+              </>
             ) : auction.status === 'upcoming' ? (
               <Text style={styles.timerCompactMuted}>Starts soon</Text>
             ) : (
-              <Text style={styles.timerCompactMuted}>{auction.total_bids} bids</Text>
+              <Text style={styles.timerCompactMuted}>{auction.total_bids} bids placed</Text>
             )}
           </View>
         </View>
@@ -91,16 +138,19 @@ export function AuctionCard({ auction, onPress, onWatch, watching, testID }: Pro
         <View style={styles.footerRow}>
           <View style={styles.scorePill}>
             <Text style={styles.scoreLabel}>INSPECTION</Text>
-            <Text style={styles.scoreVal}>{(car.inspection_score || 0).toFixed(1)}/10</Text>
+            <Text style={styles.scoreVal}>{(car.inspection_score || 0).toFixed(1)}<Text style={styles.scoreSuffix}>/10</Text></Text>
           </View>
           <View style={[styles.scorePill, reserveMet ? styles.reserveMet : styles.reserveNotMet]}>
             <Text style={[styles.scoreLabel, reserveMet ? { color: colors.success } : { color: colors.warning }]}>
-              {reserveMet ? 'RESERVE MET' : 'RESERVE'}
+              {reserveMet ? 'RESERVE' : 'RESERVE'}
+            </Text>
+            <Text style={[styles.scoreVal, reserveMet ? { color: colors.success } : { color: colors.warning }]}>
+              {reserveMet ? 'MET' : 'NOT MET'}
             </Text>
           </View>
           <View style={styles.scorePill}>
-            <Text style={styles.scoreLabel}>BIDS</Text>
-            <Text style={styles.scoreVal}>{auction.total_bids || 0}</Text>
+            <Text style={styles.scoreLabel}>GRADE</Text>
+            <Text style={styles.scoreVal}>{car.condition_grade || 'A'}</Text>
           </View>
         </View>
       </View>
@@ -126,52 +176,59 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginBottom: spacing.lg,
   },
-  imageWrap: { width: '100%', height: 200, position: 'relative', backgroundColor: '#000' },
+  imageWrap: { width: '100%', height: 220, position: 'relative', backgroundColor: '#000' },
   image: { width: '100%', height: '100%' },
-  imageOverlay: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 90, backgroundColor: 'rgba(11,11,13,0.85)' },
-  liveBadge: {
-    position: 'absolute', top: 14, left: 14,
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: colors.red, paddingHorizontal: 10, paddingVertical: 5,
-    borderRadius: 999,
-  },
-  liveText: { color: '#fff', fontSize: 10, fontWeight: '800', letterSpacing: 1.4 },
-  statusBadge: {
-    position: 'absolute', top: 14, left: 14,
-    paddingHorizontal: 10, paddingVertical: 5,
-    borderRadius: 999, borderWidth: 1,
-  },
-  statusText: { fontSize: 10, fontWeight: '800', letterSpacing: 1.4 },
-  heart: {
-    position: 'absolute', top: 12, right: 12,
-    width: 36, height: 36, borderRadius: 18,
-    backgroundColor: 'rgba(11,11,13,0.7)',
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: 'rgba(203,213,225,0.15)',
-  },
-  bottomGradientInfo: { position: 'absolute', bottom: 12, left: 14, right: 14 },
-  titleOverlay: { color: colors.textPrimary, fontSize: 17, fontWeight: '700', letterSpacing: -0.3 },
-  variantOverlay: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
+  imageGradTop: { position: 'absolute', top: 0, left: 0, right: 0, height: 70, backgroundColor: 'rgba(11,11,13,0.55)' },
+  imageGradBottom: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 110, backgroundColor: 'rgba(11,11,13,0.85)' },
 
-  body: { padding: spacing.lg },
-  metaRow: { flexDirection: 'row', gap: spacing.lg, marginBottom: spacing.md },
-  metaItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  metaText: { color: colors.textSecondary, fontSize: 12 },
+  topRow: { position: 'absolute', top: 14, left: 14, right: 14, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  topLeft: { flexDirection: 'row', gap: 6 },
+  liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.red, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999 },
+  liveText: { color: '#fff', fontSize: 10, fontWeight: '900', letterSpacing: 1.6 },
+  statusBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, borderWidth: 1, backgroundColor: 'rgba(11,11,13,0.55)' },
+  statusText: { fontSize: 10, fontWeight: '900', letterSpacing: 1.6 },
+  hotBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 999, backgroundColor: 'rgba(245,158,11,0.95)' },
+  hotText: { color: '#0B0B0D', fontSize: 9, fontWeight: '900', letterSpacing: 1.4 },
 
-  priceRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.md },
-  bidLabel: { color: colors.textMuted, fontSize: 10, fontWeight: '700', letterSpacing: 1.4, marginBottom: 4 },
-  bidValue: { color: colors.textPrimary, fontSize: 22, fontWeight: '800', letterSpacing: -0.5 },
+  heart: { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(11,11,13,0.65)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+
+  regPlate: { position: 'absolute', top: 14, right: 60, paddingHorizontal: 8, paddingVertical: 4, backgroundColor: 'rgba(255,255,255,0.95)', borderRadius: 6 },
+  regText: { color: '#0B0B0D', fontSize: 10, fontWeight: '900', letterSpacing: 1.2 },
+
+  bottomGradientInfo: { position: 'absolute', bottom: 14, left: 16, right: 16 },
+  titleOverlay: { color: colors.textPrimary, fontSize: 19, fontWeight: '800', letterSpacing: -0.4 },
+  variantOverlay: { color: colors.textSecondary, fontSize: 12, marginTop: 3, letterSpacing: 0.2 },
+
+  body: { padding: 16 },
+  trustStrip: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 },
+  trustText: { color: colors.textSecondary, fontSize: 11, fontWeight: '700', letterSpacing: 0.4, flex: 1 },
+  viewerPill: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 999, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border },
+  viewerText: { color: colors.textChrome, fontSize: 10, fontWeight: '800' },
+
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  metaDot: { width: 3, height: 3, borderRadius: 1.5, backgroundColor: colors.border },
+  metaText: { color: colors.textSecondary, fontSize: 11, fontWeight: '600' },
+
+  divider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginVertical: 12 },
+
+  priceRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
+  bidLabel: { color: colors.textMuted, fontSize: 9, fontWeight: '900', letterSpacing: 1.6, marginBottom: 4 },
+  bidValue: { color: colors.textPrimary, fontSize: 24, fontWeight: '800', letterSpacing: -0.6 },
+  bidsNote: { color: colors.textMuted, fontSize: 11, marginTop: 4, fontWeight: '600' },
   timerWrap: { alignItems: 'flex-end' },
+  endsIn: { color: colors.textMuted, fontSize: 9, fontWeight: '900', letterSpacing: 1.6, marginBottom: 4 },
   timerCompactMuted: { color: colors.textSecondary, fontSize: 12, fontWeight: '600' },
 
-  footerRow: { flexDirection: 'row', gap: 8 },
+  footerRow: { flexDirection: 'row', gap: 6, marginTop: 14 },
   scorePill: {
     flex: 1, backgroundColor: colors.bg,
-    borderRadius: 10, paddingVertical: 8, paddingHorizontal: 8,
+    borderRadius: 10, paddingVertical: 8, paddingHorizontal: 6,
     borderWidth: 1, borderColor: colors.border, alignItems: 'center',
   },
   reserveMet: { borderColor: 'rgba(16,185,129,0.3)', backgroundColor: 'rgba(16,185,129,0.05)' },
   reserveNotMet: { borderColor: 'rgba(245,158,11,0.25)', backgroundColor: 'rgba(245,158,11,0.04)' },
-  scoreLabel: { color: colors.textMuted, fontSize: 9, fontWeight: '800', letterSpacing: 1.2 },
-  scoreVal: { color: colors.textChrome, fontSize: 13, fontWeight: '700', marginTop: 2 },
+  scoreLabel: { color: colors.textMuted, fontSize: 9, fontWeight: '900', letterSpacing: 1.2 },
+  scoreVal: { color: colors.textChrome, fontSize: 13, fontWeight: '800', marginTop: 3 },
+  scoreSuffix: { color: colors.textMuted, fontSize: 11, fontWeight: '600' },
 });

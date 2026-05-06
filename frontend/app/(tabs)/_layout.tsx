@@ -24,7 +24,7 @@ export default function TabsLayout() {
   }
   if (!dealer) return <Redirect href="/(auth)/login" />;
   if (!dealer.kyc_completed) return <Redirect href="/(auth)/kyc" />;
-  if (dealer.role === 'admin') return <Redirect href="/(admin)" />;
+  if (['admin', 'super_admin', 'operations_admin', 'inspection_admin'].includes(dealer.role as any)) return <Redirect href="/(admin)" />;
 
   return (
     <Tabs

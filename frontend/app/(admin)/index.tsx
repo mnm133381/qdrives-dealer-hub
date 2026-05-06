@@ -1,177 +1,408 @@
-import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, RefreshControl, TouchableOpacity, ActivityIndicator } from 'react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
-import { Activity, TrendingUp, Users, Package, Gauge, ArrowUpRight, Clock, AlertTriangle, ChevronRight, BadgeCheck } from 'lucide-react-native';
-import { colors, radii, formatINR, formatINRFull } from '../../src/theme';
+/**
+ * Operator Live Ops Dashboard.
+ *
+ * Trading-terminal dense layout, three sections:
+ *   1. Live Auctions Grid — every monitorable auction with one-tap pause/
+ *      extend/force-close. Updates poll every 5s + WS-driven hooks (Phase 3).
+ *   2. Settlement Pipeline strip — counts per state.
+ *   3. Risk Strip — 6 categories of dealer risk surfaced inline.
+ *
+ * Built for operator-grade speed: monospace numerics, no oversized cards,
+ * primary actions live in one tap.
+ */
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator,
+  RefreshControl,
+} from 'react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
+import {
+  Gavel, Clock, Pause, Play, FastForward, ShieldX, Flame, Users,
+  AlertOctagon, ChevronRight, Banknote, ArrowRight, BadgeAlert,
+  Activity, TrendingUp, Inbox, CheckCircle2, Truck, FileWarning,
+} from 'lucide-react-native';
+import { colors, radii, formatINR } from '../../src/theme';
 import { api } from '../../src/api';
 import { AdminHeader } from '../../src/components/AdminHeader';
+import { ReasonModal } from '../../src/components/ReasonModal';
+import { useToast } from '../../src/toast';
 
-export default function AdminDashboard() {
+export default function AdminOpsDashboard() {
   const router = useRouter();
-  const [data, setData] = useState<any>(null);
-  const [loaded, setLoaded] = useState(false);
+  const toast = useToast();
+  const [grid, setGrid] = useState<any[]>([]);
+  const [risk, setRisk] = useState<any | null>(null);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [now, setNow] = useState(Date.now());
+
+  // Reason modal state for pause / force-close / cancel
+  const [reasonModal, setReasonModal] = useState<{
+    visible: boolean; auctionId: string; action: 'pause' | 'force_close' | 'cancel'; title: string; cta: string;
+  } | null>(null);
+  const [reasonBusy, setReasonBusy] = useState(false);
 
   const load = useCallback(async () => {
-    try { const d = await api.adminDashboard(); setData(d); } catch {}
-    setLoaded(true);
+    setLoading(true);
+    try {
+      const [g, r] = await Promise.all([api.adminLiveGrid(), api.adminRiskDealers()]);
+      setGrid(g.items || []);
+      setRisk(r);
+    } catch (e: any) {
+      toast.show(e.message || 'Failed to load ops', 'error');
+    } finally { setLoading(false); }
   }, []);
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  useFocusEffect(useCallback(() => {
+    load();
+    const t = setInterval(load, 6000); // poll every 6s
+    return () => clearInterval(t);
+  }, [load]));
+
+  // Local timer tick for time_left countdown
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
-  if (!loaded) return <View style={styles.loader}><ActivityIndicator color={colors.red} /></View>;
+  const counts = {
+    live: grid.filter((a) => a.status === 'live').length,
+    paused: grid.filter((a) => a.status === 'paused').length,
+    pending: grid.filter((a) => a.status === 'ended_pending_payment').length,
+    payment: grid.filter((a) => a.status === 'payment_received').length,
+    released: grid.filter((a) => a.status === 'vehicle_released').length,
+    dispute: grid.filter((a) => a.status === 'dispute').length,
+  };
+
+  // GMV today (sum of current_bid for non-terminal auctions)
+  const gmv = grid.reduce((s, a) => s + (a.current_bid || 0), 0);
+  const liveBids = grid.filter((a) => a.status === 'live').reduce((s, a) => s + (a.total_bids || 0), 0);
+
+  const onResume = async (id: string) => {
+    try { await api.adminResumeAuction(id); toast.show('Resumed', 'success'); load(); }
+    catch (e: any) { toast.show(e.message || 'Failed', 'error'); }
+  };
+  const onExtend = async (id: string) => {
+    try { await api.adminExtendAuction(id, 60, 'Quick +60s'); toast.show('Extended +60s', 'success'); load(); }
+    catch (e: any) { toast.show(e.message || 'Failed', 'error'); }
+  };
+
+  const submitReason = async (reason: string) => {
+    if (!reasonModal) return;
+    setReasonBusy(true);
+    try {
+      const fn = reasonModal.action === 'pause'
+        ? api.adminPauseAuction
+        : reasonModal.action === 'force_close'
+          ? api.adminForceClose
+          : api.adminCancelAuction;
+      await fn(reasonModal.auctionId, reason);
+      toast.show(reasonModal.action === 'pause' ? 'Paused' : reasonModal.action === 'force_close' ? 'Force-closed' : 'Cancelled', 'success');
+      setReasonModal(null);
+      load();
+    } catch (e: any) {
+      toast.show(e.message || 'Failed', 'error');
+    } finally { setReasonBusy(false); }
+  };
 
   return (
     <View style={styles.root}>
-      <AdminHeader kicker="Operations dashboard" title="Marketplace controls" sub="Real-time visibility into auctions, dealers and inventory." />
-      <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 80 }} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.red} />}>
+      <AdminHeader
+        kicker="Operations"
+        title="Live ops"
+        sub="Real-time auction monitor · pipeline · risk"
+      />
 
-        {/* KPI strip */}
+      <ScrollView
+        contentContainerStyle={styles.body}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.red} />}
+      >
+        {/* HEADLINE KPIs */}
         <View style={styles.kpiRow}>
-          <Kpi label="LIVE" value={data?.auctions?.live ?? 0} icon={<Activity size={14} color={colors.red} />} accent={colors.red} />
-          <Kpi label="UPCOMING" value={data?.auctions?.upcoming ?? 0} icon={<Clock size={14} color={colors.warning} />} accent={colors.warning} />
-          <Kpi label="CLOSED TODAY" value={data?.auctions?.ended_today ?? 0} icon={<TrendingUp size={14} color={colors.success} />} accent={colors.success} />
+          <Kpi icon={<Flame size={14} color={colors.red} />} label="LIVE" value={`${counts.live}`} tint={colors.red} />
+          <Kpi icon={<Inbox size={14} color={colors.warning} />} label="PENDING $$" value={`${counts.pending}`} tint={colors.warning} />
+          <Kpi icon={<Truck size={14} color={colors.silver} />} label="RELEASED" value={`${counts.released}`} />
+          <Kpi icon={<FileWarning size={14} color={colors.red} />} label="DISPUTE" value={`${counts.dispute}`} tint={colors.red} />
+        </View>
+        <View style={styles.gmvBar}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.gmvLabel}>OPEN GMV</Text>
+            <Text style={styles.gmvVal}>{formatINR(gmv)}</Text>
+          </View>
+          <View style={styles.divv} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.gmvLabel}>BIDS PLACED</Text>
+            <Text style={styles.gmvVal}>{liveBids}</Text>
+          </View>
         </View>
 
-        {/* GMV card */}
-        <View style={styles.gmvCard}>
-          <View style={styles.gmvHead}><Text style={styles.kicker}>GMV TODAY</Text><Gauge size={16} color={colors.red} /></View>
-          <Text style={styles.gmvValue}>{formatINRFull(data?.activity?.gmv_today_inr || 0)}</Text>
-          <View style={styles.gmvFoot}>
-            <Pair label="Deals" value={`${data?.activity?.deals_today ?? 0}`} />
-            <Pair label="Bids" value={`${data?.activity?.bids_today ?? 0}`} />
-            <Pair label="Listings" value={`${data?.inventory?.listings_today ?? 0}`} />
-          </View>
+        {/* LIVE AUCTIONS GRID */}
+        <View style={styles.sectionHead}>
+          <Gavel size={13} color={colors.textChrome} />
+          <Text style={styles.sectionTitle}>LIVE AUCTIONS</Text>
+          <Text style={styles.sectionCount}>{grid.length}</Text>
         </View>
-
-        {/* Dealer pulse */}
-        <Section title="Dealer network" right={(
-          <TouchableOpacity onPress={() => router.push('/(admin)/dealers')} style={styles.linkRow}>
-            <Text style={styles.linkText}>Manage</Text><ChevronRight size={14} color={colors.red} />
-          </TouchableOpacity>
-        )}>
-          <View style={styles.cardsRow}>
-            <MiniStat label="TOTAL" value={`${data?.dealers?.total ?? 0}`} sub="dealers" />
-            <MiniStat label="VERIFIED" value={`${data?.dealers?.verified ?? 0}`} sub="approved" tint={colors.success} />
-            <MiniStat label="PENDING" value={`${data?.dealers?.pending_verification ?? 0}`} sub="to review" tint={colors.warning} />
-            <MiniStat label="SUSPENDED" value={`${data?.dealers?.suspended ?? 0}`} sub="locked" tint={colors.red} />
-          </View>
-        </Section>
-
-        {/* Inventory */}
-        <Section title="Inventory" right={(
-          <TouchableOpacity onPress={() => router.push('/(admin)/inventory')} style={styles.linkRow}>
-            <Text style={styles.linkText}>Open</Text><ChevronRight size={14} color={colors.red} />
-          </TouchableOpacity>
-        )}>
-          <View style={styles.invCard}>
-            <Package size={18} color={colors.red} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.invLabel}>{data?.inventory?.total ?? 0} vehicles in catalog</Text>
-              <Text style={styles.invSub}>{data?.inventory?.listings_today ?? 0} new today · Q Drives Inventory</Text>
-            </View>
-            <TouchableOpacity onPress={() => router.push('/(admin)/launch')} style={styles.launchBtn}>
-              <Text style={styles.launchBtnText}>+ LAUNCH</Text>
-            </TouchableOpacity>
-          </View>
-        </Section>
-
-        {/* Top dealers */}
-        {(data?.top_dealers || []).length > 0 && (
-          <Section title="Top dealers by spend">
-            {(data?.top_dealers || []).map((d: any, i: number) => (
-              <View key={d.id} style={styles.topRow}>
-                <View style={styles.topRank}><Text style={styles.topRankText}>#{i + 1}</Text></View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.topName} numberOfLines={1}>{d.dealership_name || 'Dealer'}</Text>
-                  <Text style={styles.topSub}>{d.city || ''} · {d.wins} wins</Text>
-                </View>
-                <Text style={styles.topSpend}>{formatINR(d.spend)}</Text>
-              </View>
-            ))}
-          </Section>
+        {loading && grid.length === 0 ? (
+          <View style={styles.loader}><ActivityIndicator color={colors.red} /></View>
+        ) : grid.length === 0 ? (
+          <Text style={styles.empty}>No active auctions.</Text>
+        ) : (
+          grid.map((a) => (
+            <AuctionRow
+              key={a.id} a={a} now={now}
+              onTap={() => router.push(`/(admin)/auction/${a.id}` as any)}
+              onPause={() => setReasonModal({ visible: true, auctionId: a.id, action: 'pause', title: 'Pause this auction', cta: 'Pause' })}
+              onResume={() => onResume(a.id)}
+              onExtend={() => onExtend(a.id)}
+              onForceClose={() => setReasonModal({ visible: true, auctionId: a.id, action: 'force_close', title: 'Force-close this auction', cta: 'Force-close' })}
+              onCancel={() => setReasonModal({ visible: true, auctionId: a.id, action: 'cancel', title: 'Cancel this auction', cta: 'Cancel' })}
+            />
+          ))
         )}
 
-        {/* Recent outcomes */}
-        {(data?.recent_outcomes || []).length > 0 && (
-          <Section title="Recent outcomes">
-            {(data?.recent_outcomes || []).map((r: any) => (
-              <TouchableOpacity key={r.id} onPress={() => router.push(`/auction/${r.id}`)} style={styles.outRow}>
-                <View style={[styles.outBadge, r.reserve_met ? styles.outBadgeOk : styles.outBadgeWarn]}>
-                  {r.reserve_met ? <BadgeCheck size={12} color={colors.success} /> : <AlertTriangle size={12} color={colors.warning} />}
-                  <Text style={[styles.outBadgeText, { color: r.reserve_met ? colors.success : colors.warning }]}>
-                    {r.reserve_met ? 'SOLD' : 'NO RESERVE'}
-                  </Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.outTitle} numberOfLines={1}>{(r.car?.year || '')} {(r.car?.make || '')} {(r.car?.model || '')}</Text>
-                  <Text style={styles.outSub}>{r.car?.registration_number || ''}</Text>
-                </View>
-                <Text style={styles.outPrice}>{formatINR(r.final_bid)}</Text>
-              </TouchableOpacity>
-            ))}
-          </Section>
+        {/* SETTLEMENT PIPELINE */}
+        <View style={[styles.sectionHead, { marginTop: 24 }]}>
+          <Activity size={13} color={colors.textChrome} />
+          <Text style={styles.sectionTitle}>SETTLEMENT PIPELINE</Text>
+        </View>
+        <View style={styles.pipeline}>
+          <PipeStage label="PENDING $" count={counts.pending} icon={<Inbox size={12} color={colors.warning} />} tint={colors.warning} />
+          <PipeArrow />
+          <PipeStage label="PAID" count={counts.payment} icon={<CheckCircle2 size={12} color={colors.silver} />} />
+          <PipeArrow />
+          <PipeStage label="RELEASED" count={counts.released} icon={<Truck size={12} color={colors.success} />} tint={colors.success} />
+          <PipeArrow />
+          <PipeStage label="DISPUTE" count={counts.dispute} icon={<FileWarning size={12} color={colors.red} />} tint={counts.dispute > 0 ? colors.red : undefined} />
+        </View>
+
+        {/* RISK STRIP */}
+        <View style={[styles.sectionHead, { marginTop: 24 }]}>
+          <ShieldX size={13} color={colors.textChrome} />
+          <Text style={styles.sectionTitle}>DEALER RISK</Text>
+        </View>
+        {!risk ? (
+          <View style={styles.loader}><ActivityIndicator color={colors.red} /></View>
+        ) : (
+          <View style={styles.riskGrid}>
+            <RiskTile icon={<ShieldX size={14} color={colors.red} />} label="Suspended" count={risk.suspended?.length || 0} tint={colors.red} testID="risk-suspended" />
+            <RiskTile icon={<BadgeAlert size={14} color={colors.warning} />} label="Repeat denied (24h)" count={risk.repeat_denied_24h?.length || 0} tint={colors.warning} testID="risk-denied" />
+            <RiskTile icon={<AlertOctagon size={14} color={colors.warning} />} label="Cancellations (7d)" count={risk.cancellations_7d?.length || 0} testID="risk-cancellations" />
+            <RiskTile icon={<TrendingUp size={14} color={colors.warning} />} label="Abnormal freq (1h)" count={risk.abnormal_frequency_1h?.length || 0} testID="risk-frequency" />
+            <RiskTile icon={<Banknote size={14} color={colors.warning} />} label="High-value spike (24h)" count={risk.high_value_spikes_24h?.length || 0} testID="risk-spikes" />
+            <RiskTile icon={<Users size={14} color={colors.silver} />} label="Inactive high-limit" count={risk.inactive_high_limit?.length || 0} testID="risk-inactive" />
+          </View>
         )}
       </ScrollView>
+
+      {reasonModal && (
+        <ReasonModal
+          visible={reasonModal.visible}
+          title={reasonModal.title}
+          cta={reasonModal.cta}
+          danger={reasonModal.action !== 'pause'}
+          busy={reasonBusy}
+          onClose={() => setReasonModal(null)}
+          onSubmit={submitReason}
+        />
+      )}
     </View>
   );
 }
 
-function Kpi({ label, value, icon, accent }: any) {
+function Kpi({ icon, label, value, tint }: any) {
   return (
-    <View style={[styles.kpi, { borderColor: accent + '55', backgroundColor: accent + '10' }]}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-        {icon}
-        <Text style={[styles.kpiLabel, { color: accent }]}>{label}</Text>
-      </View>
-      <Text style={styles.kpiValue}>{value}</Text>
+    <View style={[styles.kpi, tint && { borderColor: tint + '40' }]}>
+      <View style={styles.kpiHead}>{icon}<Text style={[styles.kpiLabel, tint && { color: tint }]}>{label}</Text></View>
+      <Text style={styles.kpiVal}>{value}</Text>
     </View>
   );
 }
-function Pair({ label, value }: any) { return <View><Text style={styles.pairValue}>{value}</Text><Text style={styles.pairLabel}>{label}</Text></View>; }
-function MiniStat({ label, value, sub, tint }: any) { return <View style={[styles.miniStat, tint && { borderColor: tint + '55' }]}><Text style={[styles.miniLabel, tint && { color: tint }]}>{label}</Text><Text style={styles.miniValue}>{value}</Text><Text style={styles.miniSub}>{sub}</Text></View>; }
-function Section({ title, right, children }: any) { return <View style={{ marginTop: 22 }}><View style={styles.sectionHead}><Text style={styles.sectionTitle}>{title}</Text>{right}</View>{children}</View>; }
+
+function AuctionRow({ a, now, onTap, onPause, onResume, onExtend, onForceClose, onCancel }: any) {
+  // recompute time_left dynamically (avoids polling for second-level updates)
+  const endMs = a.end_time ? new Date(a.end_time).getTime() : 0;
+  const timeLeft = Math.max(0, Math.floor((endMs - now) / 1000));
+  const m = Math.floor(timeLeft / 60), s = timeLeft % 60;
+  const tStr = timeLeft > 0 ? `${m}:${s.toString().padStart(2, '0')}` : '0:00';
+  const ending = timeLeft > 0 && timeLeft <= 60;
+  const isLive = a.status === 'live';
+  const isPaused = a.status === 'paused';
+  const isPending = a.status === 'ended_pending_payment';
+  const statusTint = isLive ? colors.success : isPaused ? colors.warning : isPending ? colors.warning : colors.textMuted;
+  const statusLabel = (a.status || 'unknown').toUpperCase().replace(/_/g, ' ');
+
+  return (
+    <TouchableOpacity onPress={onTap} activeOpacity={0.85} style={styles.row} testID={`live-row-${a.id}`}>
+      <View style={styles.rowHead}>
+        <Text style={styles.rowTitle} numberOfLines={1}>
+          {a.car?.year || ''} {a.car?.make || ''} {a.car?.model || ''}
+        </Text>
+        <View style={[styles.statusPill, { backgroundColor: statusTint + '14', borderColor: statusTint + '55' }]}>
+          <View style={[styles.statusDot, { backgroundColor: statusTint }]} />
+          <Text style={[styles.statusText, { color: statusTint }]}>{statusLabel}</Text>
+        </View>
+      </View>
+      <View style={styles.rowMeta}>
+        <Text style={styles.regNo}>{a.car?.registration_number || '—'}</Text>
+        <Text style={styles.metaSep}>·</Text>
+        <Text style={styles.metaItem}>{a.total_bids || 0} bids</Text>
+        {a.velocity_60s > 0 && (
+          <>
+            <Text style={styles.metaSep}>·</Text>
+            <Text style={[styles.metaItem, { color: colors.warning, fontWeight: '900' }]}>
+              {a.velocity_60s}/min ↑
+            </Text>
+          </>
+        )}
+        <Text style={styles.metaSep}>·</Text>
+        <Text style={styles.metaItem}>{a.watcher_count || 0} watching</Text>
+      </View>
+      <View style={styles.rowMid}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.priceLabel}>HIGHEST</Text>
+          <Text style={styles.price}>{formatINR(a.current_bid || 0)}</Text>
+          {a.reserve_price ? (
+            <Text style={[styles.reserve, { color: a.reserve_met ? colors.success : colors.textMuted }]}>
+              Reserve {a.reserve_met ? 'met' : `₹${(a.reserve_price/100000).toFixed(1)}L`}
+            </Text>
+          ) : null}
+        </View>
+        <View style={{ alignItems: 'flex-end' }}>
+          <Text style={styles.priceLabel}>{ending ? 'ENDING' : 'TIME LEFT'}</Text>
+          <Text style={[styles.timer, ending && { color: colors.red }]}>{tStr}</Text>
+          {a.extension_count > 0 && (
+            <Text style={styles.extCount}>+{a.extension_count} ext</Text>
+          )}
+        </View>
+      </View>
+      {a.top_bidder ? (
+        <View style={styles.bidder}>
+          <Text style={styles.bidderLabel}>TOP BIDDER</Text>
+          <Text style={styles.bidderName} numberOfLines={1}>{a.top_bidder.dealership_name || 'Dealer'}</Text>
+          <Text style={styles.bidderTrust}>{a.top_bidder.trust_score?.toFixed(1) || '4.5'}★</Text>
+          {a.top_bidder.max_bid_limit && (
+            <Text style={styles.bidderCap}>cap {formatINR(a.top_bidder.max_bid_limit)}</Text>
+          )}
+        </View>
+      ) : null}
+      <View style={styles.actions}>
+        {isLive && (
+          <>
+            <ActionBtn icon={<Pause size={11} color={colors.warning} />} label="Pause" tint={colors.warning} onPress={onPause} testID={`live-pause-${a.id}`} />
+            <ActionBtn icon={<FastForward size={11} color={colors.silver} />} label="+60s" onPress={onExtend} testID={`live-extend-${a.id}`} />
+            <ActionBtn icon={<Flame size={11} color={colors.red} />} label="Force" tint={colors.red} onPress={onForceClose} testID={`live-fc-${a.id}`} />
+          </>
+        )}
+        {isPaused && (
+          <>
+            <ActionBtn icon={<Play size={11} color={colors.success} />} label="Resume" tint={colors.success} onPress={onResume} testID={`live-resume-${a.id}`} />
+            <ActionBtn icon={<Flame size={11} color={colors.red} />} label="Force" tint={colors.red} onPress={onForceClose} testID={`live-fc-${a.id}`} />
+          </>
+        )}
+        {(isLive || isPaused) && (
+          <ActionBtn icon={<ShieldX size={11} color={colors.red} />} label="Cancel" tint={colors.red} onPress={onCancel} testID={`live-cancel-${a.id}`} />
+        )}
+        <View style={{ flex: 1 }} />
+        <ChevronRight size={14} color={colors.textMuted} />
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+function ActionBtn({ icon, label, onPress, tint, testID }: any) {
+  return (
+    <TouchableOpacity onPress={onPress} style={[styles.actionBtn, tint && { borderColor: tint + '55', backgroundColor: tint + '12' }]} activeOpacity={0.85} testID={testID}>
+      {icon}
+      <Text style={[styles.actionText, tint && { color: tint }]}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
+function PipeStage({ label, count, icon, tint }: any) {
+  return (
+    <View style={[styles.pipeStage, tint && { borderColor: tint + '55', backgroundColor: tint + '10' }]}>
+      {icon}
+      <Text style={styles.pipeLabel}>{label}</Text>
+      <Text style={[styles.pipeCount, tint && { color: tint }]}>{count}</Text>
+    </View>
+  );
+}
+function PipeArrow() {
+  return <View style={styles.pipeArrowBox}><ArrowRight size={11} color={colors.textMuted} /></View>;
+}
+
+function RiskTile({ icon, label, count, tint, testID }: any) {
+  const isHot = (count || 0) > 0;
+  return (
+    <View style={[styles.riskTile, isHot && tint && { borderColor: tint + '55', backgroundColor: tint + '10' }]} testID={testID}>
+      <View style={styles.riskHead}>{icon}<Text style={styles.riskCount}>{count || 0}</Text></View>
+      <Text style={styles.riskLabel}>{label}</Text>
+    </View>
+  );
+}
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  loader: { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' },
-  kicker: { color: colors.textMuted, fontSize: 10, fontWeight: '900', letterSpacing: 1.4 },
-  kpiRow: { flexDirection: 'row', gap: 8 },
-  kpi: { flex: 1, padding: 12, borderRadius: radii.md, borderWidth: 1 },
-  kpiLabel: { fontSize: 9, fontWeight: '900', letterSpacing: 1.2 },
-  kpiValue: { color: colors.textPrimary, fontSize: 26, fontWeight: '900', marginTop: 6, letterSpacing: -0.6 },
-  gmvCard: { marginTop: 16, padding: 16, borderRadius: radii.lg, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border },
-  gmvHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  gmvValue: { color: colors.textPrimary, fontSize: 32, fontWeight: '900', marginTop: 6, letterSpacing: -0.8 },
-  gmvFoot: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border },
-  pairValue: { color: colors.textPrimary, fontSize: 16, fontWeight: '800' },
-  pairLabel: { color: colors.textMuted, fontSize: 10, fontWeight: '700', letterSpacing: 0.6, marginTop: 2 },
-  sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
-  sectionTitle: { color: colors.textPrimary, fontSize: 14, fontWeight: '800' },
-  linkRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  linkText: { color: colors.red, fontSize: 11, fontWeight: '800', letterSpacing: 0.4 },
-  cardsRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
-  miniStat: { flex: 1, minWidth: '47%', padding: 12, borderRadius: radii.md, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border },
-  miniLabel: { color: colors.textMuted, fontSize: 9, fontWeight: '900', letterSpacing: 1.2 },
-  miniValue: { color: colors.textPrimary, fontSize: 22, fontWeight: '800', marginTop: 4, letterSpacing: -0.5 },
-  miniSub: { color: colors.textMuted, fontSize: 10, fontWeight: '600', marginTop: 2 },
-  invCard: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: radii.md, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border },
-  invLabel: { color: colors.textPrimary, fontSize: 13, fontWeight: '800' },
-  invSub: { color: colors.textMuted, fontSize: 11, marginTop: 2 },
-  launchBtn: { paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.red, borderRadius: 8 },
-  launchBtnText: { color: '#fff', fontSize: 11, fontWeight: '900', letterSpacing: 0.6 },
-  topRow: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderRadius: radii.md, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border, marginBottom: 8 },
-  topRank: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(185,28,28,0.10)', borderWidth: 1, borderColor: 'rgba(185,28,28,0.4)' },
-  topRankText: { color: colors.red, fontSize: 11, fontWeight: '900' },
-  topName: { color: colors.textPrimary, fontSize: 13, fontWeight: '800' },
-  topSub: { color: colors.textMuted, fontSize: 11, marginTop: 2 },
-  topSpend: { color: colors.textPrimary, fontSize: 14, fontWeight: '800' },
-  outRow: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderRadius: radii.md, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border, marginBottom: 8 },
-  outBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999, borderWidth: 1, alignSelf: 'flex-start' },
-  outBadgeOk: { backgroundColor: 'rgba(16,185,129,0.10)', borderColor: 'rgba(16,185,129,0.4)' },
-  outBadgeWarn: { backgroundColor: 'rgba(245,158,11,0.10)', borderColor: 'rgba(245,158,11,0.4)' },
-  outBadgeText: { fontSize: 9, fontWeight: '900', letterSpacing: 1 },
-  outTitle: { color: colors.textPrimary, fontSize: 13, fontWeight: '700' },
-  outSub: { color: colors.textMuted, fontSize: 11, marginTop: 2 },
-  outPrice: { color: colors.textPrimary, fontSize: 14, fontWeight: '800' },
+  body: { padding: 18, paddingTop: 8, paddingBottom: 80 },
+
+  kpiRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  kpi: { flex: 1, padding: 11, borderRadius: radii.md, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border },
+  kpiHead: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 4 },
+  kpiLabel: { color: colors.textMuted, fontSize: 9, fontWeight: '900', letterSpacing: 1 },
+  kpiVal: { color: colors.textPrimary, fontSize: 20, fontWeight: '900', fontVariant: ['tabular-nums'], letterSpacing: -0.5 },
+
+  gmvBar: { flexDirection: 'row', padding: 12, borderRadius: radii.md, backgroundColor: colors.bgElevated, borderWidth: 1, borderColor: 'rgba(185,28,28,0.30)', marginBottom: 18 },
+  gmvLabel: { color: colors.red, fontSize: 9.5, fontWeight: '900', letterSpacing: 1.2 },
+  gmvVal: { color: colors.textPrimary, fontSize: 17, fontWeight: '900', marginTop: 2, fontVariant: ['tabular-nums'], letterSpacing: -0.3 },
+  divv: { width: 1, height: 32, backgroundColor: colors.border, marginHorizontal: 14, alignSelf: 'center' },
+
+  sectionHead: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 10 },
+  sectionTitle: { color: colors.textChrome, fontSize: 11, fontWeight: '900', letterSpacing: 1.4 },
+  sectionCount: { color: colors.red, fontSize: 11, fontWeight: '900', marginLeft: 'auto', fontVariant: ['tabular-nums'] },
+
+  loader: { paddingVertical: 30, alignItems: 'center' },
+  empty: { color: colors.textMuted, fontSize: 12, fontWeight: '600', textAlign: 'center', paddingVertical: 30 },
+
+  row: { padding: 13, borderRadius: radii.lg, backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: 1, marginBottom: 10 },
+  rowHead: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  rowTitle: { flex: 1, color: colors.textPrimary, fontSize: 14, fontWeight: '800', letterSpacing: -0.2 },
+  statusPill: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 999, borderWidth: 1 },
+  statusDot: { width: 6, height: 6, borderRadius: 3 },
+  statusText: { fontSize: 8.5, fontWeight: '900', letterSpacing: 0.7 },
+
+  rowMeta: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 5, flexWrap: 'wrap' },
+  regNo: { color: colors.textChrome, fontSize: 11, fontWeight: '700', fontVariant: ['tabular-nums'], letterSpacing: 0.4 },
+  metaSep: { color: colors.textMuted, fontSize: 11 },
+  metaItem: { color: colors.textChrome, fontSize: 11, fontWeight: '600' },
+
+  rowMid: { flexDirection: 'row', alignItems: 'flex-end', gap: 12, marginTop: 11, paddingTop: 11, borderTopWidth: 1, borderTopColor: colors.border },
+  priceLabel: { color: colors.textMuted, fontSize: 9, fontWeight: '900', letterSpacing: 1 },
+  price: { color: colors.textPrimary, fontSize: 22, fontWeight: '900', fontVariant: ['tabular-nums'], letterSpacing: -0.4, marginTop: 2 },
+  reserve: { fontSize: 10.5, fontWeight: '700', marginTop: 2, letterSpacing: 0.4 },
+  timer: { color: colors.textPrimary, fontSize: 22, fontWeight: '900', fontVariant: ['tabular-nums'], letterSpacing: -0.4, marginTop: 2 },
+  extCount: { color: colors.warning, fontSize: 10.5, fontWeight: '700', marginTop: 2, letterSpacing: 0.4 },
+
+  bidder: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 9, paddingTop: 9, borderTopWidth: 1, borderTopColor: colors.border },
+  bidderLabel: { color: colors.textMuted, fontSize: 9, fontWeight: '900', letterSpacing: 1 },
+  bidderName: { flex: 1, color: colors.textPrimary, fontSize: 12, fontWeight: '800' },
+  bidderTrust: { color: colors.warning, fontSize: 11, fontWeight: '900', fontVariant: ['tabular-nums'] },
+  bidderCap: { color: colors.textChrome, fontSize: 10, fontWeight: '700', fontVariant: ['tabular-nums'] },
+
+  actions: { flexDirection: 'row', gap: 6, marginTop: 11, alignItems: 'center' },
+  actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bg },
+  actionText: { color: colors.textChrome, fontSize: 10.5, fontWeight: '900', letterSpacing: 0.4 },
+
+  pipeline: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  pipeStage: { flex: 1, padding: 9, borderRadius: 8, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border, alignItems: 'center' },
+  pipeLabel: { color: colors.textMuted, fontSize: 8.5, fontWeight: '900', letterSpacing: 0.6, marginTop: 4 },
+  pipeCount: { color: colors.textPrimary, fontSize: 17, fontWeight: '900', marginTop: 2, fontVariant: ['tabular-nums'] },
+  pipeArrowBox: { width: 14, alignItems: 'center' },
+
+  riskGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  riskTile: { width: '48%', padding: 11, borderRadius: 8, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border },
+  riskHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  riskCount: { color: colors.textPrimary, fontSize: 18, fontWeight: '900', fontVariant: ['tabular-nums'] },
+  riskLabel: { color: colors.textChrome, fontSize: 10.5, fontWeight: '700', marginTop: 4, letterSpacing: 0.3 },
 });

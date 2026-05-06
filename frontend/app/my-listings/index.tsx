@@ -24,7 +24,7 @@ export default function MyListings() {
   const toast = useToast();
 
   // Admin-only — dealers can't manage Q Drives inventory.
-  if (dealer && dealer.role !== 'admin') {
+  if (dealer && !['admin', 'super_admin', 'operations_admin', 'inspection_admin'].includes(dealer.role as any)) {
     return <Redirect href="/(tabs)/" />;
   }
 

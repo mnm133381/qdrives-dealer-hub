@@ -34,7 +34,7 @@ export default function Kyc() {
       // res is strictly typed: { success, updated, dealer }
       const updatedDealer = res?.dealer;
       await refresh();
-      if (updatedDealer?.role === 'admin') {
+      if (['admin', 'super_admin', 'operations_admin', 'inspection_admin'].includes(updatedDealer?.role as any)) {
         // Operator accounts should never see this screen — defensive routing.
         router.replace('/(admin)' as any);
       } else {

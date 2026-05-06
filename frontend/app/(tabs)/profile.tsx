@@ -56,7 +56,7 @@ export default function Profile() {
   };
 
   if (!dealer) return null;
-  const isAdmin = dealer.role === 'admin';
+  const isAdmin = ['admin', 'super_admin', 'operations_admin', 'inspection_admin'].includes(dealer.role as any);
   return (
     <View style={[styles.root, { paddingTop: insets.top + 10 }]}>
       <ScrollView contentContainerStyle={{ paddingBottom: 60 }}>

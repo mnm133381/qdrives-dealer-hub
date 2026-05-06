@@ -56,7 +56,7 @@ export default function MediaManager() {
   const toast = useToast();
   const { dealer } = useAuth();
 
-  if (dealer && dealer.role !== 'admin') {
+  if (dealer && !['admin', 'super_admin', 'operations_admin', 'inspection_admin'].includes(dealer.role as any)) {
     return <Redirect href="/(tabs)/" />;
   }
 

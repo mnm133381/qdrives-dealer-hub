@@ -136,7 +136,7 @@ export default function Sell() {
   const inspStats = inspectionStats(draft);
 
   // Admin-only access — non-admin dealers cannot create listings
-  if (dealer && dealer.role !== 'admin') {
+  if (dealer && !['admin', 'super_admin', 'operations_admin', 'inspection_admin'].includes(dealer.role as any)) {
     return <Redirect href="/(tabs)/" />;
   }
 

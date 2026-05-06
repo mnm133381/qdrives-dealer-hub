@@ -140,6 +140,38 @@ export const api = {
   adminBroadcast: (payload: { title: string; body: string; audience?: string }) =>
     request<{ sent: number }>('/admin/notifications/broadcast', { method: 'POST', body: JSON.stringify(payload) }),
 
+  // ---- Phase 2B: Live ops console ----
+  adminLiveGrid: () => request<{ items: any[]; ts: string }>('/admin/auctions/live-grid'),
+  adminAuctionControlPanel: (id: string) =>
+    request<{ auction: any; car: any; bids: any[]; reversals: any[] }>(
+      `/admin/auctions/${id}/control-panel`,
+    ),
+  adminPauseAuction: (id: string, reason: string) =>
+    request(`/admin/auctions/${id}/pause`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  adminResumeAuction: (id: string) =>
+    request(`/admin/auctions/${id}/resume`, { method: 'POST' }),
+  adminExtendAuction: (id: string, extend_seconds: number, reason: string) =>
+    request(`/admin/auctions/${id}/extend`, {
+      method: 'POST', body: JSON.stringify({ extend_seconds, reason }),
+    }),
+  adminCancelAuction: (id: string, reason: string) =>
+    request(`/admin/auctions/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  adminForceClose: (id: string, reason: string) =>
+    request<{ ok: boolean; status: string }>(
+      `/admin/auctions/${id}/force-close`,
+      { method: 'POST', body: JSON.stringify({ reason }) },
+    ),
+  adminCancelBid: (auctionId: string, bidId: string, reason: string) =>
+    request<{ ok: boolean; reversal_id: string; current_bid: number }>(
+      `/admin/auctions/${auctionId}/bids/${bidId}/cancel`,
+      { method: 'POST', body: JSON.stringify({ reason }) },
+    ),
+  adminSettlementTransition: (id: string, target_state: string, note?: string) =>
+    request<{ ok: boolean; status: string }>(`/admin/auctions/${id}/settlement`, {
+      method: 'POST', body: JSON.stringify({ target_state, note: note || '' }),
+    }),
+  adminRiskDealers: () => request<any>('/admin/risk/dealers'),
+
   // ---- Allow-list (closed-network dealer onboarding) ----
   adminApprovedDealers: (params?: { q?: string; status_filter?: string }) => {
     const qs = new URLSearchParams();
@@ -224,7 +256,16 @@ export async function inspectionPdfUrl(inspectionId: string): Promise<string> {
   return `${BASE}/api/inspections/file/${inspectionId}?token=${encodeURIComponent(token || '')}`;
 }
 
-export function wsUrl(auctionId: string) {
+export async function wsUrl(auctionId: string): Promise<string> {
   const base = (BASE || '').replace(/^http/, 'ws');
-  return `${base}/api/ws/auction/${auctionId}`;
+  const token = await storage.getItem(TOKEN_KEY);
+  const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+  return `${base}/api/ws/auction/${auctionId}${qs}`;
+}
+
+export async function opsWsUrl(): Promise<string> {
+  const base = (BASE || '').replace(/^http/, 'ws');
+  const token = await storage.getItem(TOKEN_KEY);
+  const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+  return `${base}/api/ws/ops${qs}`;
 }

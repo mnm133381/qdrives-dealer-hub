@@ -75,9 +75,11 @@ export default function VerifyOtp() {
       try { await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {}
       await signIn(data.token, data.dealer, data.refresh_token);
 
-      // Strict role isolation — operator endpoint always returns role=admin,
-      // dealer endpoint always returns role=dealer. Route accordingly.
-      if (data.dealer.role === 'admin') {
+      // Strict role isolation — operator endpoint always returns an admin
+      // tier role (super_admin / admin / operations_admin / inspection_admin).
+      // Dealer endpoint always returns role=dealer.
+      const ADMIN_ROLES = ['admin', 'super_admin', 'operations_admin', 'inspection_admin'];
+      if (ADMIN_ROLES.includes(data.dealer.role)) {
         // Operators are pre-verified — never go through dealer KYC.
         router.replace('/(admin)' as any);
       } else if (data.is_new || !data.dealer.kyc_completed) {

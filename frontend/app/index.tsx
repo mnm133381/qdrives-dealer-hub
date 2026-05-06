@@ -26,7 +26,7 @@ export default function Splash() {
     const t = setTimeout(() => {
       if (!dealer) router.replace('/(auth)' as any);
       else if (!dealer.kyc_completed) router.replace('/(auth)/kyc');
-      else if (dealer.role === 'admin') router.replace('/(admin)' as any);
+      else if (['admin', 'super_admin', 'operations_admin', 'inspection_admin'].includes(dealer.role as any)) router.replace('/(admin)' as any);
       else router.replace('/(tabs)');
     }, 1900);
     return () => clearTimeout(t);

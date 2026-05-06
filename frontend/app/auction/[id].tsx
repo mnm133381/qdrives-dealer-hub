@@ -99,15 +99,39 @@ export default function AuctionScreen() {
     setZoomOpen(true);
   };
 
-  // WebSocket
+  // WebSocket — authenticated handshake (token attached as query param).
   useEffect(() => {
     if (!id) return;
-    const ws = new WebSocket(wsUrl(id as string));
-    wsRef.current = ws;
-    ws.onopen = () => {};
-    ws.onmessage = (ev) => {
+    let cancelled = false;
+    let ws: WebSocket | null = null;
+    (async () => {
       try {
-        const msg = JSON.parse(ev.data);
+        const url = await wsUrl(id as string);
+        if (cancelled) return;
+        ws = new WebSocket(url);
+        wsRef.current = ws;
+        ws.onopen = () => {};
+        ws.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === 'session_killed') {
+              // Server kicked us — token_version drift. Bounce to login.
+              try { ws?.close(); } catch {}
+              return;
+            }
+            handleWsMessage(msg);
+          } catch {}
+        };
+      } catch {}
+    })();
+    return () => {
+      cancelled = true;
+      try { ws?.close(); } catch {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  const handleWsMessage = (msg: any) => {
         if (msg.type === 'snapshot') {
           setAuction(msg.auction);
         } else if (msg.type === 'new_bid') {
@@ -135,12 +159,7 @@ export default function AuctionScreen() {
             }
           }
         }
-      } catch {}
-    };
-    ws.onclose = () => {};
-    return () => { try { ws.close(); } catch {} };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, dealer?.id]);
+  };
 
   const placeBid = async (amount: number) => {
     try {

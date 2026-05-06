@@ -106,13 +106,19 @@ def issue_token_pair(dealer: Dict[str, Any]) -> Dict[str, str]:
 async def bump_token_version(dealer_id: str, reason: str, actor_id: Optional[str] = None) -> None:
     """Server-side session kill. Atomically bumps token_version on the dealer
     doc — every outstanding JWT for this dealer fails the next /auth/me check
-    with 401 KILLED. Audits the event."""
+    with 401 KILLED. Also force-disconnects every live WebSocket for this
+    dealer so live updates are immediately cut off. Audits the event."""
     res = await db.dealers.find_one_and_update(
         {"id": dealer_id},
         {"$inc": {"token_version": 1}},
         return_document=True,
     )
     if res:
+        # Force-close every WS owned by this dealer.
+        try:
+            await manager.kill_dealer(dealer_id, reason=reason)
+        except Exception as e:
+            logger.warning("WS kill failed for %s: %s", dealer_id, e)
         asyncio.create_task(audit(db, "token_invalidation", actor_id, dealer_id, {
             "reason": reason, "new_tv": int(res.get("token_version") or 0),
         }))
@@ -341,28 +347,79 @@ class MaxBidReq(BaseModel):
 
 # ---------- WebSocket Manager ----------
 class ConnectionManager:
+    """Authenticated WebSocket connection registry.
+
+    Every connection is tagged with `dealer_id`, `role`, and `tv` (the
+    token_version it was authorised under). On a bump_token_version call
+    we forcibly close every connection for that dealer so revoked /
+    suspended dealers lose live updates instantly.
+
+    Two channel kinds:
+      • auction rooms (room_key = f"auction:{auction_id}") — dealers + operators
+      • operator-only ops bus (room_key = "ops") — operator-private events
+    """
     def __init__(self):
-        self.rooms: Dict[str, List[WebSocket]] = {}
+        self.rooms: Dict[str, List[Dict[str, Any]]] = {}
 
-    async def connect(self, auction_id: str, ws: WebSocket):
+    async def connect(self, room_key: str, ws: WebSocket, *, dealer_id: str, role: str, tv: int):
         await ws.accept()
-        self.rooms.setdefault(auction_id, []).append(ws)
+        self.rooms.setdefault(room_key, []).append({
+            "ws": ws, "dealer_id": dealer_id, "role": role, "tv": tv,
+        })
 
-    def disconnect(self, auction_id: str, ws: WebSocket):
-        if auction_id in self.rooms and ws in self.rooms[auction_id]:
-            self.rooms[auction_id].remove(ws)
+    def disconnect(self, room_key: str, ws: WebSocket):
+        if room_key in self.rooms:
+            self.rooms[room_key] = [c for c in self.rooms[room_key] if c["ws"] is not ws]
 
     async def broadcast(self, auction_id: str, payload: dict):
-        if auction_id not in self.rooms:
+        """Broadcast to every subscriber of an auction room. Backwards-compat
+        signature — accepts the bare auction_id and prefixes it internally."""
+        room_key = f"auction:{auction_id}"
+        if room_key not in self.rooms:
             return
-        dead = []
-        for ws in self.rooms[auction_id]:
+        dead: List[WebSocket] = []
+        for c in list(self.rooms[room_key]):
             try:
-                await ws.send_json(payload)
+                await c["ws"].send_json(payload)
             except Exception:
-                dead.append(ws)
+                dead.append(c["ws"])
         for ws in dead:
-            self.rooms[auction_id].remove(ws)
+            self.disconnect(room_key, ws)
+
+    async def broadcast_ops(self, payload: dict):
+        """Operator-only channel — never delivered to dealers."""
+        room_key = "ops"
+        if room_key not in self.rooms:
+            return
+        dead: List[WebSocket] = []
+        for c in list(self.rooms[room_key]):
+            try:
+                await c["ws"].send_json(payload)
+            except Exception:
+                dead.append(c["ws"])
+        for ws in dead:
+            self.disconnect(room_key, ws)
+
+    async def kill_dealer(self, dealer_id: str, reason: str = "session_invalidated"):
+        """Force-disconnect every socket owned by a dealer. Called from
+        bump_token_version() so suspend / revoke / role-change reflect
+        on already-open WebSocket sessions."""
+        for room_key in list(self.rooms.keys()):
+            survivors = []
+            for c in self.rooms[room_key]:
+                if c["dealer_id"] == dealer_id:
+                    try:
+                        await c["ws"].send_json({"type": "session_killed", "reason": reason})
+                    except Exception:
+                        pass
+                    try:
+                        await c["ws"].close(code=4401)  # custom 4401 = "auth invalidated"
+                    except Exception:
+                        pass
+                else:
+                    survivors.append(c)
+            self.rooms[room_key] = survivors
+
 
 manager = ConnectionManager()
 
@@ -2522,9 +2579,53 @@ async def market_pulse():
 
 
 # ---------- WebSocket ----------
+async def _ws_authenticate(token: str) -> Optional[Dict[str, Any]]:
+    """Validate a JWT for WebSocket use. Returns the dealer dict on success
+    (with role + tv) or None on any failure. Failure modes:
+      • missing/empty token
+      • signature/format invalid
+      • expired
+      • wrong kind (refresh used instead of access)
+      • dealer not found
+      • token_version mismatch (suspended/revoked/role-change)
+      • suspended dealer (defense in depth)
+    """
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
+        if payload.get("kind", "access") != "access":
+            return None
+        dealer_id = payload["sub"]
+        token_tv = int(payload.get("tv", 0))
+    except Exception:
+        return None
+    dealer = await db.dealers.find_one({"id": dealer_id}, {"_id": 0})
+    if not dealer:
+        return None
+    if int(dealer.get("token_version") or 0) != token_tv:
+        return None
+    if dealer.get("suspended") and (dealer.get("role") or "dealer") == "dealer":
+        return None
+    return dealer
+
+
 @app.websocket("/api/ws/auction/{auction_id}")
 async def ws_auction(websocket: WebSocket, auction_id: str):
-    await manager.connect(auction_id, websocket)
+    """Authenticated dealer/operator WS for live auction streams.
+    Token MUST be passed as a query parameter `?token=<jwt>` on connect.
+    Anonymous or invalid connections are rejected with code 4401."""
+    token = websocket.query_params.get("token", "")
+    dealer = await _ws_authenticate(token)
+    if not dealer:
+        await websocket.close(code=4401)
+        return
+
+    role = dealer.get("role") or "dealer"
+    tv = int(dealer.get("token_version") or 0)
+    room_key = f"auction:{auction_id}"
+    await manager.connect(room_key, websocket, dealer_id=dealer["id"], role=role, tv=tv)
+
     try:
         # On connect, send latest snapshot
         a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
@@ -2532,9 +2633,21 @@ async def ws_auction(websocket: WebSocket, auction_id: str):
             ea = await _enrich_auction(a)
             await websocket.send_json({"type": "snapshot", "auction": ea})
         while True:
-            # keepalive: receive ping, ignore content
             try:
                 await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                # Periodic re-validation: if the dealer's tv has bumped server-
+                # side (allow-list revoke / role change in another worker), kill
+                # this socket on the next keepalive.
+                fresh = await db.dealers.find_one(
+                    {"id": dealer["id"]}, {"_id": 0, "token_version": 1, "suspended": 1, "role": 1},
+                )
+                if (not fresh
+                    or int(fresh.get("token_version") or 0) != tv
+                    or (fresh.get("suspended") and (fresh.get("role") or "dealer") == "dealer")):
+                    try: await websocket.send_json({"type": "session_killed", "reason": "tv_drift"})
+                    except Exception: pass
+                    await websocket.close(code=4401)
+                    break
             except asyncio.TimeoutError:
                 try:
                     await websocket.send_json({"type": "ping"})
@@ -2545,7 +2658,53 @@ async def ws_auction(websocket: WebSocket, auction_id: str):
     except Exception as e:
         logger.warning("WS error: %s", e)
     finally:
-        manager.disconnect(auction_id, websocket)
+        manager.disconnect(room_key, websocket)
+
+
+@app.websocket("/api/ws/ops")
+async def ws_ops(websocket: WebSocket):
+    """Operator-only WebSocket channel — receives ops events (live grid
+    updates, settlement transitions, dealer status changes) and is fully
+    isolated from dealer subscribers. Dealer JWTs are rejected even if
+    valid, because dealers must NEVER see internal ops chatter."""
+    token = websocket.query_params.get("token", "")
+    dealer = await _ws_authenticate(token)
+    if not dealer:
+        await websocket.close(code=4401)
+        return
+    role = dealer.get("role") or "dealer"
+    if role not in ("admin", "super_admin", "operations_admin", "inspection_admin"):
+        await websocket.close(code=4403)  # role denied
+        return
+    tv = int(dealer.get("token_version") or 0)
+    await manager.connect("ops", websocket, dealer_id=dealer["id"], role=role, tv=tv)
+    try:
+        await websocket.send_json({"type": "ops_connected", "role": role})
+        while True:
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                fresh = await db.dealers.find_one(
+                    {"id": dealer["id"]}, {"_id": 0, "token_version": 1, "role": 1},
+                )
+                if (not fresh
+                    or int(fresh.get("token_version") or 0) != tv
+                    or (fresh.get("role") or "dealer") not in
+                        ("admin", "super_admin", "operations_admin", "inspection_admin")):
+                    try: await websocket.send_json({"type": "session_killed", "reason": "tv_drift"})
+                    except Exception: pass
+                    await websocket.close(code=4401)
+                    break
+            except asyncio.TimeoutError:
+                try:
+                    await websocket.send_json({"type": "ping"})
+                except Exception:
+                    break
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.warning("WS-ops error: %s", e)
+    finally:
+        manager.disconnect("ops", websocket)
 
 
 @api.get("/")

@@ -433,6 +433,149 @@ backend:
             • Mutating the admin account itself → 400 with detail
               "Cannot mutate admin accounts".
 
+  - task: "Strict allow-list dealer auth (closed network)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          POST /api/auth/dealer/send-otp + /api/auth/dealer/verify-otp now both
+          enforce a strict allow-list against db.approved_dealers. A phone not
+          on the allow-list returns 403 with detail="DEALER_ACCESS_NOT_APPROVED"
+          and audits the attempt to db.audit_logs (action=dealer_access_denied).
+          Suspended dealers (suspended=true) get 403 DEALER_ACCOUNT_SUSPENDED on
+          verify. Role is hard-pinned to "dealer" — operator role cannot be
+          assigned via the dealer endpoint.
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified end-to-end via /app/backend_test.py against public ingress URL
+          (29/29 assertions green). Highlights:
+            • A.1 send-otp +919900000002 (allow-listed) → 200 with
+              {"success":true,"message":"OTP sent","dev_otp":"123456"}.
+            • A.2 verify-otp +919900000002 → 200 with token + is_new + dealer
+              where dealer.role=="dealer".
+            • A.3 send-otp +919876543210 (off-list) → 403
+              {"detail":"DEALER_ACCESS_NOT_APPROVED"}.
+            • A.4 verify-otp +919876543210 → 403 same detail.
+            • A.5 verify-otp +919900000002 with otp="000000" → 400
+              "Invalid OTP. Use 123456 for dev."
+            • G (Suspended defence-in-depth): admin POST
+              /admin/dealers/{vikram_id}/verify {suspended:true} → 200; subsequent
+              POST /auth/dealer/verify-otp +919900000003 → 403
+              {"detail":"DEALER_ACCOUNT_SUSPENDED"}; reinstate {suspended:false}
+              → 200; verify-otp again → 200 (cleanup successful, run is repeatable).
+            • Role hard-pin verified — endpoint cannot mint role="admin".
+
+  - task: "Strict allow-list operator auth (closed network)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          POST /api/auth/operator/send-otp + /api/auth/operator/verify-otp now
+          both enforce a strict allow-list against db.operators. A phone not on
+          the allow-list returns 403 with detail="OPERATOR_ACCESS_DENIED" and
+          audits the attempt to db.audit_logs (action=operator_access_denied).
+          Operators are pre-verified (kyc_completed=true, verified=true) and
+          their role is hard-pinned to "admin".
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified via /app/backend_test.py.
+            • B.1 send-otp +919900000099 (allow-listed) → 200 success + dev_otp.
+            • B.2 verify-otp +919900000099 → 200 with token + is_new + dealer
+              where dealer.role=="admin", dealer.kyc_completed==true,
+              dealer.verified==true (operators are pre-verified).
+            • B.3 [CRITICAL CROSS-CHANNEL] send-otp on operator endpoint with
+              dealer phone +919900000002 → 403
+              {"detail":"OPERATOR_ACCESS_DENIED"}. Dealer cannot bypass into
+              operator.
+            • B.4 send-otp +918888888888 (random unapproved) → 403 same detail.
+            • B.4b verify-otp on operator endpoint with dealer phone
+              +919900000002 → 403 OPERATOR_ACCESS_DENIED (no admin token minted
+              even when bypassing send-otp).
+            • Role hard-pinned to "admin"; verified=true and kyc_completed=true
+              are set at insert time for new operators.
+
+  - task: "Removed legacy generic auth routes"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Removed the legacy POST /api/auth/send-otp and POST /api/auth/verify-otp
+          generic endpoints. They now return 404. There is no longer any auth
+          path that bypasses the allow-lists or auto-promotes admin via
+          ADMIN_PHONES env. Confirmed via curl: 404 + 404.
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified via /app/backend_test.py.
+            • C.1 POST /api/auth/send-otp → 404.
+            • C.2 POST /api/auth/verify-otp → 404.
+            • C.3 cross-channel block already covered by B.3 / B.4b: dealer phone
+              on operator endpoint never mints an admin token.
+          Backend access logs confirm both legacy routes returned 404.
+
+  - task: "Audit logging for denied access + login events"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Direct MongoDB queries (db=qdrives_db, collection=audit_logs) after the
+          test run:
+            • action=dealer_access_denied with meta.phone=+919876543210 → count=6
+              (one per send-otp + verify-otp attempt across multiple runs).
+            • action=operator_access_denied with meta.phone in
+              [+918888888888, +919900000002] → count=8 (covers off-list + dealer
+              cross-channel attempts).
+            • action=dealer_login with meta.phone=+919900000002 → count=2.
+            • action=operator_login with meta.phone=+919900000099 → count=2.
+          Audit task is fire-and-forget (asyncio.create_task) and writes
+          successfully despite the request raising 403 — verified by counts
+          incrementing run-over-run.
+
+  - task: "KYC response shape (success/updated/dealer)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified via /app/backend_test.py.
+            • E.1 Logged in via dealer/verify-otp +919900000005 (Sameer), then
+              POST /api/auth/kyc with {full_name, dealership_name, city} → 200.
+              Response keys are EXACTLY {"success","updated","dealer"} (no extras,
+              no missing fields). success=true, updated=true,
+              dealer.kyc_completed=true, dealer.verified=true.
+          Frontend's strict typing in api.ts is honoured.
+
   - task: "Admin broadcast notifications"
     implemented: true
     working: true
@@ -758,6 +901,93 @@ test_plan:
   test_priority: "high_first"
 
 agent_communication:
+  - agent: "testing"
+    message: |
+      Strict allow-list auth refactor BACKEND tests PASS — 29/29 assertions
+      via /app/backend_test.py against public ingress URL. Highlights:
+        ✅ A. Dealer auth: send-otp + verify-otp on +919900000002 (allow-listed)
+           → 200 with role="dealer" JWT. +919876543210 (off-list) → 403
+           DEALER_ACCESS_NOT_APPROVED (both endpoints). Wrong OTP → 400.
+        ✅ B. Operator auth: send-otp + verify-otp on +919900000099 → 200 with
+           role="admin", kyc_completed=true, verified=true.
+           [CRITICAL CROSS-CHANNEL] dealer phone +919900000002 on operator
+           endpoint → 403 OPERATOR_ACCESS_DENIED on BOTH send-otp and verify-otp;
+           no admin token minted. +918888888888 (random) → 403.
+        ✅ C. Legacy generic routes: POST /api/auth/send-otp → 404,
+           POST /api/auth/verify-otp → 404.
+        ✅ D. Audit logs (direct MongoDB query):
+           dealer_access_denied count=6, operator_access_denied count=8,
+           dealer_login count=2, operator_login count=2 — all with correct
+           meta.phone values. Audit task is fire-and-forget asyncio.create_task.
+        ✅ E. KYC response shape: keys exactly {"success","updated","dealer"}
+           with kyc_completed=true & verified=true.
+        ✅ F. RBAC regression: POST /cars dealer→403, operator→200 with
+           {car,auction}. /admin/dashboard operator→200, dealer→403.
+           /auth/me returns role=dealer / role=admin correctly.
+           /purchases dealer→200 with {won,active}.
+        ✅ G. Suspended dealer block (defence in depth): admin
+           POST /admin/dealers/{vikram_id}/verify {suspended:true}→200, then
+           dealer/verify-otp +919900000003 → 403 DEALER_ACCOUNT_SUSPENDED.
+           Reinstated with {suspended:false} so subsequent runs aren't broken.
+      No critical issues, no backend errors. Updated 5 backend tasks in
+      test_result.md. Please summarise & finish — do NOT re-fix.
+
+  - agent: "main"
+    message: |
+      [SECURITY REFACTOR — P0] Closed-network auth architecture is now fully wired.
+
+      BACKEND CHANGES:
+        1. Removed legacy POST /api/auth/send-otp + POST /api/auth/verify-otp
+           (return 404). No generic auth route exists anymore.
+        2. POST /api/auth/dealer/send-otp + dealer/verify-otp enforce strict
+           db.approved_dealers allow-list. Off-list phones get 403
+           DEALER_ACCESS_NOT_APPROVED. Suspended dealers get 403
+           DEALER_ACCOUNT_SUSPENDED. Role hard-pinned to "dealer".
+        3. POST /api/auth/operator/send-otp + operator/verify-otp enforce
+           strict db.operators allow-list. Off-list phones get 403
+           OPERATOR_ACCESS_DENIED. Operators auto-marked
+           kyc_completed=true, role="admin".
+        4. All denied attempts append to db.audit_logs (action=
+           dealer_access_denied / operator_access_denied) with phone + stage.
+        5. /auth/kyc response shape: { success, updated, dealer } — strictly
+           typed in api.ts.
+
+      FRONTEND CHANGES:
+        1. /app/frontend/src/api.ts: removed sendOtp/verifyOtp.
+           Added dealerSendOtp / dealerVerifyOtp / operatorSendOtp /
+           operatorVerifyOtp.
+        2. /app/frontend/app/(auth)/login.tsx: routes to dealer or operator
+           endpoint based on `role` query param from the dual portal. Premium
+           inline error card on 403 ("Access restricted." / "Operator access
+           denied.").
+        3. /app/frontend/app/(auth)/verify.tsx: routes to dealer or operator
+           verify endpoint. NO auto-downgrade — operator denied stays on
+           verify screen with premium error + back-to-portal CTA.
+        4. /app/frontend/app/(auth)/kyc.tsx: fixed runtime crash on
+           `updated.role` (variable wasn't defined). Now uses the strictly
+           typed response.
+
+      Please test BACKEND ONLY. Test scope:
+        a) Dealer happy path: dealer/send-otp + dealer/verify-otp for
+           +919900000002 (allow-listed) returns 200 and a JWT with role="dealer".
+        b) Dealer denied: dealer/send-otp + dealer/verify-otp for
+           +919876543210 returns 403 DEALER_ACCESS_NOT_APPROVED.
+        c) Operator happy path: operator/send-otp + verify-otp for
+           +919900000099 returns 200 and a JWT with role="admin",
+           kyc_completed=true, verified=true.
+        d) Operator denied (dealer phone tried on operator endpoint):
+           +919900000002 returns 403 OPERATOR_ACCESS_DENIED.
+        e) Generic legacy endpoints: POST /api/auth/send-otp and
+           /api/auth/verify-otp must return 404.
+        f) audit_logs entries created for *_access_denied events.
+        g) RBAC regression: POST /api/cars with dealer JWT → 403; with admin
+           JWT → 200. /api/admin/dashboard → 200 admin / 403 dealer.
+        h) /auth/kyc response shape includes { success, updated, dealer }
+           and dealer.role is set.
+        i) /auth/me works with both dealer and operator tokens.
+
+      DO NOT re-fix already-passing tasks. Report and finish.
+
   - agent: "main"
     message: |
       Added an end-to-end Expo push notification system on top of the existing in-app

@@ -30,11 +30,18 @@ export default function Kyc() {
   const submit = async () => {
     setLoading(true);
     try {
-      await api.submitKyc(form);
+      const res = await api.submitKyc(form);
+      // res is strictly typed: { success, updated, dealer }
+      const updatedDealer = res?.dealer;
       await refresh();
-      router.replace(updated.role === 'admin' ? ('/(admin)' as any) : '/(tabs)');
+      if (updatedDealer?.role === 'admin') {
+        // Operator accounts should never see this screen — defensive routing.
+        router.replace('/(admin)' as any);
+      } else {
+        router.replace('/(tabs)');
+      }
     } catch (e: any) {
-      Alert.alert('Failed', e.message);
+      Alert.alert('Failed', e?.message || 'Could not save your profile. Please try again.');
     } finally {
       setLoading(false);
     }

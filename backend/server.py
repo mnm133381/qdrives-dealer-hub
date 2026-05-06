@@ -238,16 +238,12 @@ manager = ConnectionManager()
 
 
 # ---------- Auth Endpoints ----------
-@api.post("/auth/send-otp")
-async def send_otp(req: SendOtpReq):
-    """Generic OTP send (kept for backward-compat). New clients should use
-    /auth/dealer/send-otp or /auth/operator/send-otp which enforce the
-    relevant allow-list. This generic endpoint defaults to dealer rules."""
-    phone = req.phone.strip()
-    if len(phone) < 10:
-        raise HTTPException(status_code=400, detail="Invalid phone number")
-    return {"success": True, "message": "OTP sent", "dev_otp": MOCK_OTP}
-
+# Closed-network architecture:
+#   • Dealers authenticate ONLY via /auth/dealer/* (approved_dealers allow-list)
+#   • Operators authenticate ONLY via /auth/operator/* (operators allow-list)
+# There is NO generic auth route, NO public registration, NO role downgrade.
+# A phone that is not on the relevant allow-list gets 403 with a stable
+# error code that the frontend maps to a premium error message.
 
 # ---- Dealer auth (closed network — approved_dealers allow-list) ----
 @api.post("/auth/dealer/send-otp")
@@ -256,6 +252,7 @@ async def dealer_send_otp(req: SendOtpReq):
     if len(phone) < 10:
         raise HTTPException(status_code=400, detail="Invalid phone number")
     if not await db.approved_dealers.find_one({"phone": phone}):
+        asyncio.create_task(audit(db, "dealer_access_denied", None, None, {"phone": phone}))
         raise HTTPException(status_code=403, detail="DEALER_ACCESS_NOT_APPROVED")
     return {"success": True, "message": "OTP sent", "dev_otp": MOCK_OTP}
 
@@ -265,6 +262,7 @@ async def dealer_verify_otp(req: VerifyOtpReq):
     phone = req.phone.strip()
     approved = await db.approved_dealers.find_one({"phone": phone})
     if not approved:
+        asyncio.create_task(audit(db, "dealer_access_denied", None, None, {"phone": phone, "stage": "verify"}))
         raise HTTPException(status_code=403, detail="DEALER_ACCESS_NOT_APPROVED")
     if req.otp != MOCK_OTP:
         raise HTTPException(status_code=400, detail="Invalid OTP. Use 123456 for dev.")
@@ -305,6 +303,7 @@ async def dealer_verify_otp(req: VerifyOtpReq):
 async def operator_send_otp(req: SendOtpReq):
     phone = req.phone.strip()
     if not await db.operators.find_one({"phone": phone}):
+        asyncio.create_task(audit(db, "operator_access_denied", None, None, {"phone": phone}))
         raise HTTPException(status_code=403, detail="OPERATOR_ACCESS_DENIED")
     return {"success": True, "message": "OTP sent", "dev_otp": MOCK_OTP}
 
@@ -314,6 +313,7 @@ async def operator_verify_otp(req: VerifyOtpReq):
     phone = req.phone.strip()
     op = await db.operators.find_one({"phone": phone}, {"_id": 0})
     if not op:
+        asyncio.create_task(audit(db, "operator_access_denied", None, None, {"phone": phone, "stage": "verify"}))
         raise HTTPException(status_code=403, detail="OPERATOR_ACCESS_DENIED")
     if req.otp != MOCK_OTP:
         raise HTTPException(status_code=400, detail="Invalid OTP. Use 123456 for dev.")
@@ -344,52 +344,6 @@ async def operator_verify_otp(req: VerifyOtpReq):
     asyncio.create_task(audit(db, "operator_login", dealer["id"], None, {"phone": phone}))
     token = create_jwt(dealer["id"])
     return {"token": token, "is_new": is_new, "dealer": serialize(dealer)}
-
-
-@api.post("/auth/verify-otp")
-async def verify_otp(req: VerifyOtpReq):
-    phone = req.phone.strip()
-    if req.otp != MOCK_OTP:
-        raise HTTPException(status_code=400, detail="Invalid OTP. Use 123456 for dev.")
-
-    dealer = await db.dealers.find_one({"phone": phone}, {"_id": 0})
-    is_new = False
-    if not dealer:
-        is_new = True
-        dealer = {
-            "id": str(uuid.uuid4()),
-            "phone": phone,
-            "full_name": "",
-            "dealership_name": "",
-            "city": "",
-            "gst_number": "",
-            "pan_number": "",
-            "kyc_completed": False,
-            "verified": False,
-            "trust_score": 4.5,
-            "bid_success_rate": 0,
-            "total_purchases": 0,
-            "total_listed": 0,
-            "role": "admin" if is_admin_phone(phone) else "dealer",
-            "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80",
-            "created_at": now_utc(),
-        }
-        await db.dealers.insert_one(dict(dealer))
-    else:
-        # Auto-promote / demote based on env var so admin elevation is idempotent.
-        desired_role = "admin" if is_admin_phone(phone) else (dealer.get("role") or "dealer")
-        if dealer.get("role") != desired_role and is_admin_phone(phone):
-            await db.dealers.update_one({"id": dealer["id"]}, {"$set": {"role": "admin"}})
-            dealer["role"] = "admin"
-        elif not dealer.get("role"):
-            await db.dealers.update_one({"id": dealer["id"]}, {"$set": {"role": "dealer"}})
-            dealer["role"] = "dealer"
-    token = create_jwt(dealer["id"])
-    return {
-        "token": token,
-        "is_new": is_new,
-        "dealer": serialize(dealer),
-    }
 
 
 @api.get("/auth/me")

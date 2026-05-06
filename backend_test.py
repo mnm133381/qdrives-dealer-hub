@@ -1,326 +1,357 @@
 """
-Backend tests for Q Drives admin endpoints + role-based UX.
+Backend test suite for Q Drives strict allow-list authentication.
 
-Targets the public ingress URL (EXPO_PUBLIC_BACKEND_URL) at /api.
+Covers:
+  A. Dealer auth (closed network — db.approved_dealers allow-list)
+  B. Operator auth (closed network — db.operators allow-list)
+  C. Legacy generic routes removed
+  D. Audit log entries
+  E. KYC response shape
+  F. RBAC regression
+  G. Suspended dealer block
+
+Hits the public ingress URL from frontend/.env (EXPO_PUBLIC_BACKEND_URL).
+Uses MongoDB directly (MONGO_URL from backend/.env) for audit log assertions.
 """
+import os
 import sys
+import time
+import asyncio
+import json
+import uuid
+from pathlib import Path
 import requests
-from typing import Dict, Any, Tuple
+from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import dotenv_values
 
-# Resolve base URL from frontend env (preserves the contract)
-FRONTEND_ENV = "/app/frontend/.env"
-BASE = None
-with open(FRONTEND_ENV) as f:
-    for line in f:
-        if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
-            BASE = line.strip().split("=", 1)[1].strip('"')
-            break
-if not BASE:
-    print("ERROR: missing EXPO_PUBLIC_BACKEND_URL")
-    sys.exit(1)
+# ---------- Config ----------
+ROOT = Path("/app")
+fe_env = dotenv_values(ROOT / "frontend" / ".env")
+be_env = dotenv_values(ROOT / "backend" / ".env")
+
+BASE = (fe_env.get("EXPO_PUBLIC_BACKEND_URL") or fe_env.get("REACT_APP_BACKEND_URL") or "").rstrip("/")
 API = f"{BASE}/api"
-print(f"[INFO] API base: {API}")
+MONGO_URL = be_env.get("MONGO_URL", "mongodb://localhost:27017")
+DB_NAME = be_env.get("DB_NAME", "qdrives_db")
 
-ADMIN_PHONE = "+919900000099"
-DEALER_PHONE = "+919900000002"
+print(f"[CONFIG] API base    = {API}")
+print(f"[CONFIG] Mongo       = {MONGO_URL}  db={DB_NAME}")
+
 OTP = "123456"
+DEALER_ALLOWED = "+919900000002"
+DEALER_ALLOWED_2 = "+919900000001"
+DEALER_VIKRAM = "+919900000003"
+OPERATOR_ALLOWED = "+919900000099"
+OFFLIST_PHONE_DEALER = "+919876543210"
+OFFLIST_PHONE_OPERATOR = "+918888888888"
 
-failures = []
-passes = []
+results = []
+def record(name, ok, detail=""):
+    icon = "OK " if ok else "FAIL"
+    print(f"[{icon}] {name}{(' :: ' + detail) if detail else ''}")
+    results.append((name, ok, detail))
 
 
-def check(cond: bool, label: str, detail: str = ""):
-    if cond:
-        passes.append(label)
-        print(f"  PASS {label}")
+def post(path, json_body=None, headers=None, timeout=20):
+    return requests.post(f"{API}{path}", json=json_body or {}, headers=headers or {}, timeout=timeout)
+
+def get(path, headers=None, timeout=20):
+    return requests.get(f"{API}{path}", headers=headers or {}, timeout=timeout)
+
+
+# ---------- A. Dealer auth ----------
+def section_A():
+    print("\n=== A. Strict allow-list DEALER auth ===")
+
+    r = post("/auth/dealer/send-otp", {"phone": DEALER_ALLOWED})
+    ok = r.status_code == 200 and r.json().get("success") is True and r.json().get("dev_otp") == OTP
+    record("A.1 dealer send-otp allow-listed -> 200 + success + dev_otp=123456", ok,
+           f"status={r.status_code} body={r.text[:160]}")
+
+    r = post("/auth/dealer/verify-otp", {"phone": DEALER_ALLOWED, "otp": OTP})
+    body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+    dealer_token = body.get("token")
+    dealer = body.get("dealer") or {}
+    ok = (
+        r.status_code == 200 and
+        isinstance(dealer_token, str) and len(dealer_token) > 20 and
+        "is_new" in body and
+        dealer.get("role") == "dealer"
+    )
+    record("A.2 dealer verify-otp allow-listed -> 200 + JWT + role=dealer", ok,
+           f"status={r.status_code} role={dealer.get('role')}")
+
+    r = post("/auth/dealer/send-otp", {"phone": OFFLIST_PHONE_DEALER})
+    ok = r.status_code == 403 and r.json().get("detail") == "DEALER_ACCESS_NOT_APPROVED"
+    record("A.3 dealer send-otp off-list -> 403 DEALER_ACCESS_NOT_APPROVED", ok,
+           f"status={r.status_code} body={r.text[:160]}")
+
+    r = post("/auth/dealer/verify-otp", {"phone": OFFLIST_PHONE_DEALER, "otp": OTP})
+    ok = r.status_code == 403 and r.json().get("detail") == "DEALER_ACCESS_NOT_APPROVED"
+    record("A.4 dealer verify-otp off-list -> 403 DEALER_ACCESS_NOT_APPROVED", ok,
+           f"status={r.status_code} body={r.text[:160]}")
+
+    r = post("/auth/dealer/verify-otp", {"phone": DEALER_ALLOWED, "otp": "000000"})
+    ok = r.status_code == 400
+    record("A.5 dealer verify-otp wrong OTP -> 400", ok, f"status={r.status_code} body={r.text[:160]}")
+
+    return dealer_token, dealer
+
+
+# ---------- B. Operator auth ----------
+def section_B():
+    print("\n=== B. Strict allow-list OPERATOR auth ===")
+
+    r = post("/auth/operator/send-otp", {"phone": OPERATOR_ALLOWED})
+    ok = r.status_code == 200 and r.json().get("success") is True
+    record("B.1 operator send-otp allow-listed -> 200", ok, f"status={r.status_code} body={r.text[:160]}")
+
+    r = post("/auth/operator/verify-otp", {"phone": OPERATOR_ALLOWED, "otp": OTP})
+    body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+    op_token = body.get("token")
+    dealer = body.get("dealer") or {}
+    ok = (
+        r.status_code == 200 and
+        isinstance(op_token, str) and
+        dealer.get("role") == "admin" and
+        dealer.get("kyc_completed") is True and
+        dealer.get("verified") is True
+    )
+    record("B.2 operator verify-otp -> 200 role=admin kyc_completed=true verified=true", ok,
+           f"status={r.status_code} role={dealer.get('role')} kyc={dealer.get('kyc_completed')} verified={dealer.get('verified')}")
+
+    r = post("/auth/operator/send-otp", {"phone": DEALER_ALLOWED})
+    ok = r.status_code == 403 and r.json().get("detail") == "OPERATOR_ACCESS_DENIED"
+    record("B.3 dealer phone on operator/send-otp -> 403 OPERATOR_ACCESS_DENIED [CROSS-CHANNEL]", ok,
+           f"status={r.status_code} body={r.text[:160]}")
+
+    r = post("/auth/operator/send-otp", {"phone": OFFLIST_PHONE_OPERATOR})
+    ok = r.status_code == 403 and r.json().get("detail") == "OPERATOR_ACCESS_DENIED"
+    record("B.4 random unapproved on operator/send-otp -> 403 OPERATOR_ACCESS_DENIED", ok,
+           f"status={r.status_code} body={r.text[:160]}")
+
+    r = post("/auth/operator/verify-otp", {"phone": DEALER_ALLOWED, "otp": OTP})
+    ok = r.status_code == 403 and r.json().get("detail") == "OPERATOR_ACCESS_DENIED"
+    record("B.4b dealer phone on operator/verify-otp -> 403 (no admin token minted)", ok,
+           f"status={r.status_code} body={r.text[:160]}")
+
+    return op_token, dealer
+
+
+# ---------- C. Legacy generic routes removed ----------
+def section_C():
+    print("\n=== C. Legacy /api/auth/send-otp + /verify-otp removed ===")
+
+    r = post("/auth/send-otp", {"phone": DEALER_ALLOWED})
+    ok = r.status_code == 404
+    record("C.1 POST /api/auth/send-otp -> 404", ok, f"status={r.status_code}")
+
+    r = post("/auth/verify-otp", {"phone": DEALER_ALLOWED, "otp": OTP})
+    ok = r.status_code == 404
+    record("C.2 POST /api/auth/verify-otp -> 404", ok, f"status={r.status_code}")
+
+    record("C.3 cross-channel block (covered by B.3 / B.4b)", True, "asserted above")
+
+
+# ---------- D. Audit log ----------
+async def section_D():
+    print("\n=== D. Audit logs ===")
+    client = AsyncIOMotorClient(MONGO_URL)
+    db = client[DB_NAME]
+    await asyncio.sleep(1.5)  # let fire-and-forget audit tasks flush
+
+    cnt_dealer_denied = await db.audit_logs.count_documents({
+        "action": "dealer_access_denied",
+        "meta.phone": OFFLIST_PHONE_DEALER,
+    })
+    record("D.1 audit_logs has action=dealer_access_denied for off-list dealer phone",
+           cnt_dealer_denied >= 1, f"count={cnt_dealer_denied}")
+
+    cnt_op_denied = await db.audit_logs.count_documents({
+        "action": "operator_access_denied",
+        "meta.phone": {"$in": [OFFLIST_PHONE_OPERATOR, DEALER_ALLOWED]},
+    })
+    record("D.1b audit_logs has action=operator_access_denied for off-list / cross-channel phone",
+           cnt_op_denied >= 1, f"count={cnt_op_denied}")
+
+    cnt_dealer_login = await db.audit_logs.count_documents({
+        "action": "dealer_login",
+        "meta.phone": DEALER_ALLOWED,
+    })
+    record("D.2a audit_logs has action=dealer_login for successful dealer",
+           cnt_dealer_login >= 1, f"count={cnt_dealer_login}")
+
+    cnt_op_login = await db.audit_logs.count_documents({
+        "action": "operator_login",
+        "meta.phone": OPERATOR_ALLOWED,
+    })
+    record("D.2b audit_logs has action=operator_login for successful operator",
+           cnt_op_login >= 1, f"count={cnt_op_login}")
+
+    client.close()
+
+
+# ---------- E. KYC response shape ----------
+def section_E():
+    print("\n=== E. KYC response shape ===")
+
+    target = "+919900000005"  # Sameer
+    r = post("/auth/dealer/verify-otp", {"phone": target, "otp": OTP})
+    if r.status_code != 200:
+        record("E.0 dealer verify-otp for Sameer -> 200", False,
+               f"status={r.status_code} body={r.text[:160]}")
+        return
+    body = r.json()
+    token = body["token"]
+    is_new = body.get("is_new", False)
+
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "full_name": "Sameer Joshi",
+        "dealership_name": "Nexus AutoTrade",
+        "city": "Hyderabad",
+    }
+    r = post("/auth/kyc", payload, headers=headers)
+    body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+    dealer = body.get("dealer") or {}
+    keys = set(body.keys())
+    ok_shape = keys == {"success", "updated", "dealer"} and body.get("success") is True and body.get("updated") is True
+    ok_dealer = dealer.get("kyc_completed") is True and dealer.get("verified") is True
+    ok = r.status_code == 200 and ok_shape and ok_dealer
+    record(
+        "E.1 POST /auth/kyc -> 200 strict {success,updated,dealer} + kyc_completed=true + verified=true",
+        ok,
+        f"status={r.status_code} keys={sorted(keys)} kyc={dealer.get('kyc_completed')} verified={dealer.get('verified')} is_new_was={is_new}"
+    )
+
+
+# ---------- F. RBAC regression ----------
+def section_F(dealer_token, op_token):
+    print("\n=== F. RBAC regression ===")
+
+    car_payload = {
+        "registration_number": f"MH02XY{int(time.time())%10000:04d}",
+        "make": "Hyundai", "model": "Creta", "variant": "SX(O)",
+        "year": 2023, "manufacturing_year": 2022, "registration_year": 2023,
+        "fuel_type": "Petrol", "transmission": "Automatic",
+        "km_driven": 18000, "color": "White", "owners": 1,
+        "insurance_validity": "08/2026", "rto_details": "MH02 - Mumbai West",
+        "notes": "Single owner, full service history.",
+        "starting_bid": 850000, "reserve_price": 950000,
+        "duration_minutes": 60, "images": [],
+    }
+    r = post("/cars", car_payload, headers={"Authorization": f"Bearer {dealer_token}"})
+    ok = r.status_code == 403 and "Admin" in r.text
+    record("F.1 POST /cars (dealer JWT) -> 403 Admin access required", ok,
+           f"status={r.status_code} body={r.text[:160]}")
+
+    r = post("/cars", car_payload, headers={"Authorization": f"Bearer {op_token}"})
+    try:
+        rbody = r.json()
+    except Exception:
+        rbody = {}
+    ok_f2 = r.status_code == 200 and "car" in rbody and rbody.get("car", {}).get("id")
+    record("F.2 POST /cars (operator JWT) -> 200 + {car,auction}", ok_f2,
+           f"status={r.status_code} body={r.text[:200]}")
+
+    r = get("/admin/dashboard", headers={"Authorization": f"Bearer {op_token}"})
+    ok = r.status_code == 200 and "auctions" in r.json() and "dealers" in r.json()
+    record("F.3 GET /admin/dashboard (operator) -> 200", ok, f"status={r.status_code}")
+
+    r = get("/admin/dashboard", headers={"Authorization": f"Bearer {dealer_token}"})
+    ok = r.status_code == 403
+    record("F.4 GET /admin/dashboard (dealer) -> 403", ok, f"status={r.status_code}")
+
+    r1 = get("/auth/me", headers={"Authorization": f"Bearer {dealer_token}"})
+    ok1 = r1.status_code == 200 and r1.json().get("role") == "dealer"
+    record("F.5a /auth/me (dealer) -> 200 role=dealer", ok1,
+           f"status={r1.status_code} role={r1.json().get('role') if r1.status_code==200 else None}")
+
+    r2 = get("/auth/me", headers={"Authorization": f"Bearer {op_token}"})
+    ok2 = r2.status_code == 200 and r2.json().get("role") == "admin"
+    record("F.5b /auth/me (operator) -> 200 role=admin", ok2,
+           f"status={r2.status_code} role={r2.json().get('role') if r2.status_code==200 else None}")
+
+    r = get("/purchases", headers={"Authorization": f"Bearer {dealer_token}"})
+    body = r.json() if r.status_code == 200 else {}
+    ok = (r.status_code == 200 and "won" in body and "active" in body and
+          isinstance(body["won"], list) and isinstance(body["active"], list))
+    record("F.6 GET /purchases (dealer) -> 200 {won,active}", ok,
+           f"status={r.status_code} keys={list(body.keys()) if isinstance(body, dict) else None}")
+
+
+# ---------- G. Suspended dealer block ----------
+def section_G(op_token):
+    print("\n=== G. Suspended dealer block ===")
+
+    r = post("/auth/dealer/verify-otp", {"phone": DEALER_VIKRAM, "otp": OTP})
+    if r.status_code != 200:
+        record("G.0 ensure Vikram dealer doc exists (verify-otp pre-suspend) -> 200", False,
+               f"status={r.status_code} body={r.text[:160]}")
+        return
+    vikram_id = r.json()["dealer"]["id"]
+
+    r = post(f"/admin/dealers/{vikram_id}/verify",
+             {"suspended": True},
+             headers={"Authorization": f"Bearer {op_token}"})
+    body = r.json() if r.status_code == 200 else {}
+    ok = r.status_code == 200 and body.get("suspended") is True
+    record("G.1 admin POST /admin/dealers/{id}/verify {suspended:true} -> 200", ok,
+           f"status={r.status_code} body={r.text[:160]}")
+
+    r = post("/auth/dealer/verify-otp", {"phone": DEALER_VIKRAM, "otp": OTP})
+    ok = r.status_code == 403 and r.json().get("detail") == "DEALER_ACCOUNT_SUSPENDED"
+    record("G.2 dealer/verify-otp for suspended dealer -> 403 DEALER_ACCOUNT_SUSPENDED", ok,
+           f"status={r.status_code} body={r.text[:160]}")
+
+    r = post(f"/admin/dealers/{vikram_id}/verify",
+             {"suspended": False},
+             headers={"Authorization": f"Bearer {op_token}"})
+    body = r.json() if r.status_code == 200 else {}
+    ok = r.status_code == 200 and body.get("suspended") is False
+    record("G.3 reinstate {suspended:false} -> 200", ok, f"status={r.status_code} body={r.text[:160]}")
+
+    r = post("/auth/dealer/verify-otp", {"phone": DEALER_VIKRAM, "otp": OTP})
+    ok = r.status_code == 200
+    record("G.4 dealer/verify-otp after reinstate -> 200", ok, f"status={r.status_code}")
+
+
+# ---------- main ----------
+def main():
+    if not BASE:
+        print("ERROR: EXPO_PUBLIC_BACKEND_URL not set")
+        sys.exit(1)
+
+    try:
+        r = get("/")
+        print(f"[PREFLIGHT] GET /api/ status={r.status_code} body={r.text[:120]}")
+    except Exception as e:
+        print(f"[PREFLIGHT] FAILED to reach API: {e}")
+        sys.exit(1)
+
+    dealer_token, _ = section_A()
+    op_token, _ = section_B()
+    section_C()
+    asyncio.run(section_D())
+    section_E()
+
+    if dealer_token and op_token:
+        section_F(dealer_token, op_token)
+        section_G(op_token)
     else:
-        failures.append((label, detail))
-        print(f"  FAIL {label} :: {detail}")
+        print("Skipping F/G — missing tokens")
+
+    passed = sum(1 for _, ok, _ in results if ok)
+    failed = [r for r in results if not r[1]]
+    print("\n" + "=" * 70)
+    print(f"RESULT: {passed}/{len(results)} passed")
+    if failed:
+        print("FAILED:")
+        for name, _, detail in failed:
+            print(f"  FAIL  {name} :: {detail}")
+    print("=" * 70)
+    sys.exit(0 if not failed else 1)
 
 
-def login(phone: str) -> Tuple[str, Dict[str, Any]]:
-    r = requests.post(f"{API}/auth/send-otp", json={"phone": phone}, timeout=20)
-    r.raise_for_status()
-    r = requests.post(f"{API}/auth/verify-otp", json={"phone": phone, "otp": OTP}, timeout=20)
-    r.raise_for_status()
-    data = r.json()
-    return data["token"], data["dealer"]
-
-
-def auth(tok: str) -> Dict[str, str]:
-    return {"Authorization": f"Bearer {tok}"}
-
-
-# =========================================================================
-print("\n[1] Login admin + dealer")
-admin_token, admin_d = login(ADMIN_PHONE)
-dealer_token, dealer_d = login(DEALER_PHONE)
-check(admin_d.get("role") == "admin", "admin login -> role=admin",
-      f"got role={admin_d.get('role')}")
-check(dealer_d.get("role") == "dealer", "dealer login -> role=dealer",
-      f"got role={dealer_d.get('role')}")
-
-# =========================================================================
-print("\n[2] GET /api/admin/dashboard")
-r = requests.get(f"{API}/admin/dashboard", headers=auth(admin_token), timeout=20)
-check(r.status_code == 200, "admin/dashboard 200", f"status={r.status_code} body={r.text[:200]}")
-if r.status_code == 200:
-    d = r.json()
-    auctions = d.get("auctions", {})
-    dealers = d.get("dealers", {})
-    inventory = d.get("inventory", {})
-    activity = d.get("activity", {})
-    for k in ("live", "upcoming", "ended_today"):
-        v = auctions.get(k)
-        check(isinstance(v, int) and v >= 0, f"auctions.{k} non-neg int", f"{k}={v}")
-    for k in ("total", "verified", "suspended", "pending_verification"):
-        v = dealers.get(k)
-        check(isinstance(v, int) and v >= 0, f"dealers.{k} non-neg int", f"{k}={v}")
-    check(dealers.get("total", 0) >= 5, "dealers.total >= 5", f"total={dealers.get('total')}")
-    for k in ("total", "listings_today"):
-        v = inventory.get(k)
-        check(isinstance(v, int) and v >= 0, f"inventory.{k} non-neg int", f"{k}={v}")
-    check(inventory.get("total", 0) >= 12, "inventory.total >= 12",
-          f"total={inventory.get('total')}")
-    for k in ("bids_today", "deals_today", "gmv_today_inr"):
-        v = activity.get(k)
-        check(isinstance(v, int) and v >= 0, f"activity.{k} non-neg int", f"{k}={v}")
-    check(isinstance(d.get("top_dealers"), list), "top_dealers is list")
-    check(isinstance(d.get("recent_outcomes"), list), "recent_outcomes is list")
-
-# Dealer 403
-r = requests.get(f"{API}/admin/dashboard", headers=auth(dealer_token), timeout=20)
-check(r.status_code == 403, "admin/dashboard dealer 403", f"status={r.status_code}")
-check("Admin access required" in r.text, "dealer error detail mentions admin",
-      f"body={r.text[:200]}")
-
-# No token 401
-r = requests.get(f"{API}/admin/dashboard", timeout=20)
-check(r.status_code in (401, 403), "admin/dashboard no token -> 401/403",
-      f"status={r.status_code}")
-
-# =========================================================================
-print("\n[3] GET /api/admin/dealers")
-r = requests.get(f"{API}/admin/dealers", headers=auth(admin_token), timeout=20)
-check(r.status_code == 200, "admin/dealers 200", f"status={r.status_code}")
-dealers_list = r.json() if r.status_code == 200 else []
-check(isinstance(dealers_list, list), "admin/dealers returns list")
-required = {"id", "dealership_name", "phone", "verified", "kyc_completed",
-            "bids_count", "wins_count"}
-if dealers_list:
-    sample = dealers_list[0]
-    missing = required - set(sample.keys())
-    check(not missing, "admin/dealers item has required fields",
-          f"missing={missing} sample_keys={list(sample.keys())}")
-    bad_bid = [d for d in dealers_list if not isinstance(d.get("bids_count"), int)]
-    bad_win = [d for d in dealers_list if not isinstance(d.get("wins_count"), int)]
-    check(not bad_bid, "all dealers have int bids_count", f"bad={bad_bid[:1]}")
-    check(not bad_win, "all dealers have int wins_count", f"bad={bad_win[:1]}")
-
-# Admin must be excluded
-admin_phones_in_list = [d for d in dealers_list if d.get("phone") == ADMIN_PHONE]
-check(len(admin_phones_in_list) == 0, "admin account excluded from /admin/dealers",
-      f"found admin={admin_phones_in_list}")
-roles = [d.get("role") for d in dealers_list]
-check(all(rr != "admin" for rr in roles), "no role=admin entries",
-      f"roles={set(roles)}")
-
-# Status filter pending
-r = requests.get(f"{API}/admin/dealers", params={"status_filter": "pending"},
-                 headers=auth(admin_token), timeout=20)
-check(r.status_code == 200, "admin/dealers status_filter=pending 200")
-pending = r.json() if r.status_code == 200 else []
-all_pending_unverified = all(not d.get("verified") for d in pending)
-check(all_pending_unverified, "all pending have verified=false",
-      f"counter-examples={[d for d in pending if d.get('verified')]}")
-
-# Status filter verified
-r = requests.get(f"{API}/admin/dealers", params={"status_filter": "verified"},
-                 headers=auth(admin_token), timeout=20)
-check(r.status_code == 200, "admin/dealers status_filter=verified 200")
-verified = r.json() if r.status_code == 200 else []
-all_verified = all(d.get("verified") and not d.get("suspended") for d in verified)
-check(all_verified, "verified filter -> verified=true and not suspended",
-      f"len={len(verified)}")
-
-# q=Royal
-r = requests.get(f"{API}/admin/dealers", params={"q": "Royal"},
-                 headers=auth(admin_token), timeout=20)
-check(r.status_code == 200, "admin/dealers q=Royal 200")
-royal = r.json() if r.status_code == 200 else []
-check(any("Royal" in (d.get("dealership_name") or "") for d in royal),
-      "q=Royal returns at least one Royal Drives Co.", f"len={len(royal)}")
-
-# Dealer 403
-r = requests.get(f"{API}/admin/dealers", headers=auth(dealer_token), timeout=20)
-check(r.status_code == 403, "admin/dealers dealer 403", f"status={r.status_code}")
-
-# =========================================================================
-print("\n[4] POST /api/admin/dealers/{id}/verify")
-target = None
-for d in dealers_list:
-    if d.get("phone") != DEALER_PHONE and d.get("role") != "admin":
-        target = d
-        break
-if not target and dealers_list:
-    target = dealers_list[0]
-check(target is not None, "found a non-admin dealer to mutate")
-target_id = target["id"]
-print(f"  target dealer: {target.get('phone')} id={target_id}")
-
-# Verify true
-r = requests.post(f"{API}/admin/dealers/{target_id}/verify",
-                  json={"verified": True}, headers=auth(admin_token), timeout=20)
-check(r.status_code == 200, "verify {verified:true} -> 200",
-      f"status={r.status_code} body={r.text[:200]}")
-if r.status_code == 200:
-    body = r.json()
-    check(body.get("verified") is True, "response.verified=true",
-          f"got={body.get('verified')}")
-    check(body.get("suspended") is False, "response.suspended=false after verify",
-          f"got={body.get('suspended')}")
-
-# Suspend true
-r = requests.post(f"{API}/admin/dealers/{target_id}/verify",
-                  json={"suspended": True}, headers=auth(admin_token), timeout=20)
-check(r.status_code == 200, "verify {suspended:true} -> 200")
-if r.status_code == 200:
-    body = r.json()
-    check(body.get("suspended") is True, "response.suspended=true",
-          f"got={body.get('suspended')}")
-
-# Reinstate
-r = requests.post(f"{API}/admin/dealers/{target_id}/verify",
-                  json={"suspended": False}, headers=auth(admin_token), timeout=20)
-check(r.status_code == 200, "verify {suspended:false} -> 200")
-if r.status_code == 200:
-    body = r.json()
-    check(body.get("suspended") is False, "reinstated suspended=false",
-          f"got={body.get('suspended')}")
-
-# Dealer caller 403
-r = requests.post(f"{API}/admin/dealers/{target_id}/verify",
-                  json={"verified": True}, headers=auth(dealer_token), timeout=20)
-check(r.status_code == 403, "dealer cannot verify others (403)",
-      f"status={r.status_code}")
-
-# Invalid id 404
-r = requests.post(f"{API}/admin/dealers/does-not-exist-xyz/verify",
-                  json={"verified": True}, headers=auth(admin_token), timeout=20)
-check(r.status_code == 404, "invalid dealer id 404", f"status={r.status_code}")
-
-# Try to mutate admin -> 400
-admin_id = admin_d["id"]
-r = requests.post(f"{API}/admin/dealers/{admin_id}/verify",
-                  json={"suspended": True}, headers=auth(admin_token), timeout=20)
-check(r.status_code == 400, "mutate admin account -> 400", f"status={r.status_code}")
-check("Cannot mutate admin" in r.text, "400 detail mentions 'Cannot mutate admin'",
-      f"body={r.text[:200]}")
-
-# Verify the verification notification was inserted for target
-target_token, _ = login(target["phone"])
-r = requests.get(f"{API}/notifications", headers=auth(target_token), timeout=20)
-if r.status_code == 200:
-    notifs = r.json()
-    has_verif = any(n.get("type") == "verification" for n in notifs)
-    check(has_verif, "verification notification inserted for target",
-          f"types={[n.get('type') for n in notifs[:5]]}")
-
-# =========================================================================
-print("\n[5] POST /api/admin/notifications/broadcast")
-# Capture target dealer's unread count before broadcast (target is verified above)
-r = requests.get(f"{API}/notifications/unread-count", headers=auth(target_token), timeout=20)
-before_unread = r.json().get("unread", 0) if r.status_code == 200 else 0
-print(f"  target unread before: {before_unread}")
-
-# audience=verified
-r = requests.post(f"{API}/admin/notifications/broadcast",
-                  json={"title": "Test broadcast", "body": "Hello dealers",
-                        "audience": "verified"},
-                  headers=auth(admin_token), timeout=20)
-check(r.status_code == 200, "broadcast verified -> 200",
-      f"status={r.status_code} body={r.text[:200]}")
-sent_verified = 0
-if r.status_code == 200:
-    sent_verified = r.json().get("sent", 0)
-    check(isinstance(sent_verified, int) and sent_verified >= 1,
-          "broadcast verified sent >= 1", f"sent={sent_verified}")
-
-# Confirm side-effect: target unread incremented (target was reinstated to verified=true)
-r = requests.get(f"{API}/notifications/unread-count", headers=auth(target_token), timeout=20)
-after_unread = r.json().get("unread", 0) if r.status_code == 200 else 0
-print(f"  target unread after verified broadcast: {after_unread}")
-check(after_unread >= before_unread + 1,
-      "target dealer unread count incremented after verified broadcast",
-      f"before={before_unread} after={after_unread}")
-
-# audience=all
-r = requests.post(f"{API}/admin/notifications/broadcast",
-                  json={"title": "All hands", "body": "Heads up",
-                        "audience": "all"},
-                  headers=auth(admin_token), timeout=20)
-check(r.status_code == 200, "broadcast all -> 200")
-sent_all = r.json().get("sent", 0) if r.status_code == 200 else 0
-check(sent_all >= sent_verified, "broadcast all >= verified count",
-      f"all={sent_all} verified={sent_verified}")
-
-# Dealer 403
-r = requests.post(f"{API}/admin/notifications/broadcast",
-                  json={"title": "x", "body": "y", "audience": "all"},
-                  headers=auth(dealer_token), timeout=20)
-check(r.status_code == 403, "broadcast dealer 403", f"status={r.status_code}")
-
-# =========================================================================
-print("\n[6] Regression smoke")
-endpoints = [
-    ("GET", "/auctions", None, dealer_token, 200),
-    ("GET", "/dashboard/stats", None, dealer_token, 200),
-    ("GET", "/notifications", None, dealer_token, 200),
-    ("GET", "/cars", None, dealer_token, 200),
-    ("GET", "/purchases", None, dealer_token, 200),
-    ("GET", "/auth/me", None, dealer_token, 200),
-]
-for method, path, body, tok, expected in endpoints:
-    if method == "GET":
-        rr = requests.get(f"{API}{path}", headers=auth(tok) if tok else {}, timeout=20)
-    else:
-        rr = requests.post(f"{API}{path}", json=body, headers=auth(tok) if tok else {}, timeout=20)
-    check(rr.status_code == expected, f"{method} {path} -> {expected}",
-          f"status={rr.status_code}")
-
-# POST /api/cars admin guard
-car_payload = {
-    "registration_number": "MH99TT0001",
-    "make": "Hyundai",
-    "model": "Verna",
-    "year": 2023,
-    "fuel_type": "Petrol",
-    "transmission": "Automatic",
-    "km_driven": 18000,
-    "owners": 1,
-    "reserve_price": 1500000,
-    "starting_bid": 1300000,
-}
-r = requests.post(f"{API}/cars", json=car_payload, headers=auth(dealer_token), timeout=20)
-check(r.status_code == 403, "POST /cars dealer 403", f"status={r.status_code}")
-r = requests.post(f"{API}/cars", json=car_payload, headers=auth(admin_token), timeout=20)
-check(r.status_code == 200, "POST /cars admin 200", f"status={r.status_code} body={r.text[:200]}")
-
-# Media GET (public)
-auctions = requests.get(f"{API}/auctions", timeout=20).json()
-if auctions:
-    car_id = auctions[0].get("car_id")
-    if car_id:
-        r = requests.get(f"{API}/cars/{car_id}/media", timeout=20)
-        check(r.status_code == 200, "GET /cars/{id}/media 200 (public)",
-              f"status={r.status_code}")
-
-# =========================================================================
-print("\n========== SUMMARY ==========")
-print(f"Passed: {len(passes)}")
-print(f"Failed: {len(failures)}")
-if failures:
-    print("\nFailures:")
-    for label, detail in failures:
-        print(f"  - {label} :: {detail}")
-sys.exit(0 if not failures else 1)
+if __name__ == "__main__":
+    main()

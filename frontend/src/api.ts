@@ -27,10 +27,23 @@ async function request<T = any>(path: string, options: RequestInit = {}): Promis
 }
 
 export const api = {
-  sendOtp: (phone: string) => request('/auth/send-otp', { method: 'POST', body: JSON.stringify({ phone }) }),
-  verifyOtp: (phone: string, otp: string) => request('/auth/verify-otp', { method: 'POST', body: JSON.stringify({ phone, otp }) }),
+  // ---- Auth (strict role-isolated allow-list endpoints) ----
+  // No generic auth route exists. Each role has its own dedicated channel.
+  dealerSendOtp: (phone: string) =>
+    request('/auth/dealer/send-otp', { method: 'POST', body: JSON.stringify({ phone }) }),
+  dealerVerifyOtp: (phone: string, otp: string) =>
+    request('/auth/dealer/verify-otp', { method: 'POST', body: JSON.stringify({ phone, otp }) }),
+  operatorSendOtp: (phone: string) =>
+    request('/auth/operator/send-otp', { method: 'POST', body: JSON.stringify({ phone }) }),
+  operatorVerifyOtp: (phone: string, otp: string) =>
+    request('/auth/operator/verify-otp', { method: 'POST', body: JSON.stringify({ phone, otp }) }),
+
   me: () => request('/auth/me'),
-  submitKyc: (payload: any) => request('/auth/kyc', { method: 'POST', body: JSON.stringify(payload) }),
+  submitKyc: (payload: any) =>
+    request<{ success: boolean; updated: boolean; dealer: any }>(
+      '/auth/kyc',
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
 
   auctions: (status?: string) => request(`/auctions${status ? `?status_filter=${status}` : ''}`),
   auction: (id: string) => request(`/auctions/${id}`),

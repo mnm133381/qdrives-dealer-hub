@@ -210,7 +210,7 @@ export default function Sell() {
         <View style={styles.section}>
           <View style={styles.photosHeader}>
             <Text style={styles.label}>Photos</Text>
-            <Text style={styles.photosLink}>{(draft.photos.photoCount || 0)}/4 in inspection</Text>
+            <Text style={styles.photosLink}>{(draft.photos?.photoCount || 0)}/4 in inspection</Text>
           </View>
         </View>
 

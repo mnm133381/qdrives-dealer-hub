@@ -46,7 +46,7 @@ export default function InspectionForm() {
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[styles.root, { paddingTop: insets.top }]}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} testID="inspection-back">
+        <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} testID="insp-back">
           <ArrowLeft size={20} color={colors.textPrimary} />
         </TouchableOpacity>
         <View style={{ flex: 1, marginLeft: 14 }}>

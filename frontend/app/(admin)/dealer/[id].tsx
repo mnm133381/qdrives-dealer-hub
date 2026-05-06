@@ -107,14 +107,33 @@ export default function DealerDetail() {
           <Text style={styles.kicker}>DEALER DETAIL</Text>
           <Text style={styles.title} numberOfLines={1}>{d.dealership_name || d.full_name}</Text>
         </View>
-        {d.suspended ? (
+        {d.status === 'suspended' || d.suspended ? (
           <View style={[styles.statusPill, styles.statusSuspended]}><Ban size={10} color={colors.red} /><Text style={[styles.statusText, { color: colors.red }]}>SUSPENDED</Text></View>
-        ) : d.verified ? (
-          <View style={[styles.statusPill, styles.statusOk]}><BadgeCheck size={10} color={colors.success} /><Text style={[styles.statusText, { color: colors.success }]}>ACTIVE</Text></View>
+        ) : d.status === 'revoked' ? (
+          <View style={[styles.statusPill, styles.statusSuspended]}><Ban size={10} color={colors.red} /><Text style={[styles.statusText, { color: colors.red }]}>REVOKED</Text></View>
+        ) : d.status === 'pending' ? (
+          <View style={[styles.statusPill, styles.statusPending]}><AlertTriangle size={10} color={colors.warning} /><Text style={[styles.statusText, { color: colors.warning }]}>PENDING</Text></View>
+        ) : d.status === 'approved' || d.verified ? (
+          <View style={[styles.statusPill, styles.statusOk]}><BadgeCheck size={10} color={colors.success} /><Text style={[styles.statusText, { color: colors.success }]}>APPROVED</Text></View>
         ) : (
           <View style={[styles.statusPill, styles.statusPending]}><AlertTriangle size={10} color={colors.warning} /><Text style={[styles.statusText, { color: colors.warning }]}>UNVERIFIED</Text></View>
         )}
       </View>
+
+      {/* Pending-state primary CTA banner — operator's main action lives here */}
+      {d.status === 'pending' && (
+        <View style={styles.primaryCtaBar} testID="dealer-detail-primary-approve-bar">
+          <View style={{ flex: 1 }}>
+            <Text style={styles.primaryCtaKicker}>PENDING APPROVAL</Text>
+            <Text style={styles.primaryCtaTitle}>Awaiting operator review</Text>
+            <Text style={styles.primaryCtaSub}>Bidding & purchases activate the moment you approve.</Text>
+          </View>
+          <TouchableOpacity disabled={busy} onPress={onApprove} style={styles.primaryCtaBtn} testID="dealer-detail-primary-approve">
+            <ShieldCheck size={14} color="#fff" strokeWidth={2.6} />
+            <Text style={styles.primaryCtaBtnText}>Approve</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       <ScrollView contentContainerStyle={{ padding: 18, paddingBottom: 80 }}>
         {/* IDENTITY block */}
@@ -175,19 +194,19 @@ export default function DealerDetail() {
         <View style={styles.card}>
           <View style={styles.cardHead}><ShieldCheck size={13} color={colors.textChrome} /><Text style={styles.cardHeadText}>MODERATION</Text></View>
           <View style={styles.actionRow}>
-            {!d.verified && !d.suspended && (
+            {(d.status === 'pending' || (!d.verified && !d.suspended && d.status !== 'revoked')) && (
               <TouchableOpacity disabled={busy} onPress={onApprove} style={[styles.modBtn, styles.modApprove]} testID="dealer-detail-approve">
                 <ShieldCheck size={13} color={colors.success} />
                 <Text style={[styles.modText, { color: colors.success }]}>Approve</Text>
               </TouchableOpacity>
             )}
-            {!d.suspended && d.verified && (
+            {(!d.suspended && d.status !== 'suspended' && (d.verified || d.status === 'approved')) && (
               <TouchableOpacity disabled={busy} onPress={onSuspend} style={[styles.modBtn, styles.modDanger]} testID="dealer-detail-suspend">
                 <Ban size={13} color={colors.red} />
                 <Text style={[styles.modText, { color: colors.red }]}>Suspend</Text>
               </TouchableOpacity>
             )}
-            {d.suspended && (
+            {(d.suspended || d.status === 'suspended') && (
               <TouchableOpacity disabled={busy} onPress={onReinstate} style={[styles.modBtn, styles.modApprove]} testID="dealer-detail-reinstate">
                 <ShieldCheck size={13} color={colors.success} />
                 <Text style={[styles.modText, { color: colors.success }]}>Reinstate</Text>
@@ -311,6 +330,12 @@ const styles = StyleSheet.create({
   actionRow: { flexDirection: 'row', gap: 8 },
   modBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 999, borderWidth: 1 },
   modApprove: { backgroundColor: 'rgba(16,185,129,0.10)', borderColor: 'rgba(16,185,129,0.4)' },
+  primaryCtaBar: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 16, marginHorizontal: 18, marginTop: 10, marginBottom: 4, borderRadius: 14, backgroundColor: 'rgba(245,158,11,0.10)', borderWidth: 1, borderColor: 'rgba(245,158,11,0.55)' },
+  primaryCtaKicker: { color: colors.warning, fontSize: 9.5, fontWeight: '900', letterSpacing: 1.4 },
+  primaryCtaTitle: { color: colors.textPrimary, fontSize: 14, fontWeight: '900', marginTop: 2, letterSpacing: -0.2 },
+  primaryCtaSub: { color: colors.textChrome, fontSize: 11, fontWeight: '600', marginTop: 3 },
+  primaryCtaBtn: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 16, paddingVertical: 11, borderRadius: 999, backgroundColor: colors.success },
+  primaryCtaBtnText: { color: '#fff', fontSize: 12.5, fontWeight: '900', letterSpacing: 0.6 },
   modDanger: { backgroundColor: 'rgba(185,28,28,0.10)', borderColor: 'rgba(185,28,28,0.4)' },
   modText: { fontSize: 12, fontWeight: '900', letterSpacing: 0.4 },
 

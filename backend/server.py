@@ -655,6 +655,17 @@ async def me(dealer = Depends(get_current_dealer)):
 
 @api.post("/auth/kyc")
 async def submit_kyc(req: KycReq, dealer = Depends(get_current_dealer)):
+    """Dealer self-submits KYC profile. CRITICAL: this is NOT approval.
+    KYC submission flips kyc_completed=true but the dealer remains in
+    status='pending' until an operator explicitly approves them via
+    /admin/dealers/{id}/approve. The dealer is told their KYC was
+    received — never that they are approved.
+    """
+    # Operator role accounts must never be re-flipped to 'dealer' here;
+    # /auth/kyc is dealer-only.
+    if (dealer.get("role") or "dealer") != "dealer":
+        raise HTTPException(status_code=403, detail="KYC is for dealer accounts only")
+
     update = {
         "full_name": req.full_name,
         "dealership_name": req.dealership_name,
@@ -662,28 +673,43 @@ async def submit_kyc(req: KycReq, dealer = Depends(get_current_dealer)):
         "gst_number": req.gst_number or "",
         "pan_number": req.pan_number or "",
         "kyc_completed": True,
-        "verified": True,
+        # NOTE: verified / status are NOT touched here. Approval is an
+        # operator-controlled business event, not a side-effect of KYC.
     }
     await db.dealers.update_one({"id": dealer["id"]}, {"$set": update})
     updated = await db.dealers.find_one({"id": dealer["id"]}, {"_id": 0})
 
-    # KYC verification notification (DB + push)
-    await db.notifications.insert_one({
-        "id": str(uuid.uuid4()),
-        "dealer_id": dealer["id"],
-        "type": "verification",
-        "title": "Verification approved",
-        "body": f"Welcome aboard, {req.dealership_name}. You can now bid and list cars.",
-        "auction_id": None,
-        "read": False,
-        "created_at": now_utc(),
-    })
-    asyncio.create_task(send_to_dealer(
-        db, dealer["id"], "Verification approved",
-        f"Welcome to Q Drives, {req.dealership_name}. You can now bid & list.",
-        data={"type": "verification"},
-    ))
-    # Standardised response shape — frontend relies on dealer.role for routing.
+    asyncio.create_task(audit(db, "kyc_submitted", dealer["id"], None, {
+        "dealership_name": req.dealership_name, "city": req.city,
+        "gst_number_present": bool(req.gst_number), "pan_number_present": bool(req.pan_number),
+    }))
+
+    current_status = updated.get("status") or "pending"
+    if current_status == "approved":
+        # Re-submission by an already-approved dealer (e.g. profile edit).
+        # No misleading "approval" notification — just a quiet confirmation.
+        await db.notifications.insert_one({
+            "id": str(uuid.uuid4()), "dealer_id": dealer["id"],
+            "type": "kyc_updated",
+            "title": "Profile updated",
+            "body": "Your dealership profile has been updated.",
+            "auction_id": None, "read": False, "created_at": now_utc(),
+        })
+    else:
+        # Pending dealer: tell them KYC is RECEIVED — explicitly NOT approved.
+        await db.notifications.insert_one({
+            "id": str(uuid.uuid4()), "dealer_id": dealer["id"],
+            "type": "kyc_received",
+            "title": "KYC received · pending review",
+            "body": "Thanks. Q Drives will review your KYC shortly. Bidding activates once an operator approves your account.",
+            "auction_id": None, "read": False, "created_at": now_utc(),
+        })
+        asyncio.create_task(send_to_dealer(
+            db, dealer["id"], "KYC received · pending review",
+            "Q Drives is reviewing your dealership. Bidding activates after operator approval.",
+            data={"type": "kyc_received"},
+        ))
+
     return {"success": True, "updated": True, "dealer": serialize(updated)}
 
 
@@ -1204,8 +1230,10 @@ async def admin_verify_dealer(
     if update.get("suspended") is True or update.get("verified") is False:
         asyncio.create_task(bump_token_version(dealer_id, reason="dealer_status_change", actor_id=admin["id"]))
 
-    # Push verification status change
-    if req.verified is True:
+    # Push verification status change. Idempotent: only emit when the
+    # status actually transitioned (prevents duplicate "approved" pings if
+    # operator re-clicks). Same rule for suspend.
+    if req.verified is True and prev_status != "approved":
         title = "Dealer status verified"
         body = f"Welcome, {updated.get('dealership_name') or 'dealer'}. You are now an active Q Drives dealer."
         await db.notifications.insert_one({
@@ -1214,7 +1242,7 @@ async def admin_verify_dealer(
             "read": False, "created_at": now_utc(),
         })
         asyncio.create_task(send_to_dealer(db, dealer_id, title, body, data={"type": "verification"}))
-    elif req.suspended is True:
+    elif req.suspended is True and prev_status != "suspended":
         title = "Account suspended"
         body = "Your Q Drives account has been suspended. Contact support for details."
         await db.notifications.insert_one({
@@ -3382,6 +3410,33 @@ async def seed_allow_lists() -> None:
             "[migration] dealer.status backfill — approved=%s suspended=%s",
             legacy_active.modified_count, legacy_suspended.modified_count,
         )
+
+    # CRITICAL one-shot cleanup — older builds erroneously fired a
+    # "Verification approved" notification on /auth/kyc submission for any
+    # dealer (regardless of operator approval). Purge those misleading
+    # entries from notifications collection for any dealer who is NOT
+    # currently approved. Approved dealers keep their notification (it's
+    # historically correct for them). Re-running is idempotent.
+    pending_or_restricted_ids = []
+    async for d in db.dealers.find(
+        {"role": "dealer", "status": {"$in": ["pending", "suspended", "revoked"]}},
+        {"id": 1, "_id": 0},
+    ):
+        pending_or_restricted_ids.append(d["id"])
+    if pending_or_restricted_ids:
+        purged = await db.notifications.delete_many({
+            "dealer_id": {"$in": pending_or_restricted_ids},
+            "type": "verification",
+            "title": {"$in": [
+                "Verification approved", "Dealer status verified",
+                "Account approved",
+            ]},
+        })
+        if purged.deleted_count:
+            logger.info(
+                "[migration] purged false approval notifications for non-approved dealers: %s",
+                purged.deleted_count,
+            )
 
 
 @app.on_event("shutdown")

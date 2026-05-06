@@ -1,0 +1,30 @@
+{
+  "summary": "Refactored inspection PDF workflow verified end-to-end. (1) Auction screen has NO upload UI even when viewed by the seller — confirmed `insp-pdf-upload` and `insp-pdf-replace` testIDs are absent on /auction/[id] for seller +919900000002 viewing his own Audi Q5; only view/download/card testIDs render. (2) /sell/inspection has the new 'Inspection PDF (optional)' section with `insp-pick-pdf` dashed button; staged PDF flips to row with `insp-pdf-remove`. (3) Profile shows new 'My listings & inspection PDFs' menu item (`profile-my-listings`) above 'Notifications & alerts'. (4) /my-listings renders all 16 listings owned by Royal Drives Co. with thumbnail, title, reg+km, current bid, and PDF block; testIDs `my-listing-{id}`, `my-listing-{id}-view`, `my-listing-{id}-upload` correctly toggle between green 'PDF ATTACHED' (view+Replace) and grey 'NO PDF' (Attach PDF) states. (5) All 38 backend pytest tests pass — including upload auth-gating, seller-only enforcement, PDF-only validation, 10MB cap, by-car, file download (header + ?token=), auction enrichment, and re-upload replacement.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_inspection_pdf.py",
+    "/app/backend/tests/test_qdrives_api.py",
+    "/app/test_reports/pytest/iter7_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Grep confirmed no 'insp-pdf-upload' or 'insp-pdf-replace' references in auction/[id].tsx or InspectionPdfCard.tsx — refactor is clean.",
+    "InspectionPdfCard now takes a single `inspection` prop (no isSeller/onUploaded/carId) — matches new view-only contract.",
+    "/app/frontend/app/_layout.tsx correctly registers Stack.Screen 'my-listings/index'.",
+    "/my-listings filters auctions by `a.seller_id === dealer?.id` so non-seller dealers see the 'No listings yet' empty state automatically.",
+    "Sell flow stages PDF via `useInspection().setPdfDraft` and (per spec) sell.tsx launch handler uploads after createCar — file structure matches request."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (38/38)", "frontend": "100% (all flows verified)"},
+  "seed_data_creation": "None — used seeded dealer +919900000002 (Royal Drives Co.) and existing auctions including b8e71071-d6a5-4e89-a272-555233af4e00.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Royal Drives Co. (+919900000002, dealer_id=f71072df-bba1-42ef-9549-3162910c7c21) owns 16 listings — many already have PDFs (PDF ATTACHED state) and a few do not (NO PDF state). Sample owned auction with PDF: b8e71071-d6a5-4e89-a272-555233af4e00 (Audi Q5). To programmatically log in via Playwright, POST /api/auth/verify-otp then `localStorage.setItem('qdrives_token', token)` and reload — AuthProvider picks it up. Frontend testIDs verified live: insp-pdf-card, insp-pdf-view, insp-pdf-download, insp-pick-pdf, insp-pdf-remove, profile-my-listings, my-listing-{id}, my-listing-{id}-view, my-listing-{id}-upload. Forbidden testIDs confirmed absent on auction screen: insp-pdf-upload, insp-pdf-replace.",
+  "rca_of_issue": "N/A — feature verification, not bug fix. Refactor moved upload UI off the public auction screen entirely; staging happens in /sell/inspection (pdfDraft) with auto-upload on launch in sell.tsx, and replacement happens in /my-listings. All testIDs and flows match the spec."
+}

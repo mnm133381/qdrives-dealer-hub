@@ -1,16 +1,17 @@
+/**
+ * View-only inspection PDF card for the auction/marketplace screen.
+ * No upload/replace UI here — that's strictly handled in the seller
+ * listing flow and the vehicle-edit ("My Listings") workflow.
+ */
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Linking, Platform } from 'react-native';
-import * as DocumentPicker from 'expo-document-picker';
-import { FileText, Download, Eye, Upload, ShieldCheck, FileX, Clock } from 'lucide-react-native';
+import { FileText, Download, Eye, FileX, Clock, ShieldCheck, BadgeCheck, Calendar, User } from 'lucide-react-native';
 import { colors, radii } from '../theme';
-import { api, inspectionPdfUrl } from '../api';
+import { inspectionPdfUrl } from '../api';
 import { useToast } from '../toast';
 
 type Props = {
-  carId: string;
   inspection: any | null;
-  isSeller: boolean;
-  onUploaded: () => void;
 };
 
 function formatBytes(b: number) {
@@ -31,35 +32,16 @@ function formatRelative(iso?: string) {
   } catch { return ''; }
 }
 
-export function InspectionPdfCard({ carId, inspection, isSeller, onUploaded }: Props) {
-  const toast = useToast();
-  const [uploading, setUploading] = useState(false);
-  const [opening, setOpening] = useState<'view' | 'download' | null>(null);
+function formatAbsolute(iso?: string) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  } catch { return ''; }
+}
 
-  const pickAndUpload = async () => {
-    try {
-      const res = await DocumentPicker.getDocumentAsync({
-        type: 'application/pdf',
-        copyToCacheDirectory: true,
-        multiple: false,
-      });
-      if (res.canceled) return;
-      const file = res.assets?.[0];
-      if (!file) return;
-      if (file.size && file.size > 10 * 1024 * 1024) {
-        toast.show('PDF must be under 10 MB', 'error');
-        return;
-      }
-      setUploading(true);
-      await api.uploadInspection(carId, file.uri, file.name || 'inspection.pdf');
-      toast.show('Inspection PDF attached', 'success');
-      onUploaded();
-    } catch (e: any) {
-      toast.show(e.message || 'Upload failed', 'error');
-    } finally {
-      setUploading(false);
-    }
-  };
+export function InspectionPdfCard({ inspection }: Props) {
+  const toast = useToast();
+  const [opening, setOpening] = useState<'view' | 'download' | null>(null);
 
   const open = async (mode: 'view' | 'download') => {
     if (!inspection) return;
@@ -79,32 +61,10 @@ export function InspectionPdfCard({ carId, inspection, isSeller, onUploaded }: P
     }
   };
 
+  // Empty state
   if (!inspection) {
-    if (isSeller) {
-      return (
-        <View style={[styles.card, styles.cardEmpty]}>
-          <View style={styles.headRow}>
-            <View style={[styles.iconBox, { backgroundColor: 'rgba(245,158,11,0.12)', borderColor: 'rgba(245,158,11,0.4)' }]}>
-              <FileX size={18} color={colors.warning} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <View style={styles.statusRow}>
-                <View style={[styles.statusDot, { backgroundColor: colors.warning }]} />
-                <Text style={[styles.statusLabel, { color: colors.warning }]}>NO PDF ATTACHED</Text>
-              </View>
-              <Text style={styles.titleSeller}>Attach inspection report</Text>
-              <Text style={styles.subSeller}>PDF reports drive 18% higher winning bids · max 10 MB</Text>
-            </View>
-          </View>
-          <TouchableOpacity onPress={pickAndUpload} disabled={uploading} style={styles.primaryBtn} testID="insp-pdf-upload">
-            {uploading ? <ActivityIndicator color="#fff" /> : <Upload size={16} color="#fff" />}
-            <Text style={styles.primaryBtnText}>{uploading ? 'Uploading…' : 'Upload PDF report'}</Text>
-          </TouchableOpacity>
-        </View>
-      );
-    }
     return (
-      <View style={[styles.card, styles.cardEmpty]}>
+      <View style={[styles.card, styles.cardEmpty]} testID="insp-pdf-empty">
         <View style={styles.headRow}>
           <View style={[styles.iconBox, { backgroundColor: colors.bg, borderColor: colors.border }]}>
             <FileX size={18} color={colors.textMuted} />
@@ -114,14 +74,15 @@ export function InspectionPdfCard({ carId, inspection, isSeller, onUploaded }: P
               <View style={[styles.statusDot, { backgroundColor: colors.textMuted }]} />
               <Text style={[styles.statusLabel, { color: colors.textMuted }]}>NOT ATTACHED</Text>
             </View>
-            <Text style={styles.titleSeller}>Inspection PDF unavailable</Text>
-            <Text style={styles.subSeller}>The seller hasn't uploaded a detailed inspection report yet.</Text>
+            <Text style={styles.title}>Detailed report unavailable</Text>
+            <Text style={styles.sub}>The seller has not uploaded a downloadable inspection PDF for this listing yet.</Text>
           </View>
         </View>
       </View>
     );
   }
 
+  // Verified / available state
   return (
     <View style={[styles.card, styles.cardVerified]} testID="insp-pdf-card">
       <View style={styles.headRow}>
@@ -130,37 +91,60 @@ export function InspectionPdfCard({ carId, inspection, isSeller, onUploaded }: P
         </View>
         <View style={{ flex: 1 }}>
           <View style={styles.statusRow}>
-            <ShieldCheck size={11} color={colors.success} />
-            <Text style={[styles.statusLabel, { color: colors.success }]}>VERIFIED REPORT</Text>
+            <BadgeCheck size={12} color={colors.success} />
+            <Text style={[styles.statusLabel, { color: colors.success }]}>VERIFIED INSPECTION</Text>
           </View>
           <Text style={styles.title} numberOfLines={1}>{inspection.filename || 'inspection.pdf'}</Text>
-          <View style={styles.metaRow}>
-            <Clock size={11} color={colors.textMuted} />
-            <Text style={styles.meta}>
-              {formatBytes(inspection.size_bytes || 0)} · {inspection.version || 'v1'} · {formatRelative(inspection.created_at)}
-            </Text>
-          </View>
-          <Text style={styles.uploader} numberOfLines={1}>Uploaded by {inspection.uploader_name || 'seller'}</Text>
+          <Text style={styles.sizeMeta}>
+            {formatBytes(inspection.size_bytes || 0)} · {(inspection.version || 'v1').toUpperCase()}
+          </Text>
         </View>
       </View>
 
+      {/* Metadata strip */}
+      <View style={styles.metaStrip}>
+        <View style={styles.metaItem}>
+          <User size={11} color={colors.textMuted} />
+          <View>
+            <Text style={styles.metaLabel}>UPLOADED BY</Text>
+            <Text style={styles.metaValue} numberOfLines={1}>{inspection.uploader_name || 'Seller'}</Text>
+          </View>
+        </View>
+        <View style={styles.metaDivider} />
+        <View style={styles.metaItem}>
+          <Calendar size={11} color={colors.textMuted} />
+          <View>
+            <Text style={styles.metaLabel}>UPLOADED</Text>
+            <Text style={styles.metaValue}>{formatAbsolute(inspection.created_at)}</Text>
+          </View>
+        </View>
+        <View style={styles.metaDivider} />
+        <View style={styles.metaItem}>
+          <Clock size={11} color={colors.textMuted} />
+          <View>
+            <Text style={styles.metaLabel}>STATUS</Text>
+            <Text style={[styles.metaValue, { color: colors.success }]}>{formatRelative(inspection.created_at) || 'Active'}</Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Trust note */}
+      <View style={styles.trustNote}>
+        <ShieldCheck size={12} color={colors.success} />
+        <Text style={styles.trustText}>Document securely served · auth-gated download</Text>
+      </View>
+
+      {/* Actions */}
       <View style={styles.actions}>
         <TouchableOpacity onPress={() => open('view')} disabled={opening !== null} style={[styles.actionBtn, styles.actionPrimary]} testID="insp-pdf-view">
           {opening === 'view' ? <ActivityIndicator color="#fff" /> : <Eye size={15} color="#fff" />}
-          <Text style={styles.actionPrimaryText}>View PDF</Text>
+          <Text style={styles.actionPrimaryText}>View Inspection Report</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={() => open('download')} disabled={opening !== null} style={[styles.actionBtn, styles.actionSecondary]} testID="insp-pdf-download">
           {opening === 'download' ? <ActivityIndicator color={colors.textChrome} /> : <Download size={15} color={colors.textChrome} />}
-          <Text style={styles.actionSecondaryText}>Download</Text>
+          <Text style={styles.actionSecondaryText}>Download PDF</Text>
         </TouchableOpacity>
       </View>
-
-      {isSeller && (
-        <TouchableOpacity onPress={pickAndUpload} disabled={uploading} style={styles.replaceBtn} testID="insp-pdf-replace">
-          <Upload size={12} color={colors.textMuted} />
-          <Text style={styles.replaceText}>{uploading ? 'Uploading…' : 'Replace with newer version'}</Text>
-        </TouchableOpacity>
-      )}
     </View>
   );
 }
@@ -172,29 +156,26 @@ const styles = StyleSheet.create({
 
   headRow: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
   iconBox: { width: 40, height: 40, borderRadius: 12, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 4 },
   statusDot: { width: 6, height: 6, borderRadius: 3 },
   statusLabel: { fontSize: 9, fontWeight: '900', letterSpacing: 1.4 },
-
   title: { color: colors.textPrimary, fontSize: 14, fontWeight: '800', letterSpacing: -0.2 },
-  titleSeller: { color: colors.textPrimary, fontSize: 14, fontWeight: '800', letterSpacing: -0.2 },
-  subSeller: { color: colors.textSecondary, fontSize: 11, marginTop: 4, lineHeight: 16 },
+  sub: { color: colors.textSecondary, fontSize: 11, marginTop: 4, lineHeight: 16 },
+  sizeMeta: { color: colors.textMuted, fontSize: 11, marginTop: 4, fontWeight: '600' },
 
-  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 },
-  meta: { color: colors.textSecondary, fontSize: 11, fontWeight: '600' },
-  uploader: { color: colors.textMuted, fontSize: 10, marginTop: 4, fontWeight: '600' },
+  metaStrip: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.bg, borderRadius: 10, padding: 12, marginTop: 14, borderWidth: 1, borderColor: colors.border },
+  metaItem: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7 },
+  metaDivider: { width: StyleSheet.hairlineWidth, height: 28, backgroundColor: colors.border, marginHorizontal: 8 },
+  metaLabel: { color: colors.textMuted, fontSize: 8, fontWeight: '900', letterSpacing: 1, marginBottom: 1 },
+  metaValue: { color: colors.textChrome, fontSize: 11, fontWeight: '700' },
 
-  actions: { flexDirection: 'row', gap: 8, marginTop: 14 },
-  actionBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 11, borderRadius: 10 },
-  actionPrimary: { backgroundColor: colors.red },
+  trustNote: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10, paddingHorizontal: 4 },
+  trustText: { color: colors.textMuted, fontSize: 10, fontWeight: '600' },
+
+  actions: { flexDirection: 'row', gap: 8, marginTop: 12 },
+  actionBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, borderRadius: 10 },
+  actionPrimary: { backgroundColor: colors.red, shadowColor: colors.red, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 6 },
   actionSecondary: { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border },
   actionPrimaryText: { color: '#fff', fontSize: 13, fontWeight: '800', letterSpacing: 0.3 },
   actionSecondaryText: { color: colors.textChrome, fontSize: 13, fontWeight: '700' },
-
-  primaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 10, backgroundColor: colors.red, marginTop: 14 },
-  primaryBtnText: { color: '#fff', fontSize: 13, fontWeight: '800', letterSpacing: 0.3 },
-
-  replaceBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8, marginTop: 6 },
-  replaceText: { color: colors.textMuted, fontSize: 11, fontWeight: '600' },
 });

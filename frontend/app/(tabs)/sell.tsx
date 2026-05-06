@@ -25,7 +25,7 @@ export default function Sell() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const toast = useToast();
-  const { draft } = useInspection();
+  const { draft, pdfDraft, setPdfDraft } = useInspection();
   const inspStats = inspectionStats(draft);
   const [reg, setReg] = useState('');
   const [autofilled, setAutofilled] = useState(false);
@@ -90,7 +90,18 @@ export default function Sell() {
         images: STOCK_GALLERY,
         description: `${form.year} ${form.make} ${form.model} listed for wholesale auction.`,
       });
-      toast.show('Auction launched successfully', 'success');
+      // If a PDF is staged in the inspection draft, upload it now and bind to the new car.
+      if (pdfDraft && res?.car?.id) {
+        try {
+          await api.uploadInspection(res.car.id, pdfDraft.uri, pdfDraft.name);
+          setPdfDraft(null);
+          toast.show('Auction launched · inspection PDF attached', 'success');
+        } catch (uploadErr: any) {
+          toast.show(`Auction launched, but PDF upload failed: ${uploadErr.message || 'try again from My Listings'}`, 'error');
+        }
+      } else {
+        toast.show('Auction launched successfully', 'success');
+      }
       router.push(`/auction/${res.auction.id}`);
       // reset form for next listing
       setReg('');

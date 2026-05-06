@@ -2,7 +2,7 @@ import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BadgeCheck, ShieldCheck, TrendingUp, Award, LogOut, Settings, ChevronRight, Star, Bell } from 'lucide-react-native';
+import { BadgeCheck, ShieldCheck, TrendingUp, Award, LogOut, Settings, ChevronRight, Star, Bell, FileText } from 'lucide-react-native';
 import { colors, radii, formatINR } from '../../src/theme';
 import { useAuth } from '../../src/auth';
 import { api } from '../../src/api';
@@ -78,7 +78,13 @@ export default function Profile() {
           <Row label="PAN" value={(dealer as any).pan_number || 'Not provided'} />
         </View>
 
-        <TouchableOpacity onPress={() => router.push('/notifications')} style={styles.menuItem} testID="profile-notifications">
+        <TouchableOpacity onPress={() => router.push('/my-listings')} style={styles.menuItem} testID="profile-my-listings">
+          <FileText size={18} color={colors.textChrome} />
+          <Text style={styles.menuText}>My listings & inspection PDFs</Text>
+          <ChevronRight size={16} color={colors.textMuted} />
+        </TouchableOpacity>
+
+        <TouchableOpacity onPress={() => router.push('/notifications')} style={[styles.menuItem, { marginTop: 8 }]} testID="profile-notifications">
           <Bell size={18} color={colors.textChrome} />
           <Text style={styles.menuText}>Notifications & alerts</Text>
           <ChevronRight size={16} color={colors.textMuted} />

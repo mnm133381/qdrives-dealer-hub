@@ -277,12 +277,7 @@ export default function AuctionScreen() {
           </View>
 
           <View style={{ marginTop: 12 }}>
-            <InspectionPdfCard
-              carId={auction.car_id}
-              inspection={auction.inspection_pdf}
-              isSeller={!!dealer && dealer.id === auction.seller_id}
-              onUploaded={() => load()}
-            />
+            <InspectionPdfCard inspection={auction.inspection_pdf} />
           </View>
         </View>
 

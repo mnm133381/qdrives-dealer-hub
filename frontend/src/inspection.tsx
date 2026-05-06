@@ -44,24 +44,37 @@ const EMPTY: InspectionDraft = {
   photos:     { completed: false, photoCount: 0 },
 };
 
+export type PdfDraft = {
+  uri: string;
+  name: string;
+  size?: number;
+} | null;
+
+const PDF_KEY = 'qdrives_inspection_pdf_draft';
+
 type Ctx = {
   draft: InspectionDraft;
+  pdfDraft: PdfDraft;
   loading: boolean;
   updateSection: (key: SectionKey, patch: Partial<SectionState>) => void;
   completeSection: (key: SectionKey) => void;
+  setPdfDraft: (pdf: PdfDraft) => void;
   reset: () => void;
 };
 
 const InspectionContext = createContext<Ctx>({
   draft: EMPTY,
+  pdfDraft: null,
   loading: true,
   updateSection: () => {},
   completeSection: () => {},
+  setPdfDraft: () => {},
   reset: () => {},
 });
 
 export function InspectionProvider({ children }: { children: React.ReactNode }) {
   const [draft, setDraft] = useState<InspectionDraft>(EMPTY);
+  const [pdfDraft, setPdfDraftState] = useState<PdfDraft>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -69,6 +82,10 @@ export function InspectionProvider({ children }: { children: React.ReactNode }) 
       const raw = await storage.getItem(KEY);
       if (raw) {
         try { setDraft({ ...EMPTY, ...JSON.parse(raw) }); } catch {}
+      }
+      const rawPdf = await storage.getItem(PDF_KEY);
+      if (rawPdf) {
+        try { setPdfDraftState(JSON.parse(rawPdf)); } catch {}
       }
       setLoading(false);
     })();
@@ -95,12 +112,19 @@ export function InspectionProvider({ children }: { children: React.ReactNode }) 
     });
   }, []);
 
+  const setPdfDraft = useCallback((pdf: PdfDraft) => {
+    setPdfDraftState(pdf);
+    if (pdf) storage.setItem(PDF_KEY, JSON.stringify(pdf)).catch(() => {});
+    else storage.removeItem(PDF_KEY).catch(() => {});
+  }, []);
+
   const reset = useCallback(() => {
     persist(EMPTY);
-  }, [persist]);
+    setPdfDraft(null);
+  }, [persist, setPdfDraft]);
 
   return (
-    <InspectionContext.Provider value={{ draft, loading, updateSection, completeSection, reset }}>
+    <InspectionContext.Provider value={{ draft, pdfDraft, loading, updateSection, completeSection, setPdfDraft, reset }}>
       {children}
     </InspectionContext.Provider>
   );

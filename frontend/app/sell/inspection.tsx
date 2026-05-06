@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput,
-  KeyboardAvoidingView, Platform,
+  KeyboardAvoidingView, Platform, ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as DocumentPicker from 'expo-document-picker';
 import {
   ArrowLeft, ChevronDown, ChevronUp, Check, ShieldCheck, FileCheck2, Camera,
-  TrendingUp,
+  TrendingUp, FileText, X as XIcon, Upload,
 } from 'lucide-react-native';
 import { colors, radii } from '../../src/theme';
 import { useInspection, SECTIONS, SectionKey, inspectionStats, SectionState } from '../../src/inspection';
@@ -16,7 +17,7 @@ import { useToast } from '../../src/toast';
 export default function InspectionForm() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { draft, updateSection, completeSection } = useInspection();
+  const { draft, pdfDraft, updateSection, completeSection, setPdfDraft } = useInspection();
   const toast = useToast();
   const [expanded, setExpanded] = useState<SectionKey | null>(SECTIONS[0].key);
 
@@ -40,6 +41,27 @@ export default function InspectionForm() {
     }
     toast.show('Inspection report attached to your listing', 'success');
     router.back();
+  };
+
+  const pickPdf = async () => {
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: 'application/pdf',
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (res.canceled) return;
+      const f = res.assets?.[0];
+      if (!f) return;
+      if (f.size && f.size > 10 * 1024 * 1024) {
+        toast.show('PDF must be under 10 MB', 'error');
+        return;
+      }
+      setPdfDraft({ uri: f.uri, name: f.name || 'inspection.pdf', size: f.size });
+      toast.show('PDF attached to draft · uploads on launch', 'success');
+    } catch (e: any) {
+      toast.show(e.message || 'Failed to attach PDF', 'error');
+    }
   };
 
   return (
@@ -119,6 +141,40 @@ export default function InspectionForm() {
             </View>
           );
         })}
+
+        {/* Optional PDF attachment — uploaded on auction launch */}
+        <View style={[styles.sectionCard, pdfDraft && styles.sectionDone, { marginTop: 4 }]}>
+          <View style={styles.sectionHead}>
+            <View style={[styles.sectionDot, pdfDraft && styles.sectionDotDone]}>
+              {pdfDraft ? <Check size={14} color="#fff" strokeWidth={3} /> : <FileText size={14} color={colors.textChrome} />}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.sectionLabel, pdfDraft && { color: colors.success }]}>Inspection PDF (optional)</Text>
+              <Text style={styles.sectionSub}>Detailed audit document — buyers can download it</Text>
+            </View>
+          </View>
+          <View style={styles.sectionBody}>
+            {pdfDraft ? (
+              <View style={styles.pdfRow}>
+                <View style={styles.pdfIcon}><FileText size={18} color={colors.success} /></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.pdfName} numberOfLines={1}>{pdfDraft.name}</Text>
+                  <Text style={styles.pdfSize}>
+                    {pdfDraft.size ? `${(pdfDraft.size / 1024).toFixed(0)} KB` : 'Ready'} · uploads when auction launches
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={() => { setPdfDraft(null); toast.show('PDF removed', 'info'); }} style={styles.pdfClear} testID="insp-pdf-remove">
+                  <XIcon size={16} color={colors.textChrome} />
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity onPress={pickPdf} style={styles.pickBtn} testID="insp-pick-pdf">
+                <Upload size={15} color={colors.red} />
+                <Text style={styles.pickText}>Attach inspection PDF · max 10 MB</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
       </ScrollView>
 
       {/* Sticky finish CTA */}
@@ -269,4 +325,12 @@ const styles = StyleSheet.create({
   finishBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 16, borderRadius: radii.md, backgroundColor: colors.red, shadowColor: colors.red, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 12, elevation: 8 },
   finishBtnInactive: { backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border, shadowOpacity: 0 },
   finishText: { color: '#fff', fontSize: 15, fontWeight: '800', letterSpacing: 0.3 },
+
+  pdfRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, backgroundColor: 'rgba(16,185,129,0.06)', borderColor: 'rgba(16,185,129,0.3)', borderWidth: 1, borderRadius: 10 },
+  pdfIcon: { width: 38, height: 38, borderRadius: 10, backgroundColor: 'rgba(16,185,129,0.12)', borderWidth: 1, borderColor: 'rgba(16,185,129,0.3)', alignItems: 'center', justifyContent: 'center' },
+  pdfName: { color: colors.textPrimary, fontSize: 13, fontWeight: '700' },
+  pdfSize: { color: colors.textMuted, fontSize: 11, marginTop: 2, fontWeight: '600' },
+  pdfClear: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+  pickBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, backgroundColor: 'rgba(185,28,28,0.10)', borderRadius: 10, borderWidth: 1, borderColor: 'rgba(185,28,28,0.4)', borderStyle: 'dashed' },
+  pickText: { color: colors.red, fontSize: 13, fontWeight: '800', letterSpacing: 0.3 },
 });

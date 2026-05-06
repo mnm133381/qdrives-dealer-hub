@@ -85,10 +85,47 @@ export const api = {
     const s = qs.toString();
     return request<any[]>(`/admin/dealers${s ? `?${s}` : ''}`);
   },
+  adminDealerDetail: (id: string) => request<any>(`/admin/dealers/${id}`),
   adminVerifyDealer: (id: string, payload: { verified?: boolean; suspended?: boolean; kyc_completed?: boolean }) =>
     request(`/admin/dealers/${id}/verify`, { method: 'POST', body: JSON.stringify(payload) }),
+  adminSetMaxBid: (id: string, max_bid_limit: number | null) =>
+    request<any>(`/admin/dealers/${id}/max-bid`, { method: 'POST', body: JSON.stringify({ max_bid_limit }) }),
   adminBroadcast: (payload: { title: string; body: string; audience?: string }) =>
     request<{ sent: number }>('/admin/notifications/broadcast', { method: 'POST', body: JSON.stringify(payload) }),
+
+  // ---- Allow-list (closed-network dealer onboarding) ----
+  adminApprovedDealers: (params?: { q?: string; status_filter?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.q) qs.set('q', params.q);
+    if (params?.status_filter) qs.set('status_filter', params.status_filter);
+    const s = qs.toString();
+    return request<any[]>(`/admin/approved-dealers${s ? `?${s}` : ''}`);
+  },
+  adminAddApprovedDealer: (payload: {
+    phone: string; full_name?: string; dealership_name?: string; city?: string;
+    trust_score?: number; max_bid_limit?: number | null; notes?: string;
+  }) => request<any>('/admin/approved-dealers', { method: 'POST', body: JSON.stringify(payload) }),
+  adminPatchApprovedDealer: (phone: string, payload: any) =>
+    request(`/admin/approved-dealers/${encodeURIComponent(phone)}`, {
+      method: 'PATCH', body: JSON.stringify(payload),
+    }),
+  adminRevokeApprovedDealer: (phone: string) =>
+    request(`/admin/approved-dealers/${encodeURIComponent(phone)}`, { method: 'DELETE' }),
+
+  // ---- Audit & Security ----
+  adminAuditLogs: (params?: { action?: string; q?: string; since_hours?: number; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.action) qs.set('action', params.action);
+    if (params?.q) qs.set('q', params.q);
+    if (params?.since_hours) qs.set('since_hours', String(params.since_hours));
+    if (params?.limit) qs.set('limit', String(params.limit));
+    const s = qs.toString();
+    return request<{ items: any[]; total: number }>(`/admin/audit-logs${s ? `?${s}` : ''}`);
+  },
+  adminDeniedLogins: (since_hours?: number) => {
+    const s = since_hours ? `?since_hours=${since_hours}` : '';
+    return request<{ items: any[]; total_attempts: number; repeat_offenders: any[] }>(`/admin/security/denied-logins${s}`);
+  },
 
   notifications: () => request('/notifications'),
   markNotificationsRead: () => request('/notifications/mark-read', { method: 'POST' }),

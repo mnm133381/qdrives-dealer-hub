@@ -576,6 +576,243 @@ backend:
               dealer.kyc_completed=true, dealer.verified=true.
           Frontend's strict typing in api.ts is honoured.
 
+  - task: "Multi-tier role architecture + super-admin lockdown"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Added 4-tier role hierarchy: super_admin > admin (legacy) >
+          operations_admin > inspection_admin > dealer. New deps:
+          get_current_admin (any admin tier), get_current_super_admin
+          (super only), require_permission(perm) factory backed by
+          ROLE_PERMISSIONS dict. Bootstrap promotes ADMIN_PHONES operator
+          to super_admin (idempotent). Operator endpoint inherits role
+          from db.operators.role; new operator docs default to super_admin.
+          Dealer login hard-pins role='dealer' (no role downgrade or
+          escalation possible via dealer endpoint). No public admin
+          registration anywhere — operators can ONLY be created by editing
+          db.operators directly or via future super-admin promotion endpoint.
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified via /app/backend_test.py against public ingress URL.
+            • A.1 POST /api/auth/operator/verify-otp +919900000099 → 200 with
+              dealer.role == "super_admin" (NOT "admin"). is_new=false.
+              kyc_completed=true, verified=true.
+            • A.2 GET /api/auth/me with operator token → 200, role="super_admin".
+            • A.3 GET /api/admin/dashboard with super_admin token → 200.
+              With dealer token (+919900000002) → 403 {"detail":"Admin access required"}.
+            • A.4 POST /api/auth/dealer/verify-otp +919900000002 → 200 with
+              dealer.role hard-pinned to "dealer" (no escalation possible via
+              dealer endpoint).
+          Bootstrap (seed_allow_lists) correctly upgrades the operator's
+          dealer doc to role=super_admin via direct $set on startup, so the
+          legacy 'admin' role from prior runs is overwritten. ROLE_PERMISSIONS
+          and require_permission() gate every operator-only endpoint tested
+          in sections B, C, E.
+
+  - task: "Allow-list management endpoints (Option B onboarding)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          GET /api/admin/approved-dealers (filter by status, search, joined
+          with dealer KYC state for onboarding tracker).
+          POST /api/admin/approved-dealers (operator pre-fills phone,
+          name, dealership, city, trust_score, max_bid_limit, notes —
+          409 if already on allow-list or registered as operator).
+          PATCH /api/admin/approved-dealers/{phone} (edit pre-fill or
+          change status active/paused/revoked, propagates max_bid_limit +
+          suspension to live dealer doc).
+          DELETE /api/admin/approved-dealers/{phone} (soft revoke —
+          status='revoked', suspends dealer immediately, keeps audit
+          trail intact, no hard delete).
+          On dealer's first login, seed_* values populate the live dealer
+          doc. Subsequent allow-list max_bid_limit changes sync on next
+          login. dealer/send-otp + dealer/verify-otp now also reject
+          status != 'active'.
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified end-to-end via /app/backend_test.py — all 23 allow-list
+          assertions pass.
+            • B.1 GET /admin/approved-dealers operator → 200, list includes
+              "onboarding" field per entry (never_logged_in / kyc_pending /
+              active / suspended).
+            • B.2 POST {phone:+919876543200, full_name:'Aman Test',
+              dealership_name:'Aman Motors', city:'Chennai', trust_score:4.2,
+              max_bid_limit:750000, notes:'Risk A'} → 200, returns seeded doc
+              (phone, seed_*, trust_score=4.2, max_bid_limit=750000,
+              status='active').
+            • B.3 duplicate POST → 409 "Phone is already on the allow-list".
+            • B.4 POST with operator phone +919900000099 → 409
+              "Phone is registered as an operator".
+            • B.5 POST with short phone "+91" → 400 "Invalid phone number".
+            • B.6 First-login pre-fill inheritance: dealer/verify-otp
+              +919876543200 → 200, dealer.role='dealer',
+              dealer.dealership_name='Aman Motors', max_bid_limit=750000,
+              trust_score=4.2 — all carried from approved_dealers seed.
+            • B.7 PATCH max_bid_limit=300000 → 200; re-login dealer's live
+              doc max_bid_limit==300000 (sync on every login).
+            • B.8 PATCH status='paused' → 200; subsequent dealer/send-otp
+              → 403 DEALER_ACCESS_NOT_APPROVED (paused == off-list copy).
+            • B.9 PATCH status='active' → 200; send-otp 200 again.
+            • B.10 DELETE → 200 (SOFT revoke). Re-fetch GET shows entry
+              still present with status='revoked'. Subsequent send-otp →
+              403. Live dealer doc has suspended=true (propagated).
+            • B.11 Dealer JWT calling POST/PATCH/DELETE on
+              /admin/approved-dealers → 403 on all three (require_permission
+              ('manage_allow_list') gate works).
+
+  - task: "Hard max-bid-limit enforcement"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          POST /api/admin/dealers/{id}/max-bid (super_admin or
+          operations_admin only). Mirrors to db.approved_dealers.max_bid_limit
+          for source-of-truth consistency. Backend bid validation in
+          POST /auctions/{id}/bid raises 403 BID_EXCEEDS_DEALER_LIMIT
+          when amount > max_bid_limit. Verified: 1L cap blocks ₹1.05L
+          bid (403) but accepts ₹860K (200). Frontend bid screen maps
+          this to a clean toast: "Bid exceeds approved dealer limit."
+          Suspended dealers get 403 DEALER_ACCOUNT_SUSPENDED on bid
+          even with valid token (defense in depth).
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified end-to-end via /app/backend_test.py — all 8 max-bid
+          assertions pass.
+            • C.1 POST /api/admin/dealers/{vikram_id (+919900000002)}/max-bid
+              {max_bid_limit:900000} → 200; returns updated dealer with
+              max_bid_limit=900000. Mirrored to approved_dealers.
+            • C.2 Re-login dealer +919900000002 → dealer.max_bid_limit==900000
+              (synced on every login via verify-otp).
+            • C.3 Bid amount=1,100,000 (clearly > 900000) on a live auction
+              where dealer is not the seller → 403 with EXACT
+              detail="BID_EXCEEDS_DEALER_LIMIT".
+            • C.4 Bid amount=current_bid+5000 (≤900000) → 200 success.
+            • C.5 POST /admin/dealers/{id}/max-bid {max_bid_limit:null} →
+              200, cap cleared. Re-login confirms max_bid_limit is None.
+              Subsequent bid above previous cap → 200.
+            • C.6 Dealer JWT calling POST /admin/dealers/{id}/max-bid → 403
+              "Permission denied: set_max_bid".
+            • C.7 Cannot set limit on operator account: POST
+              /admin/dealers/{operator_id}/max-bid → 400 "Cannot set bid
+              limits on operator accounts" (defense in depth).
+
+  - task: "Dealer detail (admin profile + bid history)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          GET /api/admin/dealers/{id} returns full profile, bids_count,
+          wins_count, recent_bids (last 50 with car details + auction
+          status), recent_logins (last 10), allow_list metadata. Refuses
+          if target is operator (operators not exposed via this endpoint).
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified via /app/backend_test.py — all 5 assertions pass.
+            • D.1 GET /api/admin/dealers/{vikram_id} with operator auth → 200
+              with all expected keys: dealer, bids_count, wins_count,
+              recent_bids, recent_logins, allow_list. dealer is the full
+              profile; bids/wins are ints; recent_logins is a list with ts
+              + meta.phone (sourced from audit_logs action=dealer_login).
+            • D.2 Unknown id (00000000-...) → 404 "Dealer not found".
+            • D.3 Operator id passed in → 403
+              "Cannot view operator accounts via this endpoint" (correctly
+              refuses to leak operator data via this dealer-scoped endpoint).
+            • D.4 Dealer JWT calling endpoint → 403 "Admin access required".
+  - task: "Security audit log + denied-login feed"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          GET /api/admin/audit-logs filtered to SECURITY_AUDIT_ACTIONS
+          whitelist: dealer/operator login, denied access, allow-list
+          add/update/revoke, dealer status changes, max-bid changes,
+          auction pause/cancel/extend, bid cancellation, broadcasts,
+          operator promotion. Filters: action, free-text search on
+          phone/actor/target, since_hours, limit (max 500).
+          GET /api/admin/security/denied-logins returns last 100
+          denied attempts with rolling 24h filter, plus a top-10
+          repeat_offenders aggregate (phone -> attempts) for fraud
+          visibility. Audit logs persist permanently in db.audit_logs.
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified via /app/backend_test.py — 9/10 audit assertions PASS.
+          ONE BUG FOUND (see below).
+            • E.1 GET /admin/audit-logs?since_hours=24&limit=50 operator → 200
+              with {items, total}. Verified all returned action values are
+              within the SECURITY_AUDIT_ACTIONS whitelist (dealer_login,
+              operator_login, dealer_access_denied, operator_access_denied,
+              allow_list_add, allow_list_update, allow_list_revoke,
+              dealer_status_change, max_bid_change, admin_broadcast). NO
+              random event types leak (e.g. car_created is correctly excluded).
+            • E.2 ?action=allow_list_add → only allow_list_add events
+              returned (count >= 1 from B-section runs).
+            • E.4 GET /admin/security/denied-logins?since_hours=24 → 200 with
+              {items, total_attempts, repeat_offenders}.
+            • E.5 Triggered 3 denied attempts from off-list phone
+              +919999888877. Re-fetched denied-logins → repeat_offenders
+              contains exactly that phone with attempts=3. Aggregation works.
+            • E.6 Dealer JWT on both /admin/audit-logs and
+              /admin/security/denied-logins → 403 "Permission denied:
+              view_audit". Properly gated.
+
+          ❌ E.3 BUG: GET /admin/audit-logs?q=%2B919876 (phone-search)
+          returns HTTP 500 "Internal Server Error". Root cause: the q
+          parameter is passed directly into pymongo as `{"$regex": q}`
+          without `re.escape(...)`. The leading "+" is a regex quantifier
+          metacharacter and Mongo rejects the query with
+          OperationFailure code 51091
+          ("Regular expression is invalid: quantifier does not follow
+          a repeatable item").
+          Stack: server.py:1297 (admin_audit_logs builds {"$regex": q}).
+          Same unescaped-regex pattern also exists in:
+            - GET /admin/dealers (lines 913-918, $regex on phone /
+              dealership_name / full_name / city)
+            - GET /admin/approved-dealers (lines 1033-1038, $regex on
+              phone / seed_*).
+          These all 500 the moment an operator types "+" into the search
+          box. Fix: wrap user input with `re.escape(q)` before composing
+          the regex (or use `{"$regex": re.escape(q), "$options": "i"}`).
+          NOT a critical-blocker for the security feed itself (whitelist
+          + denied-login aggregation work), but it's a real backend
+          regression that breaks the operator console search UX.
+
   - task: "Admin broadcast notifications"
     implemented: true
     working: true
@@ -974,6 +1211,144 @@ test_plan:
   test_priority: "high_first"
 
 agent_communication:
+  - agent: "testing"
+    message: |
+      [PHASE 1 OPERATOR-CONSOLE BACKEND TESTS — 65/66 PASS]
+      Ran /app/backend_test.py against the public ingress URL covering all
+      five new tasks + regression. All five new high-priority tasks PASS.
+
+      ✅ A. Multi-tier role architecture (4/4 assertions)
+         operator/verify-otp +919900000099 returns role='super_admin' (not
+         'admin'). /auth/me confirms super_admin. /admin/dashboard 200 for
+         super_admin, 403 for dealer. Dealer login hard-pinned to 'dealer'.
+
+      ✅ B. Allow-list management (23/23)
+         GET /admin/approved-dealers includes 'onboarding' field. POST
+         seeds {phone:+919876543200, full_name, dealership_name='Aman
+         Motors', max_bid_limit:750000, trust_score:4.2}. Duplicate POST
+         → 409. Operator-phone collision → 409. "+91" → 400. First-login
+         pre-fill inheritance verified (dealership, trust_score,
+         max_bid_limit propagate). PATCH max_bid_limit syncs to live
+         dealer doc on next login. PATCH status=paused blocks send-otp
+         with DEALER_ACCESS_NOT_APPROVED. status=active reopens it.
+         DELETE soft-revokes (status='revoked', entry retained, dealer
+         doc suspended=true). Dealer JWT 403 on POST/PATCH/DELETE.
+
+      ✅ C. Hard max-bid-limit enforcement (8/8)
+         POST /admin/dealers/{id}/max-bid {900000} → 200, mirrored to
+         allow-list. Dealer re-login picks up cap. Bid 1,100,000 →
+         403 BID_EXCEEDS_DEALER_LIMIT (exact detail string). Bid below
+         cap → 200. Setting null clears cap; subsequent above-prev-cap
+         bid → 200. Dealer JWT on max-bid → 403. Operator-id target →
+         400 "Cannot set bid limits on operator accounts".
+
+      ✅ D. Dealer detail (5/5)
+         GET /admin/dealers/{id} returns dealer + bids_count +
+         wins_count + recent_bids + recent_logins + allow_list keys.
+         Unknown id → 404. Operator id → 403. Dealer JWT → 403.
+
+      ✅ E. Security audit log + denied-login feed (9/10)
+         /admin/audit-logs only returns whitelisted SECURITY_AUDIT_ACTIONS
+         (no leak — verified action set). action filter, items+total
+         shape, dealer JWT 403 all good. /admin/security/denied-logins
+         returns items + total_attempts + repeat_offenders. Triggered
+         3 denied attempts from +919999888877 → repeat_offenders shows
+         attempts=3.
+
+      ✅ F. Regression (6/6)
+         Legacy /api/auth/{send,verify}-otp → 404. Off-list dealer 403
+         DEALER_ACCESS_NOT_APPROVED. Operator off-list (dealer phone) →
+         403 OPERATOR_ACCESS_DENIED. POST /cars dealer→403, operator→200.
+
+      ❌ ONE BACKEND BUG FOUND (E.3 q-search 500):
+         GET /api/admin/audit-logs?q=%2B919876 → HTTP 500
+         "OperationFailure: Regular expression is invalid: quantifier
+         does not follow a repeatable item" (pymongo error 51091).
+         Root cause: q is passed unescaped into {"$regex": q}. The
+         leading "+" is a regex quantifier metacharacter and Mongo
+         rejects the regex.
+         Same unescaped-regex pattern exists in:
+           - GET /admin/dealers (server.py L913-918 on q)
+           - GET /admin/approved-dealers (server.py L1033-1038 on q)
+           - GET /admin/audit-logs (server.py L1297-1301 on q)
+         Any operator searching by phone prefix with a leading "+" will
+         hit a 500. Fix is one-liner: `import re` and use
+         `re.escape(q)` when composing the regex (or escape only "+",
+         "*", "?", "(", ")", "[", "]"). NOT a security risk in itself
+         but breaks operator console search UX.
+
+      I did NOT modify backend code (per instructions). Reporting only.
+      Updated test_result.md status_history for all 5 new tasks; the
+      Security audit task is marked working:true with stuck_count=1
+      because of the q-search 500 bug — main agent should escape the
+      regex input. All other tasks marked working:true,
+      needs_retesting:false.
+
+      YOU MUST ASK USER BEFORE DOING FRONTEND TESTING.
+
+  - agent: "main"
+    message: |
+      [PHASE 1 — Operator Console + Approval Queue + Audit] Major backend
+      additions for closed-network operator tooling. Frontend wired and
+      visually verified. Please test backend thoroughly.
+
+      KEY BACKEND CHANGES:
+        1. Multi-tier roles: super_admin > admin (legacy alias) >
+           operations_admin > inspection_admin > dealer, via
+           ROLE_PERMISSIONS + require_permission() factory.
+           +919900000099 now returns role='super_admin'.
+
+        2. Allow-list management (Option B onboarding with pre-fill):
+           - GET  /api/admin/approved-dealers
+           - POST /api/admin/approved-dealers (phone, full_name,
+             dealership_name, city, trust_score, max_bid_limit, notes)
+           - PATCH /api/admin/approved-dealers/{phone}
+           - DELETE /api/admin/approved-dealers/{phone} (SOFT revoke;
+             no hard delete; auto-suspends live dealer)
+
+        3. Hard max-bid-limit enforcement:
+           - POST /api/admin/dealers/{id}/max-bid {max_bid_limit}
+           - POST /auctions/{id}/bid returns 403
+             BID_EXCEEDS_DEALER_LIMIT if amount > max_bid_limit.
+
+        4. Dealer detail: GET /api/admin/dealers/{id} returns profile
+           + bids_count + wins_count + recent_bids + recent_logins +
+           allow-list metadata.
+
+        5. Audit log viewer (whitelisted actions only):
+           - GET /api/admin/audit-logs?action=&q=&since_hours=&limit=
+           - GET /api/admin/security/denied-logins?since_hours= with
+             total_attempts + repeat_offenders aggregate.
+
+        6. Allow-list status enforcement: dealer/send-otp +
+           dealer/verify-otp return 403 DEALER_ACCESS_NOT_APPROVED
+           if allow-list entry status != 'active'.
+
+      TEST CREDENTIALS (unchanged):
+        - Operator/super-admin: +919900000099 (OTP 123456)
+        - Dealers: +919900000001..005 (OTP 123456)
+        - Off-list: +919876543210, +918888888888
+
+      TEST SCOPE (backend only):
+        A. Allow-list CRUD (add, duplicate 409, operator-phone 409,
+           pre-fill inheritance on first login, PATCH status=paused
+           blocks login, DELETE soft-revokes and suspends dealer).
+        B. Max-bid enforcement (set cap, bid above cap 403, clear cap,
+           dealer JWT cannot call admin endpoint 403).
+        C. Audit log viewer (action filter, q search, since_hours,
+           whitelist enforcement, dealer JWT 403).
+        D. Denied-login feed (3 denied attempts aggregate into
+           repeat_offenders, dealer JWT 403).
+        E. Dealer detail (200 on own dealer id, 404 unknown, 403 on
+           operator id, 403 from dealer JWT).
+        F. Multi-tier: +919900000099 returns role='super_admin', not
+           'admin'. Dealer role hard-pinned to 'dealer'.
+        G. Closed-network regression: all legacy tests still pass
+           (generic routes 404, cross-channel blocks).
+
+      DO NOT modify backend code. DO NOT re-fix already-passing tasks.
+      Bid ledger immutability + bid cancellation audit are Phase 2.
+
   - agent: "testing"
     message: |
       Strict allow-list auth refactor BACKEND tests PASS — 29/29 assertions

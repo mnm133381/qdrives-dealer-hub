@@ -149,7 +149,14 @@ export default function AuctionScreen() {
       toast.show(`Bid placed at ${formatINR(amount)}`, 'success');
     } catch (e: any) {
       try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error); } catch {}
-      toast.show(e.message || 'Bid failed', 'error');
+      const msg = String(e?.message || '');
+      if (msg.includes('BID_EXCEEDS_DEALER_LIMIT')) {
+        toast.show('Bid exceeds approved dealer limit.', 'error');
+      } else if (msg.includes('DEALER_ACCOUNT_SUSPENDED')) {
+        toast.show('Account suspended. Contact Q Drives support.', 'error');
+      } else {
+        toast.show(msg || 'Bid failed', 'error');
+      }
     }
   };
 

@@ -8,7 +8,7 @@ import { colors } from '../theme';
  * Persistent ADMIN OPS pill + screen kicker / title used across the admin
  * shell. Kept lightweight so screens can compose their own content below.
  */
-export function AdminHeader({ kicker, title, sub }: { kicker?: string; title: string; sub?: string }) {
+export function AdminHeader({ kicker, title, sub, rightSlot }: { kicker?: string; title: string; sub?: string; rightSlot?: React.ReactNode }) {
   const insets = useSafeAreaInsets();
   return (
     <View style={[styles.root, { paddingTop: insets.top + 12 }]}>
@@ -17,9 +17,12 @@ export function AdminHeader({ kicker, title, sub }: { kicker?: string; title: st
           <ShieldCheck size={11} color={colors.red} />
           <Text style={styles.adminPillText}>Q DRIVES · ADMIN OPS</Text>
         </View>
-        <View style={styles.envPill}>
-          <View style={styles.envDot} />
-          <Text style={styles.envText}>LIVE</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          {rightSlot}
+          <View style={styles.envPill}>
+            <View style={styles.envDot} />
+            <Text style={styles.envText}>LIVE</Text>
+          </View>
         </View>
       </View>
       {kicker && <Text style={styles.kicker}>{kicker}</Text>}

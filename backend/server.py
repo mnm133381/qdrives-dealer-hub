@@ -103,10 +103,64 @@ async def get_current_dealer(creds: Optional[HTTPAuthorizationCredentials] = Dep
 
 
 async def get_current_admin(dealer = Depends(get_current_dealer)) -> Dict[str, Any]:
-    """Admin-only guard. Raises 403 unless dealer.role == 'admin'."""
-    if (dealer.get("role") or "dealer") != "admin":
+    """Admin-only guard. Accepts any admin tier (super_admin, operations_admin,
+    inspection_admin, or legacy 'admin'). Raises 403 for dealers."""
+    role = dealer.get("role") or "dealer"
+    if role not in ("admin", "super_admin", "operations_admin", "inspection_admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
     return dealer
+
+
+async def get_current_super_admin(dealer = Depends(get_current_dealer)) -> Dict[str, Any]:
+    """Super-admin only. Used for irreversible / privileged operations like
+    promoting another operator or revoking allow-list entries."""
+    role = dealer.get("role") or "dealer"
+    if role not in ("admin", "super_admin"):
+        # Note: legacy "admin" role is treated as super_admin for backward compat
+        # during the multi-tier migration. New operators get specific tiers.
+        raise HTTPException(status_code=403, detail="Super-admin access required")
+    return dealer
+
+
+# Permission catalog — single source of truth for what each role can do.
+ROLE_PERMISSIONS: Dict[str, set] = {
+    "super_admin": {
+        "approve_dealers", "suspend_dealers", "set_max_bid",
+        "manage_allow_list", "promote_operator", "manage_inventory",
+        "launch_auction", "pause_auction", "cancel_auction", "extend_auction",
+        "cancel_bid", "broadcast", "view_audit", "upload_inspection",
+    },
+    # Legacy 'admin' tier maps to super_admin powers for backward compatibility
+    "admin": {
+        "approve_dealers", "suspend_dealers", "set_max_bid",
+        "manage_allow_list", "promote_operator", "manage_inventory",
+        "launch_auction", "pause_auction", "cancel_auction", "extend_auction",
+        "cancel_bid", "broadcast", "view_audit", "upload_inspection",
+    },
+    "operations_admin": {
+        "approve_dealers", "suspend_dealers", "set_max_bid",
+        "manage_inventory", "launch_auction", "pause_auction",
+        "extend_auction", "broadcast", "view_audit",
+    },
+    "inspection_admin": {
+        "manage_inventory", "upload_inspection", "view_audit",
+    },
+    "dealer": set(),
+}
+
+
+def has_permission(dealer: Dict[str, Any], perm: str) -> bool:
+    role = dealer.get("role") or "dealer"
+    return perm in ROLE_PERMISSIONS.get(role, set())
+
+
+def require_permission(perm: str):
+    """FastAPI dependency factory for permission-gated endpoints."""
+    async def _dep(dealer = Depends(get_current_admin)):
+        if not has_permission(dealer, perm):
+            raise HTTPException(status_code=403, detail=f"Permission denied: {perm}")
+        return dealer
+    return _dep
 
 
 def serialize(doc: dict) -> dict:
@@ -209,6 +263,33 @@ class BroadcastReq(BaseModel):
     audience: Optional[str] = "all"  # "all" | "verified" | "active"
 
 
+# ---- Allow-list / approval queue management ----
+class ApprovedDealerReq(BaseModel):
+    """Operator pre-fills the dealer profile when adding a phone to the
+    closed-network allow-list. This avoids junk onboarding."""
+    phone: str
+    full_name: Optional[str] = ""
+    dealership_name: Optional[str] = ""
+    city: Optional[str] = ""
+    trust_score: Optional[float] = 4.5
+    max_bid_limit: Optional[int] = None
+    notes: Optional[str] = ""
+
+
+class ApprovedDealerPatch(BaseModel):
+    full_name: Optional[str] = None
+    dealership_name: Optional[str] = None
+    city: Optional[str] = None
+    trust_score: Optional[float] = None
+    max_bid_limit: Optional[int] = None
+    notes: Optional[str] = None
+    status: Optional[str] = None  # 'active' | 'paused' | 'revoked'
+
+
+class MaxBidReq(BaseModel):
+    max_bid_limit: Optional[int] = None  # None or 0 → no limit
+
+
 # ---------- WebSocket Manager ----------
 class ConnectionManager:
     def __init__(self):
@@ -251,8 +332,12 @@ async def dealer_send_otp(req: SendOtpReq):
     phone = req.phone.strip()
     if len(phone) < 10:
         raise HTTPException(status_code=400, detail="Invalid phone number")
-    if not await db.approved_dealers.find_one({"phone": phone}):
-        asyncio.create_task(audit(db, "dealer_access_denied", None, None, {"phone": phone}))
+    approved = await db.approved_dealers.find_one({"phone": phone})
+    if not approved or approved.get("status") not in (None, "active"):
+        # Off-list OR explicitly paused/revoked → same denial copy (don't leak state).
+        asyncio.create_task(audit(db, "dealer_access_denied", None, None, {
+            "phone": phone, "reason": "not_active" if approved else "not_on_list",
+        }))
         raise HTTPException(status_code=403, detail="DEALER_ACCESS_NOT_APPROVED")
     return {"success": True, "message": "OTP sent", "dev_otp": MOCK_OTP}
 
@@ -261,8 +346,11 @@ async def dealer_send_otp(req: SendOtpReq):
 async def dealer_verify_otp(req: VerifyOtpReq):
     phone = req.phone.strip()
     approved = await db.approved_dealers.find_one({"phone": phone})
-    if not approved:
-        asyncio.create_task(audit(db, "dealer_access_denied", None, None, {"phone": phone, "stage": "verify"}))
+    if not approved or approved.get("status") not in (None, "active"):
+        asyncio.create_task(audit(db, "dealer_access_denied", None, None, {
+            "phone": phone, "stage": "verify",
+            "reason": "not_active" if approved else "not_on_list",
+        }))
         raise HTTPException(status_code=403, detail="DEALER_ACCESS_NOT_APPROVED")
     if req.otp != MOCK_OTP:
         raise HTTPException(status_code=400, detail="Invalid OTP. Use 123456 for dev.")
@@ -278,7 +366,9 @@ async def dealer_verify_otp(req: VerifyOtpReq):
             "city": approved.get("seed_city", ""),
             "gst_number": "", "pan_number": "",
             "kyc_completed": False, "verified": False, "suspended": False,
-            "trust_score": 4.5, "bid_success_rate": 0,
+            "trust_score": float(approved.get("trust_score", 4.5)),
+            "max_bid_limit": approved.get("max_bid_limit"),
+            "bid_success_rate": 0,
             "total_purchases": 0, "total_listed": 0,
             "role": "dealer",
             "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80",
@@ -292,6 +382,13 @@ async def dealer_verify_otp(req: VerifyOtpReq):
             dealer["role"] = "dealer"
         if dealer.get("suspended"):
             raise HTTPException(status_code=403, detail="DEALER_ACCOUNT_SUSPENDED")
+        # Sync max_bid_limit from allow-list (operator may have updated it).
+        if approved.get("max_bid_limit") != dealer.get("max_bid_limit"):
+            await db.dealers.update_one(
+                {"id": dealer["id"]},
+                {"$set": {"max_bid_limit": approved.get("max_bid_limit")}},
+            )
+            dealer["max_bid_limit"] = approved.get("max_bid_limit")
 
     asyncio.create_task(audit(db, "dealer_login", dealer["id"], None, {"phone": phone}))
     token = create_jwt(dealer["id"])
@@ -331,15 +428,15 @@ async def operator_verify_otp(req: VerifyOtpReq):
             "kyc_completed": True, "verified": True, "suspended": False,
             "trust_score": 5.0, "bid_success_rate": 0,
             "total_purchases": 0, "total_listed": 0,
-            "role": "admin",
+            "role": op.get("role", "super_admin"),
             "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80",
             "created_at": now_utc(),
         }
         await db.dealers.insert_one(dict(dealer))
     else:
-        if dealer.get("role") != "admin":
-            await db.dealers.update_one({"id": dealer["id"]}, {"$set": {"role": "admin"}})
-            dealer["role"] = "admin"
+        if dealer.get("role") != "admin" and dealer.get("role") != "super_admin":
+            await db.dealers.update_one({"id": dealer["id"]}, {"$set": {"role": op.get("role", "super_admin")}})
+            dealer["role"] = op.get("role", "super_admin")
 
     asyncio.create_task(audit(db, "operator_login", dealer["id"], None, {"phone": phone}))
     token = create_jwt(dealer["id"])
@@ -451,6 +548,16 @@ async def place_bid(auction_id: str, req: BidReq, dealer = Depends(get_current_d
         raise HTTPException(status_code=400, detail=f"Bid must be at least ₹{current_bid + min_increment:,}")
     if dealer["id"] == a.get("seller_id"):
         raise HTTPException(status_code=400, detail="You cannot bid on your own auction")
+
+    # Suspended dealers cannot bid (defense in depth — they can't even login).
+    if dealer.get("suspended"):
+        raise HTTPException(status_code=403, detail="DEALER_ACCOUNT_SUSPENDED")
+
+    # Hard max-bid-limit enforcement. If the operator has set a per-dealer
+    # ceiling, ANY attempt above it is rejected (no soft warnings).
+    max_limit = dealer.get("max_bid_limit")
+    if max_limit and req.amount > int(max_limit):
+        raise HTTPException(status_code=403, detail="BID_EXCEEDS_DEALER_LIMIT")
 
     bid = {
         "id": str(uuid.uuid4()),
@@ -894,7 +1001,348 @@ async def admin_broadcast(req: BroadcastReq, admin = Depends(get_current_admin))
     if docs:
         await db.notifications.insert_many(docs)
     asyncio.create_task(send_to_dealers(db, ids, req.title, req.body, data={"type": "broadcast"}))
+    asyncio.create_task(audit(db, "admin_broadcast", admin["id"], None, {
+        "audience": audience, "title": req.title, "recipients": len(ids),
+    }))
     return {"sent": len(ids)}
+
+
+# ============================================================
+# Allow-list management — Operator-controlled dealer onboarding.
+# Phase 1 of the closed-network architecture: operator pre-fills
+# the dealer profile when whitelisting a phone. The dealer's first
+# OTP login then uses these pre-filled values, eliminating junk
+# self-onboarding.
+# ============================================================
+
+@api.get("/admin/approved-dealers")
+async def list_approved_dealers(
+    status_filter: Optional[str] = None,
+    q: Optional[str] = None,
+    admin = Depends(require_permission("manage_allow_list")),
+):
+    """List the dealer allow-list with onboarding status.
+    status: 'active' | 'paused' | 'revoked' (joined with dealer KYC state)."""
+    query: Dict[str, Any] = {}
+    if status_filter and status_filter != "all":
+        if status_filter == "active":
+            query["status"] = {"$in": ["active", None]}
+        else:
+            query["status"] = status_filter
+    if q:
+        query["$or"] = [
+            {"phone": {"$regex": q, "$options": "i"}},
+            {"seed_full_name": {"$regex": q, "$options": "i"}},
+            {"seed_dealership_name": {"$regex": q, "$options": "i"}},
+            {"seed_city": {"$regex": q, "$options": "i"}},
+        ]
+    rows = await db.approved_dealers.find(query, {"_id": 0}).sort("added_at", -1).limit(500).to_list(500)
+    out = []
+    for r in rows:
+        # Join with dealer document if they've logged in at least once.
+        dealer_doc = await db.dealers.find_one({"phone": r["phone"]}, {"_id": 0})
+        onboarding = "never_logged_in"
+        if dealer_doc:
+            if dealer_doc.get("suspended"):
+                onboarding = "suspended"
+            elif dealer_doc.get("kyc_completed"):
+                onboarding = "active"
+            else:
+                onboarding = "kyc_pending"
+        out.append({
+            "phone": r["phone"],
+            "full_name": r.get("seed_full_name", ""),
+            "dealership_name": r.get("seed_dealership_name", ""),
+            "city": r.get("seed_city", ""),
+            "trust_score": r.get("trust_score", 4.5),
+            "max_bid_limit": r.get("max_bid_limit"),
+            "notes": r.get("notes", ""),
+            "status": r.get("status", "active"),
+            "added_at": iso(r["added_at"]) if isinstance(r.get("added_at"), datetime) else r.get("added_at"),
+            "added_by": r.get("added_by"),
+            "onboarding": onboarding,
+            "dealer_id": dealer_doc["id"] if dealer_doc else None,
+        })
+    return out
+
+
+@api.post("/admin/approved-dealers")
+async def add_approved_dealer(
+    req: ApprovedDealerReq,
+    admin = Depends(require_permission("manage_allow_list")),
+):
+    """Add a phone to the dealer allow-list with a pre-filled draft profile.
+    Idempotent on phone — subsequent calls update the seed values."""
+    phone = req.phone.strip()
+    if len(phone) < 10:
+        raise HTTPException(status_code=400, detail="Invalid phone number")
+    existing = await db.approved_dealers.find_one({"phone": phone})
+    if existing:
+        raise HTTPException(status_code=409, detail="Phone is already on the allow-list")
+    # Block adding an operator phone as a dealer (defense in depth).
+    if await db.operators.find_one({"phone": phone}):
+        raise HTTPException(status_code=409, detail="Phone is registered as an operator")
+    doc = {
+        "phone": phone,
+        "seed_full_name": req.full_name or "",
+        "seed_dealership_name": req.dealership_name or "",
+        "seed_city": req.city or "",
+        "trust_score": float(req.trust_score) if req.trust_score is not None else 4.5,
+        "max_bid_limit": int(req.max_bid_limit) if req.max_bid_limit else None,
+        "notes": req.notes or "",
+        "status": "active",
+        "added_by": admin["id"],
+        "added_at": now_utc(),
+    }
+    await db.approved_dealers.insert_one(dict(doc))
+    asyncio.create_task(audit(db, "allow_list_add", admin["id"], None, {
+        "phone": phone,
+        "dealership_name": doc["seed_dealership_name"],
+        "max_bid_limit": doc["max_bid_limit"],
+    }))
+    doc.pop("_id", None)
+    if isinstance(doc.get("added_at"), datetime):
+        doc["added_at"] = iso(doc["added_at"])
+    return doc
+
+
+@api.patch("/admin/approved-dealers/{phone}")
+async def patch_approved_dealer(
+    phone: str,
+    req: ApprovedDealerPatch,
+    admin = Depends(require_permission("manage_allow_list")),
+):
+    """Edit the pre-filled draft profile or change status (active/paused/revoked).
+    Status changes propagate to the live dealer doc when applicable."""
+    existing = await db.approved_dealers.find_one({"phone": phone})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Allow-list entry not found")
+    update: Dict[str, Any] = {}
+    if req.full_name is not None: update["seed_full_name"] = req.full_name
+    if req.dealership_name is not None: update["seed_dealership_name"] = req.dealership_name
+    if req.city is not None: update["seed_city"] = req.city
+    if req.trust_score is not None: update["trust_score"] = float(req.trust_score)
+    if req.max_bid_limit is not None:
+        update["max_bid_limit"] = int(req.max_bid_limit) if req.max_bid_limit else None
+    if req.notes is not None: update["notes"] = req.notes
+    if req.status is not None:
+        if req.status not in ("active", "paused", "revoked"):
+            raise HTTPException(status_code=400, detail="Invalid status")
+        update["status"] = req.status
+    if not update:
+        return {"ok": True}
+    await db.approved_dealers.update_one({"phone": phone}, {"$set": update})
+
+    # Propagate max_bid_limit + status side-effects to live dealer doc.
+    dealer = await db.dealers.find_one({"phone": phone}, {"_id": 0})
+    if dealer:
+        side: Dict[str, Any] = {}
+        if "max_bid_limit" in update:
+            side["max_bid_limit"] = update["max_bid_limit"]
+        if update.get("status") == "revoked":
+            side["suspended"] = True
+        if side:
+            await db.dealers.update_one({"id": dealer["id"]}, {"$set": side})
+
+    asyncio.create_task(audit(db, "allow_list_update", admin["id"],
+                              dealer["id"] if dealer else None,
+                              {"phone": phone, "changes": update}))
+    return {"ok": True, "updated": update}
+
+
+@api.delete("/admin/approved-dealers/{phone}")
+async def remove_approved_dealer(
+    phone: str,
+    admin = Depends(require_permission("manage_allow_list")),
+):
+    """Soft-revoke (set status='revoked'). Never hard-delete — we keep the
+    audit trail intact for fraud/abuse investigations."""
+    existing = await db.approved_dealers.find_one({"phone": phone})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Allow-list entry not found")
+    await db.approved_dealers.update_one(
+        {"phone": phone},
+        {"$set": {"status": "revoked", "revoked_at": now_utc(), "revoked_by": admin["id"]}},
+    )
+    # Also suspend the live dealer doc immediately if present.
+    dealer = await db.dealers.find_one({"phone": phone}, {"_id": 0})
+    if dealer:
+        await db.dealers.update_one({"id": dealer["id"]}, {"$set": {"suspended": True}})
+    asyncio.create_task(audit(db, "allow_list_revoke", admin["id"],
+                              dealer["id"] if dealer else None, {"phone": phone}))
+    return {"ok": True}
+
+
+# ============================================================
+# Per-dealer max bid limit (hard backend enforcement)
+# ============================================================
+
+@api.post("/admin/dealers/{dealer_id}/max-bid")
+async def set_dealer_max_bid(
+    dealer_id: str,
+    req: MaxBidReq,
+    admin = Depends(require_permission("set_max_bid")),
+):
+    """Set the per-dealer max bid ceiling. None or 0 → no limit. Hard
+    enforced at /auctions/{id}/bid (returns 403 BID_EXCEEDS_DEALER_LIMIT)."""
+    target = await db.dealers.find_one({"id": dealer_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    if (target.get("role") or "dealer") != "dealer":
+        raise HTTPException(status_code=400, detail="Cannot set bid limits on operator accounts")
+    new_limit = int(req.max_bid_limit) if req.max_bid_limit else None
+    await db.dealers.update_one({"id": dealer_id}, {"$set": {"max_bid_limit": new_limit}})
+    # Mirror to allow-list entry for source-of-truth consistency.
+    await db.approved_dealers.update_one(
+        {"phone": target["phone"]}, {"$set": {"max_bid_limit": new_limit}},
+    )
+    asyncio.create_task(audit(db, "max_bid_change", admin["id"], dealer_id, {
+        "phone": target["phone"],
+        "previous": target.get("max_bid_limit"),
+        "new": new_limit,
+    }))
+    updated = await db.dealers.find_one({"id": dealer_id}, {"_id": 0})
+    return serialize(updated)
+
+
+# ============================================================
+# Dealer detail view (full profile, bid history, activity)
+# ============================================================
+
+@api.get("/admin/dealers/{dealer_id}")
+async def admin_dealer_detail(
+    dealer_id: str,
+    admin = Depends(get_current_admin),
+):
+    target = await db.dealers.find_one({"id": dealer_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    if (target.get("role") or "dealer") != "dealer":
+        raise HTTPException(status_code=403, detail="Cannot view operator accounts via this endpoint")
+
+    # Aggregate bid history (recent 50)
+    bids = []
+    async for b in db.bids.find({"dealer_id": dealer_id}).sort("created_at", -1).limit(50):
+        a = await db.auctions.find_one({"id": b["auction_id"]}, {"_id": 0, "id": 1, "car_id": 1, "status": 1, "current_bid": 1, "top_bidder_id": 1})
+        car = {}
+        if a:
+            car = await db.cars.find_one({"id": a["car_id"]}, {"_id": 0, "make": 1, "model": 1, "year": 1, "registration_number": 1}) or {}
+        bids.append({
+            "id": b["id"],
+            "auction_id": b["auction_id"],
+            "amount": b["amount"],
+            "created_at": iso(b["created_at"]) if isinstance(b.get("created_at"), datetime) else b.get("created_at"),
+            "car": car,
+            "auction_status": (a or {}).get("status"),
+            "is_top_bidder": (a or {}).get("top_bidder_id") == dealer_id,
+        })
+
+    wins_count = await db.auctions.count_documents({"top_bidder_id": dealer_id, "status": "ended"})
+    bids_count = await db.bids.count_documents({"dealer_id": dealer_id})
+    recent_logins = await db.audit_logs.find(
+        {"actor_id": dealer_id, "action": "dealer_login"},
+        {"_id": 0, "ts": 1, "meta": 1},
+    ).sort("ts", -1).limit(10).to_list(10)
+    for r in recent_logins:
+        if isinstance(r.get("ts"), datetime):
+            r["ts"] = iso(r["ts"])
+
+    allow = await db.approved_dealers.find_one({"phone": target["phone"]}, {"_id": 0})
+
+    return {
+        "dealer": serialize(target),
+        "bids_count": bids_count,
+        "wins_count": wins_count,
+        "recent_bids": bids,
+        "recent_logins": recent_logins,
+        "allow_list": {
+            "status": (allow or {}).get("status", "active"),
+            "added_at": iso(allow["added_at"]) if allow and isinstance(allow.get("added_at"), datetime) else None,
+            "notes": (allow or {}).get("notes", ""),
+        } if allow else None,
+    }
+
+
+# ============================================================
+# Audit log viewer (security-focused events only)
+# ============================================================
+
+# Whitelist of actions surfaced in the operator audit viewer.
+SECURITY_AUDIT_ACTIONS = {
+    "dealer_login", "operator_login",
+    "dealer_access_denied", "operator_access_denied",
+    "allow_list_add", "allow_list_update", "allow_list_revoke",
+    "dealer_status_change", "max_bid_change",
+    "auction_pause", "auction_cancel", "auction_extend",
+    "bid_cancel", "admin_broadcast", "operator_promotion",
+}
+
+
+@api.get("/admin/audit-logs")
+async def admin_audit_logs(
+    action: Optional[str] = None,
+    q: Optional[str] = None,
+    since_hours: Optional[int] = None,
+    limit: int = 100,
+    admin = Depends(require_permission("view_audit")),
+):
+    """Security-focused audit feed. Filters: action, free-text in meta.phone /
+    meta.changes, since_hours."""
+    query: Dict[str, Any] = {"action": {"$in": list(SECURITY_AUDIT_ACTIONS)}}
+    if action and action in SECURITY_AUDIT_ACTIONS:
+        query["action"] = action
+    if since_hours:
+        query["ts"] = {"$gte": now_utc() - timedelta(hours=int(since_hours))}
+    if q:
+        query["$or"] = [
+            {"meta.phone": {"$regex": q, "$options": "i"}},
+            {"actor_id": {"$regex": q, "$options": "i"}},
+            {"target_id": {"$regex": q, "$options": "i"}},
+        ]
+    limit = max(1, min(int(limit), 500))
+    rows = await db.audit_logs.find(query, {"_id": 0}).sort("ts", -1).limit(limit).to_list(limit)
+    for r in rows:
+        if isinstance(r.get("ts"), datetime):
+            r["ts"] = iso(r["ts"])
+    return {
+        "items": rows,
+        "total": await db.audit_logs.count_documents(query),
+    }
+
+
+@api.get("/admin/security/denied-logins")
+async def admin_denied_logins(
+    since_hours: Optional[int] = None,
+    limit: int = 100,
+    admin = Depends(require_permission("view_audit")),
+):
+    """Last N denied login attempts (dealer + operator). Persists permanently
+    in audit_logs — used for fraud detection & abuse tracking."""
+    query: Dict[str, Any] = {
+        "action": {"$in": ["dealer_access_denied", "operator_access_denied"]},
+    }
+    if since_hours:
+        query["ts"] = {"$gte": now_utc() - timedelta(hours=int(since_hours))}
+    limit = max(1, min(int(limit), 500))
+    rows = await db.audit_logs.find(query, {"_id": 0}).sort("ts", -1).limit(limit).to_list(limit)
+    for r in rows:
+        if isinstance(r.get("ts"), datetime):
+            r["ts"] = iso(r["ts"])
+    # Aggregate counts per phone for quick risk visibility
+    phone_counts: Dict[str, int] = {}
+    for r in rows:
+        ph = (r.get("meta") or {}).get("phone")
+        if ph:
+            phone_counts[ph] = phone_counts.get(ph, 0) + 1
+    repeat_offenders = sorted(
+        [{"phone": p, "attempts": c} for p, c in phone_counts.items()],
+        key=lambda x: -x["attempts"],
+    )[:10]
+    return {
+        "items": rows,
+        "total_attempts": len(rows),
+        "repeat_offenders": repeat_offenders,
+    }
 
 
 # ---------- Auction Lifecycle Scheduler (ending-soon / ended winner) ----------
@@ -1662,8 +2110,8 @@ async def on_startup():
 
 
 async def seed_allow_lists() -> None:
-    """Bootstrap the closed-network allow-lists. Idempotent."""
-    # Operators come from ADMIN_PHONES env (single bootstrap super-admin).
+    """Bootstrap the closed-network allow-lists. Idempotent.
+    Operators are bootstrapped from ADMIN_PHONES env (single super-admin)."""
     for ph in ADMIN_PHONES:
         await db.operators.update_one(
             {"phone": ph},
@@ -1672,16 +2120,27 @@ async def seed_allow_lists() -> None:
                 "full_name": "Q Drives Operator",
                 "display_name": "Q Drives Operations",
                 "city": "Mumbai",
+                "role": "super_admin",
                 "added_by": "system_bootstrap",
                 "added_at": now_utc(),
             }},
             upsert=True,
         )
+        # Idempotent role upgrade if role wasn't set before.
+        await db.operators.update_one(
+            {"phone": ph, "role": {"$exists": False}},
+            {"$set": {"role": "super_admin"}},
+        )
+        # Promote existing dealer doc to super_admin too.
+        await db.dealers.update_one(
+            {"phone": ph},
+            {"$set": {"role": "super_admin"}},
+        )
     # Approved dealers — for the MVP we mirror the existing seeded dealer phones
     # so demo flows keep working. In production an operator adds them via
-    # a future /admin/dealers/approve endpoint.
+    # POST /admin/approved-dealers from the operator console.
     for d in SEED_DEALERS:
-        if d.get("role") == "admin":
+        if d.get("role") in ("admin", "super_admin"):
             continue
         await db.approved_dealers.update_one(
             {"phone": d["phone"]},
@@ -1690,10 +2149,19 @@ async def seed_allow_lists() -> None:
                 "seed_full_name": d.get("full_name", ""),
                 "seed_dealership_name": d.get("dealership_name", ""),
                 "seed_city": d.get("city", ""),
+                "trust_score": d.get("trust_score", 4.5),
+                "max_bid_limit": None,
+                "notes": "",
+                "status": "active",
                 "added_by": "system_bootstrap",
                 "added_at": now_utc(),
             }},
             upsert=True,
+        )
+        # Backfill status field on existing docs.
+        await db.approved_dealers.update_one(
+            {"phone": d["phone"], "status": {"$exists": False}},
+            {"$set": {"status": "active"}},
         )
 
 

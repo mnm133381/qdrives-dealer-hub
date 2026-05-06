@@ -40,6 +40,23 @@ ADMIN_PHONES = {p.strip() for p in os.environ.get("ADMIN_PHONES", "").split(",")
 def is_admin_phone(phone: str) -> bool:
     return phone.strip() in ADMIN_PHONES
 
+
+# ---- Audit logging ----
+async def audit(db, action: str, actor_id: Optional[str], target_id: Optional[str], meta: Optional[Dict[str, Any]] = None) -> None:
+    """Append-only operational audit log. All admin mutations and login events
+    flow through here so we have a forensic trail."""
+    try:
+        await db.audit_logs.insert_one({
+            "id": str(uuid.uuid4()),
+            "action": action,
+            "actor_id": actor_id,
+            "target_id": target_id,
+            "meta": meta or {},
+            "ts": now_utc(),
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("audit log failed (%s): %s", action, exc)
+
 app = FastAPI(title="Q Drives API")
 api = APIRouter(prefix="/api")
 security = HTTPBearer(auto_error=False)
@@ -223,11 +240,110 @@ manager = ConnectionManager()
 # ---------- Auth Endpoints ----------
 @api.post("/auth/send-otp")
 async def send_otp(req: SendOtpReq):
+    """Generic OTP send (kept for backward-compat). New clients should use
+    /auth/dealer/send-otp or /auth/operator/send-otp which enforce the
+    relevant allow-list. This generic endpoint defaults to dealer rules."""
     phone = req.phone.strip()
     if len(phone) < 10:
         raise HTTPException(status_code=400, detail="Invalid phone number")
-    # Mocked OTP - in dev we return it for convenience
     return {"success": True, "message": "OTP sent", "dev_otp": MOCK_OTP}
+
+
+# ---- Dealer auth (closed network — approved_dealers allow-list) ----
+@api.post("/auth/dealer/send-otp")
+async def dealer_send_otp(req: SendOtpReq):
+    phone = req.phone.strip()
+    if len(phone) < 10:
+        raise HTTPException(status_code=400, detail="Invalid phone number")
+    if not await db.approved_dealers.find_one({"phone": phone}):
+        raise HTTPException(status_code=403, detail="DEALER_ACCESS_NOT_APPROVED")
+    return {"success": True, "message": "OTP sent", "dev_otp": MOCK_OTP}
+
+
+@api.post("/auth/dealer/verify-otp")
+async def dealer_verify_otp(req: VerifyOtpReq):
+    phone = req.phone.strip()
+    approved = await db.approved_dealers.find_one({"phone": phone})
+    if not approved:
+        raise HTTPException(status_code=403, detail="DEALER_ACCESS_NOT_APPROVED")
+    if req.otp != MOCK_OTP:
+        raise HTTPException(status_code=400, detail="Invalid OTP. Use 123456 for dev.")
+
+    dealer = await db.dealers.find_one({"phone": phone}, {"_id": 0})
+    is_new = False
+    if not dealer:
+        is_new = True
+        dealer = {
+            "id": str(uuid.uuid4()), "phone": phone,
+            "full_name": approved.get("seed_full_name", ""),
+            "dealership_name": approved.get("seed_dealership_name", ""),
+            "city": approved.get("seed_city", ""),
+            "gst_number": "", "pan_number": "",
+            "kyc_completed": False, "verified": False, "suspended": False,
+            "trust_score": 4.5, "bid_success_rate": 0,
+            "total_purchases": 0, "total_listed": 0,
+            "role": "dealer",
+            "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80",
+            "created_at": now_utc(),
+        }
+        await db.dealers.insert_one(dict(dealer))
+    else:
+        # Operator role can only be assigned via the operator endpoint.
+        if dealer.get("role") != "dealer":
+            await db.dealers.update_one({"id": dealer["id"]}, {"$set": {"role": "dealer"}})
+            dealer["role"] = "dealer"
+        if dealer.get("suspended"):
+            raise HTTPException(status_code=403, detail="DEALER_ACCOUNT_SUSPENDED")
+
+    asyncio.create_task(audit(db, "dealer_login", dealer["id"], None, {"phone": phone}))
+    token = create_jwt(dealer["id"])
+    return {"token": token, "is_new": is_new, "dealer": serialize(dealer)}
+
+
+# ---- Operator auth (operators allow-list only) ----
+@api.post("/auth/operator/send-otp")
+async def operator_send_otp(req: SendOtpReq):
+    phone = req.phone.strip()
+    if not await db.operators.find_one({"phone": phone}):
+        raise HTTPException(status_code=403, detail="OPERATOR_ACCESS_DENIED")
+    return {"success": True, "message": "OTP sent", "dev_otp": MOCK_OTP}
+
+
+@api.post("/auth/operator/verify-otp")
+async def operator_verify_otp(req: VerifyOtpReq):
+    phone = req.phone.strip()
+    op = await db.operators.find_one({"phone": phone}, {"_id": 0})
+    if not op:
+        raise HTTPException(status_code=403, detail="OPERATOR_ACCESS_DENIED")
+    if req.otp != MOCK_OTP:
+        raise HTTPException(status_code=400, detail="Invalid OTP. Use 123456 for dev.")
+
+    dealer = await db.dealers.find_one({"phone": phone}, {"_id": 0})
+    is_new = False
+    if not dealer:
+        is_new = True
+        dealer = {
+            "id": str(uuid.uuid4()), "phone": phone,
+            "full_name": op.get("full_name", "Q Drives Operator"),
+            "dealership_name": op.get("display_name", "Q Drives Operations"),
+            "city": op.get("city", "Mumbai"),
+            "gst_number": "", "pan_number": "",
+            "kyc_completed": True, "verified": True, "suspended": False,
+            "trust_score": 5.0, "bid_success_rate": 0,
+            "total_purchases": 0, "total_listed": 0,
+            "role": "admin",
+            "avatar_url": "https://images.unsplash.com/photo-1554765345-6ad6a5417cde?w=300&q=80",
+            "created_at": now_utc(),
+        }
+        await db.dealers.insert_one(dict(dealer))
+    else:
+        if dealer.get("role") != "admin":
+            await db.dealers.update_one({"id": dealer["id"]}, {"$set": {"role": "admin"}})
+            dealer["role"] = "admin"
+
+    asyncio.create_task(audit(db, "operator_login", dealer["id"], None, {"phone": phone}))
+    token = create_jwt(dealer["id"])
+    return {"token": token, "is_new": is_new, "dealer": serialize(dealer)}
 
 
 @api.post("/auth/verify-otp")
@@ -311,7 +427,8 @@ async def submit_kyc(req: KycReq, dealer = Depends(get_current_dealer)):
         f"Welcome to Q Drives, {req.dealership_name}. You can now bid & list.",
         data={"type": "verification"},
     ))
-    return serialize(updated)
+    # Standardised response shape — frontend relies on dealer.role for routing.
+    return {"success": True, "updated": True, "dealer": serialize(updated)}
 
 
 # ---------- Auctions ----------
@@ -488,6 +605,7 @@ async def create_car(req: CarCreateReq, dealer = Depends(get_current_admin)):
         "created_at": now_utc(),
     }
     await db.cars.insert_one(dict(car))
+    asyncio.create_task(audit(db, "car_created", dealer["id"], car_id, {"reg": car["registration_number"], "reserve": req.reserve_price}))
 
     auction_id = str(uuid.uuid4())
     auction = {
@@ -771,6 +889,9 @@ async def admin_verify_dealer(
         return serialize(target)
     await db.dealers.update_one({"id": dealer_id}, {"$set": update})
     updated = await db.dealers.find_one({"id": dealer_id}, {"_id": 0})
+
+    # Audit
+    asyncio.create_task(audit(db, "dealer_status_change", admin["id"], dealer_id, {"changes": update}))
 
     # Push verification status change
     if req.verified is True:
@@ -1577,9 +1698,49 @@ async def on_startup():
     await db.push_tokens.create_index("token", unique=True)
     await db.media.create_index([("car_id", 1), ("order", 1)])
     await db.media.create_index("id", unique=True)
+    await db.approved_dealers.create_index("phone", unique=True)
+    await db.operators.create_index("phone", unique=True)
+    await db.audit_logs.create_index([("ts", -1)])
     await seed_data()
+    await seed_allow_lists()
     # background loops
     asyncio.create_task(auction_scheduler())
+
+
+async def seed_allow_lists() -> None:
+    """Bootstrap the closed-network allow-lists. Idempotent."""
+    # Operators come from ADMIN_PHONES env (single bootstrap super-admin).
+    for ph in ADMIN_PHONES:
+        await db.operators.update_one(
+            {"phone": ph},
+            {"$setOnInsert": {
+                "phone": ph,
+                "full_name": "Q Drives Operator",
+                "display_name": "Q Drives Operations",
+                "city": "Mumbai",
+                "added_by": "system_bootstrap",
+                "added_at": now_utc(),
+            }},
+            upsert=True,
+        )
+    # Approved dealers — for the MVP we mirror the existing seeded dealer phones
+    # so demo flows keep working. In production an operator adds them via
+    # a future /admin/dealers/approve endpoint.
+    for d in SEED_DEALERS:
+        if d.get("role") == "admin":
+            continue
+        await db.approved_dealers.update_one(
+            {"phone": d["phone"]},
+            {"$setOnInsert": {
+                "phone": d["phone"],
+                "seed_full_name": d.get("full_name", ""),
+                "seed_dealership_name": d.get("dealership_name", ""),
+                "seed_city": d.get("city", ""),
+                "added_by": "system_bootstrap",
+                "added_at": now_utc(),
+            }},
+            upsert=True,
+        )
 
 
 @app.on_event("shutdown")

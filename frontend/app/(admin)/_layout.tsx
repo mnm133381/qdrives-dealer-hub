@@ -69,6 +69,7 @@ export default function AdminLayout() {
       <Tabs.Screen name="reputation/[id]" options={{ href: null }} />
       <Tabs.Screen name="disputes" options={{ href: null }} />
       <Tabs.Screen name="disputes/[id]" options={{ href: null }} />
+      <Tabs.Screen name="settlements/[id]" options={{ href: null }} />
       {/* Broadcast is now reached via Ops dashboard quick-action; route remains. */}
       <Tabs.Screen name="broadcast" options={{ href: null }} />
     </Tabs>

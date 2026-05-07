@@ -15,13 +15,18 @@ export default function Purchases() {
   const insets = useSafeAreaInsets();
   const [tab, setTab] = useState<'won' | 'active'>('active');
   const [data, setData] = useState<{ won: Auction[]; active: Auction[] }>({ won: [], active: [] });
+  const [settlements, setSettlements] = useState<any[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const res = await api.purchases();
+      const [res, mySetts] = await Promise.all([
+        api.purchases(),
+        api.settlementsMine().catch(() => []),
+      ]);
       setData(res as any);
+      setSettlements(mySetts as any[] || []);
     } catch {}
     setLoaded(true);
   }, []);
@@ -89,10 +94,17 @@ export default function Purchases() {
           items.map((a) => {
             const car = a.car || {};
             const reserveMet = a.reserve_met !== false;
+            const settlement = tab === 'won' ? settlements.find((s) => s.auction_id === a.id) : null;
             return (
               <TouchableOpacity
                 key={a.id}
-                onPress={() => router.push({ pathname: '/lot/[id]', params: { id: a.id } } as any)}
+                onPress={() => {
+                  if (settlement) {
+                    router.push({ pathname: '/won/[id]', params: { id: settlement.id } } as any);
+                  } else {
+                    router.push({ pathname: '/lot/[id]', params: { id: a.id } } as any);
+                  }
+                }}
                 style={styles.card}
                 activeOpacity={0.85}
               >
@@ -100,12 +112,21 @@ export default function Purchases() {
                 <View style={{ flex: 1, padding: 12 }}>
                   <View style={styles.statusRow}>
                     {tab === 'won' ? (
-                      <View style={[styles.badge, reserveMet ? styles.badgeWon : styles.badgeWarn]}>
-                        {reserveMet ? <Trophy size={10} color={colors.success} /> : <AlertCircle size={10} color={colors.warning} />}
-                        <Text style={[styles.badgeText, { color: reserveMet ? colors.success : colors.warning }]}>
-                          {reserveMet ? 'WON' : 'RESERVE NOT MET'}
-                        </Text>
-                      </View>
+                      settlement ? (
+                        <View style={[styles.badge, { backgroundColor: 'rgba(185,28,28,0.12)', borderColor: colors.red }]}>
+                          <Trophy size={10} color={colors.red} />
+                          <Text style={[styles.badgeText, { color: colors.red }]}>
+                            {(settlement.state || '').toUpperCase().replace(/_/g, ' ')}
+                          </Text>
+                        </View>
+                      ) : (
+                        <View style={[styles.badge, reserveMet ? styles.badgeWon : styles.badgeWarn]}>
+                          {reserveMet ? <Trophy size={10} color={colors.success} /> : <AlertCircle size={10} color={colors.warning} />}
+                          <Text style={[styles.badgeText, { color: reserveMet ? colors.success : colors.warning }]}>
+                            {reserveMet ? 'WON' : 'RESERVE NOT MET'}
+                          </Text>
+                        </View>
+                      )
                     ) : (
                       <View style={[styles.badge, styles.badgeLive]}>
                         <View style={styles.liveDot} />

@@ -220,6 +220,7 @@ ROLE_PERMISSIONS: Dict[str, set] = {
         "manage_allow_list", "promote_operator", "manage_inventory",
         "launch_auction", "pause_auction", "cancel_auction", "extend_auction",
         "cancel_bid", "broadcast", "view_audit", "upload_inspection",
+        "manage_reputation", "resolve_disputes",
     },
     # Legacy 'admin' tier maps to super_admin powers for backward compatibility
     "admin": {
@@ -227,11 +228,13 @@ ROLE_PERMISSIONS: Dict[str, set] = {
         "manage_allow_list", "promote_operator", "manage_inventory",
         "launch_auction", "pause_auction", "cancel_auction", "extend_auction",
         "cancel_bid", "broadcast", "view_audit", "upload_inspection",
+        "manage_reputation", "resolve_disputes",
     },
     "operations_admin": {
         "approve_dealers", "suspend_dealers", "set_max_bid",
         "manage_inventory", "launch_auction", "pause_auction",
         "extend_auction", "broadcast", "view_audit",
+        "manage_reputation", "resolve_disputes",
     },
     "inspection_admin": {
         "manage_inventory", "upload_inspection", "view_audit",
@@ -850,6 +853,18 @@ async def place_bid(auction_id: str, req: BidReq, dealer = Depends(require_appro
     # Suspended dealers cannot bid (defense in depth — they can't even login).
     if dealer.get("suspended"):
         raise HTTPException(status_code=403, detail="DEALER_ACCOUNT_SUSPENDED")
+
+    # Reputation engine — enforce active operator restrictions (suspension /
+    # bidding cooldown). Shadow-restriction does NOT block the call here;
+    # it is enforced at the marketplace_query level (bids accepted but the
+    # dealer is invisible to others).
+    from services import reputation as _rep_check
+    blocked, kind = await _rep_check.is_dealer_blocked_from_bidding(db, dealer["id"])
+    if blocked:
+        raise HTTPException(
+            status_code=403,
+            detail=f"DEALER_BIDDING_RESTRICTED:{kind}",
+        )
 
     # Hard max-bid-limit enforcement. If the operator has set a per-dealer
     # ceiling, ANY attempt above it is rejected (no soft warnings).
@@ -3483,6 +3498,569 @@ async def ws_ops(websocket: WebSocket):
 @api.get("/")
 async def root():
     return {"service": "Q Drives API", "status": "ok"}
+
+
+# ═════════════════════════════════════════════════════════════════════
+# REPUTATION ENGINE + DISPUTE SYSTEM (P1)
+# Imports kept here (lazy) so the services package is reloaded with the
+# rest of the codebase without circular-import surprises.
+# ═════════════════════════════════════════════════════════════════════
+from services import reputation as rep_svc           # noqa: E402
+from services import disputes as disp_svc            # noqa: E402
+
+
+# ── Pydantic models ─────────────────────────────────────────────────
+class OperatorScoreAdjustReq(BaseModel):
+    delta: int = Field(..., ge=-100, le=100)
+    reason: str = Field(..., min_length=3, max_length=500)
+
+
+class OperatorRestrictionReq(BaseModel):
+    reason: str = Field(..., min_length=3, max_length=500)
+    duration_hours: Optional[int] = Field(None, ge=1, le=24 * 365)
+
+
+class OperatorNoteReq(BaseModel):
+    note: str = Field(..., min_length=1, max_length=2000)
+    visibility: str = Field("operator", pattern="^(operator|dealer)$")
+
+
+class RaiseDisputeReq(BaseModel):
+    against_dealer_id: Optional[str] = None
+    auction_id: Optional[str] = None
+    dispute_type: str
+    title: str = Field(..., min_length=3, max_length=200)
+    description: str = Field(..., min_length=10, max_length=5000)
+
+
+class DisputeMessageReq(BaseModel):
+    body: str = Field(..., min_length=1, max_length=4000)
+
+
+class DisputeEvidenceReq(BaseModel):
+    kind: str = Field(..., pattern="^(image|document|note)$")
+    filename: Optional[str] = Field(None, max_length=200)
+    mime_type: Optional[str] = Field(None, max_length=120)
+    content_base64: Optional[str] = None
+    note: Optional[str] = Field(None, max_length=2000)
+
+
+class DisputeRequestEvidenceReq(BaseModel):
+    request: str = Field(..., min_length=3, max_length=1000)
+
+
+class DisputeEscalateReq(BaseModel):
+    reason: str = Field(..., min_length=3, max_length=500)
+
+
+class DisputeDecideReq(BaseModel):
+    outcome: str   # one of disp_svc.DECISION_OUTCOMES
+    reason: str = Field(..., min_length=5, max_length=2000)
+
+
+class WithdrawDisputeReq(BaseModel):
+    reason: Optional[str] = Field(None, max_length=500)
+
+
+# ── Reputation: dealer self-view ────────────────────────────────────
+@api.get("/reputation/me")
+async def reputation_self(dealer = Depends(get_current_dealer)):
+    return await rep_svc.get_dealer_reputation(db, dealer["id"])
+
+
+@api.get("/reputation/me/timeline")
+async def reputation_self_timeline(
+    limit: int = 100,
+    dealer = Depends(get_current_dealer),
+):
+    return await rep_svc.get_reputation_timeline(db, dealer["id"], limit=limit)
+
+
+@api.get("/reputation/dealer/{dealer_id}/summary")
+async def reputation_summary_public(
+    dealer_id: str,
+    _viewer = Depends(get_current_dealer),
+):
+    """Lightweight badge/tier card visible to other dealers (e.g. on auction
+    cards). Does NOT expose individual signals."""
+    return await rep_svc.reputation_summary(db, dealer_id)
+
+
+# ── Reputation: operator views ──────────────────────────────────────
+@api.get("/admin/reputation/dealers")
+async def admin_reputation_list(
+    limit: int = 100,
+    sort: str = "score_asc",      # score_asc | score_desc | recent_action
+    tier: Optional[str] = None,   # filter
+    admin = Depends(require_permission("manage_reputation")),
+):
+    cursor = db.dealers.find(
+        {"approval_status": {"$in": ["approved", "pending", "rejected"]}}
+    ).limit(500)
+    rows: List[Dict[str, Any]] = []
+    async for d in cursor:
+        rep = await rep_svc.get_dealer_reputation(db, d["id"])
+        if tier and rep["tier"]["key"] != tier:
+            continue
+        rows.append({
+            "dealer_id": d["id"],
+            "name": d.get("dealership_name") or d.get("name"),
+            "phone": d.get("phone"),
+            "approval_status": d.get("approval_status"),
+            "verification_status": d.get("verification_status"),
+            "score": rep["score"],
+            "tier": rep["tier"],
+            "badges": rep["badges"],
+            "active_restrictions": [r["kind"] for r in rep["restrictions"]],
+            "total_events": rep["total_events"],
+        })
+    if sort == "score_asc":
+        rows.sort(key=lambda r: r["score"])
+    elif sort == "score_desc":
+        rows.sort(key=lambda r: -r["score"])
+    return rows[:limit]
+
+
+@api.get("/admin/reputation/dealer/{dealer_id}")
+async def admin_reputation_detail(
+    dealer_id: str,
+    admin = Depends(require_permission("manage_reputation")),
+):
+    d = await db.dealers.find_one({"id": dealer_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    rep = await rep_svc.get_dealer_reputation(db, dealer_id)
+    timeline = await rep_svc.get_reputation_timeline(db, dealer_id, limit=200)
+    notes = await rep_svc.list_operator_notes(db, dealer_id)
+    audit_trail = await rep_svc.list_audit_for_dealer(db, dealer_id, limit=100)
+    return {
+        "dealer": {
+            "id": d["id"],
+            "name": d.get("dealership_name") or d.get("name"),
+            "phone": d.get("phone"),
+            "approval_status": d.get("approval_status"),
+            "verification_status": d.get("verification_status"),
+            "max_bid_limit": d.get("max_bid_limit"),
+            "kyc_completed": d.get("kyc_completed"),
+            "created_at": (d.get("created_at").isoformat()
+                           if isinstance(d.get("created_at"), datetime)
+                           else d.get("created_at")),
+        },
+        "reputation": rep,
+        "timeline": timeline,
+        "operator_notes": notes,
+        "operator_audit": audit_trail,
+    }
+
+
+# ── Reputation: operator mutations ──────────────────────────────────
+@api.post("/admin/reputation/dealer/{dealer_id}/adjust")
+async def admin_reputation_adjust(
+    dealer_id: str,
+    req: OperatorScoreAdjustReq,
+    admin = Depends(require_permission("manage_reputation")),
+):
+    if not await db.dealers.find_one({"id": dealer_id}):
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    await rep_svc.record_signal(
+        db, dealer_id=dealer_id,
+        signal_kind="operator_score_adjustment",
+        value=float(req.delta),
+        weight_override=float(req.delta),
+        source="operator", actor_id=admin["id"], note=req.reason,
+    )
+    await rep_svc.record_operator_action(
+        db, actor_id=admin["id"], target_dealer_id=dealer_id,
+        action="score_adjust", reason=req.reason,
+        payload={"delta": req.delta},
+    )
+    return await rep_svc.get_dealer_reputation(db, dealer_id)
+
+
+@api.post("/admin/reputation/dealer/{dealer_id}/suspend")
+async def admin_reputation_suspend(
+    dealer_id: str,
+    req: OperatorRestrictionReq,
+    admin = Depends(require_permission("manage_reputation")),
+):
+    if not await db.dealers.find_one({"id": dealer_id}):
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    expires_at = None
+    if req.duration_hours:
+        expires_at = now_utc() + timedelta(hours=req.duration_hours)
+    await rep_svc.apply_restriction(
+        db, actor_id=admin["id"], target_dealer_id=dealer_id,
+        kind="suspended", reason=req.reason, expires_at=expires_at,
+    )
+    # Also bump token version so any active session is invalidated.
+    await bump_token_version(dealer_id, "suspension", actor_id=admin["id"])
+    return {"ok": True, "suspended_until": expires_at.isoformat() if expires_at else None}
+
+
+@api.post("/admin/reputation/dealer/{dealer_id}/cooldown")
+async def admin_reputation_cooldown(
+    dealer_id: str,
+    req: OperatorRestrictionReq,
+    admin = Depends(require_permission("manage_reputation")),
+):
+    if not await db.dealers.find_one({"id": dealer_id}):
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    hours = req.duration_hours or 24
+    expires_at = now_utc() + timedelta(hours=hours)
+    await rep_svc.apply_restriction(
+        db, actor_id=admin["id"], target_dealer_id=dealer_id,
+        kind="bidding_cooldown", reason=req.reason, expires_at=expires_at,
+    )
+    return {"ok": True, "cooldown_until": expires_at.isoformat()}
+
+
+@api.post("/admin/reputation/dealer/{dealer_id}/shadow-restrict")
+async def admin_reputation_shadow(
+    dealer_id: str,
+    req: OperatorRestrictionReq,
+    admin = Depends(require_permission("manage_reputation")),
+):
+    if not await db.dealers.find_one({"id": dealer_id}):
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    expires_at = None
+    if req.duration_hours:
+        expires_at = now_utc() + timedelta(hours=req.duration_hours)
+    await rep_svc.apply_restriction(
+        db, actor_id=admin["id"], target_dealer_id=dealer_id,
+        kind="shadow_restricted", reason=req.reason, expires_at=expires_at,
+    )
+    return {"ok": True, "expires_at": expires_at.isoformat() if expires_at else None}
+
+
+@api.post("/admin/reputation/dealer/{dealer_id}/force-kyc-review")
+async def admin_reputation_force_kyc(
+    dealer_id: str,
+    req: OperatorRestrictionReq,
+    admin = Depends(require_permission("manage_reputation")),
+):
+    if not await db.dealers.find_one({"id": dealer_id}):
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    await rep_svc.apply_restriction(
+        db, actor_id=admin["id"], target_dealer_id=dealer_id,
+        kind="kyc_review", reason=req.reason,
+    )
+    await rep_svc.record_signal(
+        db, dealer_id=dealer_id, signal_kind="forced_kyc_review",
+        source="operator", actor_id=admin["id"], note=req.reason,
+    )
+    return {"ok": True}
+
+
+@api.post("/admin/reputation/dealer/{dealer_id}/flag")
+async def admin_reputation_flag(
+    dealer_id: str,
+    req: OperatorRestrictionReq,
+    admin = Depends(require_permission("manage_reputation")),
+):
+    if not await db.dealers.find_one({"id": dealer_id}):
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    await rep_svc.record_signal(
+        db, dealer_id=dealer_id, signal_kind="operator_flag",
+        source="operator", actor_id=admin["id"], note=req.reason,
+    )
+    await rep_svc.record_operator_action(
+        db, actor_id=admin["id"], target_dealer_id=dealer_id,
+        action="operator_flag", reason=req.reason,
+    )
+    return await rep_svc.get_dealer_reputation(db, dealer_id)
+
+
+@api.post("/admin/reputation/dealer/{dealer_id}/lift/{kind}")
+async def admin_reputation_lift(
+    dealer_id: str, kind: str,
+    req: OperatorRestrictionReq,
+    admin = Depends(require_permission("manage_reputation")),
+):
+    if kind not in rep_svc.RESTRICTION_KINDS:
+        raise HTTPException(status_code=400, detail=f"Unknown restriction: {kind}")
+    res = await rep_svc.lift_restriction(
+        db, actor_id=admin["id"], target_dealer_id=dealer_id,
+        kind=kind, reason=req.reason,
+    )
+    if not res:
+        raise HTTPException(status_code=404, detail="No active restriction of that kind")
+    return {"ok": True}
+
+
+@api.post("/admin/reputation/dealer/{dealer_id}/notes")
+async def admin_reputation_add_note(
+    dealer_id: str,
+    req: OperatorNoteReq,
+    admin = Depends(require_permission("manage_reputation")),
+):
+    if not await db.dealers.find_one({"id": dealer_id}):
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    return await rep_svc.add_operator_note(
+        db, actor_id=admin["id"], target_dealer_id=dealer_id,
+        note=req.note, visibility=req.visibility,
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════
+# DISPUTE SYSTEM
+# ═════════════════════════════════════════════════════════════════════
+
+@api.get("/disputes/types")
+async def dispute_types(_dealer = Depends(get_current_dealer)):
+    """Catalog of dispute types + descriptions for the raise-form UI."""
+    return [
+        {"key": k, **{kk: v for kk, v in v.items() if kk != "priority_base"}}
+        for k, v in disp_svc.DISPUTE_TYPES.items()
+    ]
+
+
+@api.post("/disputes")
+async def raise_dispute(
+    req: RaiseDisputeReq,
+    dealer = Depends(require_approved_dealer),
+):
+    if req.dispute_type not in disp_svc.DISPUTE_TYPES:
+        raise HTTPException(status_code=400, detail="Unknown dispute_type")
+    # Resolve counterparty automatically when auction is given but
+    # against_dealer_id was not supplied
+    against = req.against_dealer_id
+    if req.auction_id and not against:
+        a = await db.auctions.find_one({"id": req.auction_id})
+        if a:
+            seller = a.get("seller_id")
+            winner = a.get("winning_bidder_id") or a.get("highest_bidder_id")
+            if dealer["id"] == seller:
+                against = winner
+            elif dealer["id"] == winner:
+                against = seller
+    try:
+        return await disp_svc.raise_dispute(
+            db, raiser_dealer_id=dealer["id"], against_dealer_id=against,
+            auction_id=req.auction_id, dispute_type=req.dispute_type,
+            title=req.title, description=req.description,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.get("/disputes/me")
+async def disputes_for_me(dealer = Depends(get_current_dealer)):
+    return await disp_svc.list_disputes_for_dealer(db, dealer["id"])
+
+
+@api.get("/disputes/{dispute_id}")
+async def get_dispute_view(
+    dispute_id: str,
+    dealer = Depends(get_current_dealer),
+):
+    d = await disp_svc.get_dispute(db, dispute_id)
+    if not d:
+        raise HTTPException(status_code=404, detail="Dispute not found")
+    is_party = dealer["id"] in (d.get("raiser_dealer_id"), d.get("against_dealer_id"))
+    is_operator = has_permission(dealer, "resolve_disputes")
+    if not (is_party or is_operator):
+        raise HTTPException(status_code=403, detail="Access denied")
+    d["evidence"] = await disp_svc.get_dispute_evidence(db, dispute_id, include_content=False)
+    d["messages"] = await disp_svc.get_dispute_messages(db, dispute_id)
+    if is_operator:
+        d["audit"] = await disp_svc.get_dispute_audit(db, dispute_id)
+    return d
+
+
+@api.get("/disputes/{dispute_id}/evidence/{evidence_id}")
+async def get_dispute_evidence_content(
+    dispute_id: str, evidence_id: str,
+    dealer = Depends(get_current_dealer),
+):
+    d = await db.disputes.find_one({"id": dispute_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Dispute not found")
+    is_party = dealer["id"] in (d.get("raiser_dealer_id"), d.get("against_dealer_id"))
+    is_operator = has_permission(dealer, "resolve_disputes")
+    if not (is_party or is_operator):
+        raise HTTPException(status_code=403, detail="Access denied")
+    e = await db.dispute_evidence.find_one({"id": evidence_id, "dispute_id": dispute_id})
+    if not e:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+    return {
+        "id": e["id"],
+        "kind": e["kind"],
+        "filename": e.get("filename"),
+        "mime_type": e.get("mime_type"),
+        "content_base64": e.get("content_base64"),
+        "note": e.get("note"),
+        "ts": e["ts"].isoformat() if isinstance(e.get("ts"), datetime) else e.get("ts"),
+    }
+
+
+@api.post("/disputes/{dispute_id}/evidence")
+async def post_dispute_evidence(
+    dispute_id: str,
+    req: DisputeEvidenceReq,
+    dealer = Depends(get_current_dealer),
+):
+    d = await db.disputes.find_one({"id": dispute_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Dispute not found")
+    is_party = dealer["id"] in (d.get("raiser_dealer_id"), d.get("against_dealer_id"))
+    is_operator = has_permission(dealer, "resolve_disputes")
+    if not (is_party or is_operator):
+        raise HTTPException(status_code=403, detail="Access denied")
+    try:
+        ev = await disp_svc.add_evidence(
+            db, dispute_id=dispute_id, actor_id=dealer["id"], kind=req.kind,
+            filename=req.filename, content_base64=req.content_base64,
+            mime_type=req.mime_type, note=req.note,
+        )
+        return ev
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.post("/disputes/{dispute_id}/messages")
+async def post_dispute_message(
+    dispute_id: str,
+    req: DisputeMessageReq,
+    dealer = Depends(get_current_dealer),
+):
+    d = await db.disputes.find_one({"id": dispute_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Dispute not found")
+    role = None
+    if dealer["id"] == d.get("raiser_dealer_id"):
+        role = "raiser"
+    elif dealer["id"] == d.get("against_dealer_id"):
+        role = "counterparty"
+    elif has_permission(dealer, "resolve_disputes"):
+        role = "operator"
+    if not role:
+        raise HTTPException(status_code=403, detail="Access denied")
+    try:
+        return await disp_svc.add_message(
+            db, dispute_id=dispute_id, actor_id=dealer["id"],
+            actor_role=role, body=req.body,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.post("/disputes/{dispute_id}/withdraw")
+async def withdraw_dispute(
+    dispute_id: str,
+    req: WithdrawDisputeReq,
+    dealer = Depends(get_current_dealer),
+):
+    try:
+        return await disp_svc.raiser_withdraw(
+            db, dispute_id=dispute_id, actor_id=dealer["id"], reason=req.reason,
+        )
+    except (ValueError, PermissionError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ── Operator dispute endpoints ──────────────────────────────────────
+@api.get("/admin/disputes/queue")
+async def admin_dispute_queue(
+    state: Optional[str] = None,
+    dispute_type: Optional[str] = None,
+    only_open: bool = True,
+    limit: int = 200,
+    admin = Depends(require_permission("resolve_disputes")),
+):
+    items = await disp_svc.operator_queue(
+        db, state=state, dispute_type=dispute_type,
+        only_open=only_open, limit=limit,
+    )
+    # Inline reputation summary for raiser + against (mobile-first density)
+    for d in items:
+        if d.get("raiser_dealer_id"):
+            d["raiser_reputation"] = await rep_svc.reputation_summary(db, d["raiser_dealer_id"])
+        if d.get("against_dealer_id"):
+            d["against_reputation"] = await rep_svc.reputation_summary(db, d["against_dealer_id"])
+    return items
+
+
+@api.get("/admin/disputes/summary")
+async def admin_dispute_summary(
+    admin = Depends(require_permission("resolve_disputes")),
+):
+    return await disp_svc.operator_queue_summary(db)
+
+
+@api.post("/admin/disputes/{dispute_id}/take-review")
+async def admin_dispute_take_review(
+    dispute_id: str,
+    admin = Depends(require_permission("resolve_disputes")),
+):
+    try:
+        return await disp_svc.operator_take_review(
+            db, dispute_id=dispute_id, actor_id=admin["id"],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.post("/admin/disputes/{dispute_id}/request-evidence")
+async def admin_dispute_request_evidence(
+    dispute_id: str,
+    req: DisputeRequestEvidenceReq,
+    admin = Depends(require_permission("resolve_disputes")),
+):
+    try:
+        return await disp_svc.operator_request_evidence(
+            db, dispute_id=dispute_id, actor_id=admin["id"], request=req.request,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.post("/admin/disputes/{dispute_id}/escalate")
+async def admin_dispute_escalate(
+    dispute_id: str,
+    req: DisputeEscalateReq,
+    admin = Depends(require_permission("resolve_disputes")),
+):
+    try:
+        return await disp_svc.operator_escalate(
+            db, dispute_id=dispute_id, actor_id=admin["id"], reason=req.reason,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.post("/admin/disputes/{dispute_id}/decide")
+async def admin_dispute_decide(
+    dispute_id: str,
+    req: DisputeDecideReq,
+    admin = Depends(require_permission("resolve_disputes")),
+):
+    if req.outcome not in disp_svc.DECISION_OUTCOMES:
+        raise HTTPException(status_code=400, detail="Invalid outcome")
+    try:
+        dispute_doc, rep_effect = await disp_svc.operator_decide(
+            db, dispute_id=dispute_id, actor_id=admin["id"],
+            outcome=req.outcome, reason=req.reason,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Apply reputation hooks
+    if rep_effect.get("loser_dealer_id"):
+        await rep_svc.on_dispute_resolved(
+            db,
+            against_dealer_id=rep_effect["loser_dealer_id"],
+            in_favour_dealer_id=rep_effect.get("winner_dealer_id"),
+            dispute_id=dispute_id,
+            frivolous_raiser_id=None,
+        )
+    elif rep_effect.get("frivolous_raiser_id"):
+        await rep_svc.record_signal(
+            db, dealer_id=rep_effect["frivolous_raiser_id"],
+            signal_kind="dispute_raised_frivolous",
+            ref_id=dispute_id, ref_type="dispute",
+            source="operator", actor_id=admin["id"], note=req.reason,
+        )
+    return dispute_doc
 
 
 # Mount router

@@ -3145,3 +3145,398 @@ agent_communication:
     eliminated it, and (b) the typed-pathname object format is the
     canonical native API anyway.
 
+
+
+# ───────────────────────────────────────────────────────────────────────
+# P1 — DEALER REPUTATION ENGINE + DISPUTE SYSTEM (Backend)
+# 2026-05-07 / agent: main / phase: backend complete, awaiting testing
+# ───────────────────────────────────────────────────────────────────────
+
+  Files created:
+    + /app/backend/services/__init__.py
+    + /app/backend/services/reputation.py    (deterministic scoring engine)
+    + /app/backend/services/disputes.py      (state machine + SLA + audit)
+
+  Files modified:
+    M /app/backend/server.py
+        - ROLE_PERMISSIONS: added "manage_reputation", "resolve_disputes"
+          to super_admin / admin / operations_admin tiers.
+        - place_bid: enforces active reputation restrictions (suspension /
+          bidding cooldown) before accepting a bid → 403 with detail
+          "DEALER_BIDDING_RESTRICTED:<kind>".
+        - 30 new endpoints registered under /api (see below).
+
+  Endpoints — REPUTATION (dealer-self):
+    GET  /api/reputation/me                                  full breakdown
+    GET  /api/reputation/me/timeline?limit=N                 signal history
+    GET  /api/reputation/dealer/{id}/summary                 lightweight badge
+
+  Endpoints — REPUTATION (operator, requires manage_reputation):
+    GET  /api/admin/reputation/dealers?sort=&tier=           ranked list
+    GET  /api/admin/reputation/dealer/{id}                   drilldown
+    POST /api/admin/reputation/dealer/{id}/adjust            score override
+    POST /api/admin/reputation/dealer/{id}/suspend           full suspension
+    POST /api/admin/reputation/dealer/{id}/cooldown          bid-only block
+    POST /api/admin/reputation/dealer/{id}/shadow-restrict   stealth limit
+    POST /api/admin/reputation/dealer/{id}/force-kyc-review  flag for re-KYC
+    POST /api/admin/reputation/dealer/{id}/flag              raise op flag
+    POST /api/admin/reputation/dealer/{id}/lift/{kind}       lift restriction
+    POST /api/admin/reputation/dealer/{id}/notes             append note
+
+  Endpoints — DISPUTES (dealer):
+    GET  /api/disputes/types                                 type catalog
+    POST /api/disputes                                       raise new
+    GET  /api/disputes/me                                    list mine
+    GET  /api/disputes/{id}                                  detail (party-only)
+    GET  /api/disputes/{id}/evidence/{eid}                   evidence content
+    POST /api/disputes/{id}/evidence                         attach evidence
+    POST /api/disputes/{id}/messages                         chat message
+    POST /api/disputes/{id}/withdraw                         raiser only
+
+  Endpoints — DISPUTES (operator, requires resolve_disputes):
+    GET  /api/admin/disputes/queue?state=&type=&only_open=   priority queue
+    GET  /api/admin/disputes/summary                         counters
+    POST /api/admin/disputes/{id}/take-review                begin review
+    POST /api/admin/disputes/{id}/request-evidence           SLA pause
+    POST /api/admin/disputes/{id}/escalate                   side-flag
+    POST /api/admin/disputes/{id}/decide                     terminal resolve
+        outcomes: decided_for_raiser | decided_against_raiser |
+                  decided_inconclusive | frivolous
+
+  Storage collections (newly used):
+    reputation_signals          immutable signal ledger (append-only)
+    dealer_restrictions         active operator restrictions
+    operator_actions_audit      every operator override / mutation
+    dealer_notes                operator-visibility OR dealer-visibility notes
+    disputes                    main dispute records
+    dispute_evidence            attachments (base64 inline, ≤6MB)
+    dispute_messages            chat trail
+    dispute_audit               immutable state-transition log
+
+  Scoring engine (deterministic, fully explainable):
+    base_score = 70
+    signals tracked: 17 distinct kinds, each with weight + window + cap
+    final_score = clamp(base + Σ weighted_capped_deltas, 0, 100)
+    tiers: trusted(85+) stable(70-84) watch(50-69) risky(25-49) restricted(<25)
+
+  Dispute SLA defaults (per type):
+    fake_bidding / reserve_manipulation: 6h ack / 24h resolve  (priority 85-90)
+    abusive_conduct: 12h / 48h
+    payment_delay / settlement_failure: 24h / 72h
+    title_legal_issue: 24h / 14d
+    vehicle_mismatch / hidden_damage: 48h / 7d
+
+  Reputation hooks (auto-applied on dispute decisions):
+    decided_for_raiser    → loser gets dispute_lost (-10), winner gets dispute_won (+2)
+    decided_against_raiser→ loser=raiser, winner=against
+    decided_inconclusive  → no signals
+    frivolous             → raiser gets dispute_raised_frivolous (-3)
+
+  Hard guarantees:
+    - All operator mutations append to operator_actions_audit (immutable).
+    - All dispute state transitions append to dispute_audit (immutable).
+    - reputation_signals is append-only — overrides become NEW signals,
+      never edits to existing rows.
+    - Dynamic-weight signal "operator_score_adjustment" allows the
+      operator to add an arbitrary +/- delta with reason; this delta
+      itself is the audit record.
+    - Dealers blocked from bidding hit a 403 at /api/auctions/{id}/bid.
+    - Token version bumped on suspension → all active sessions invalidated.
+
+  Known not-yet-built (frontend phases C and D):
+    - Operator UI: /(admin)/reputation, /(admin)/reputation/[id],
+                   /(admin)/disputes, /(admin)/disputes/[id]
+    - Dealer UI: trust card on profile, /disputes list + raise form,
+                 confidence pill on auction cards.
+
+  ## backend (yaml)
+  - task: "Reputation engine — score computation & explainability"
+    implemented: true
+    working: true
+    file: "backend/services/reputation.py + server.py routes"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: NA
+        agent: "main"
+        comment: |
+          Pure-function scoring engine with 17 signal kinds, 30/90/lifetime
+          windows, per-signal caps, and immutable signal ledger. Endpoints
+          GET /api/reputation/me, /me/timeline,
+          /admin/reputation/dealers (sortable, filterable by tier),
+          /admin/reputation/dealer/{id} (full drilldown).
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified via /app/backend_test_reputation_disputes.py against the
+          public ingress URL. All 5 reputation-engine read paths PASS:
+            • A.1 GET /reputation/me as Dealer A → 200; score=70 (base),
+              tier={key:'stable', label, min, max, color}, base_score=70,
+              17 signal definitions, badges=[], restrictions=[].
+            • A.2 GET /reputation/me/timeline?limit=50 → 200, [] for fresh
+              dealer (correct — no historical signals yet).
+            • A.3 GET /reputation/dealer/{B}/summary as Dealer A → 200 with
+              {score, tier, badges, has_active_restriction, computed_at}.
+            • B.4 GET /admin/reputation/dealers as operator → 200, list of 5
+              dealers including A and B; each row has dealer_id, name,
+              phone, score, tier, badges, active_restrictions, total_events.
+            • B.5 ?sort=score_asc&tier=stable → 200; verified ascending sort
+              and tier filter (all rows tier=='stable').
+            • B.6 GET /admin/reputation/dealer/{A} → 200 with dealer,
+              reputation, timeline, operator_notes, operator_audit keys.
+            • E.34 POST /admin/reputation/dealer/<nonexistent>/adjust → 404.
+  - task: "Reputation operator controls (adjust/suspend/cooldown/shadow/flag/notes)"
+    implemented: true
+    working: false
+    file: "backend/server.py + services/reputation.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: NA
+        agent: "main"
+        comment: |
+          7 operator action endpoints. All gated by require_permission(
+          "manage_reputation"). Each mutation writes to
+          operator_actions_audit. Suspension also bumps token_version.
+          Bidding-cooldown enforced inside place_bid via
+          is_dealer_blocked_from_bidding().
+      - working: false
+        agent: "testing"
+        comment: |
+          Verified via /app/backend_test_reputation_disputes.py.
+          PASS:
+            • B.7 POST /admin/reputation/dealer/{A}/adjust {delta:-5, reason}
+              → 200; score 70 → 65; timeline contains
+              operator_score_adjustment event with the right delta+reason.
+            • B.8 POST /admin/reputation/dealer/{A}/flag → 200; score
+              dropped further (65 → 45 — flag carries -10 weight + cap).
+              operator_flag signal recorded in timeline.
+            • B.9 POST /admin/reputation/dealer/{A}/cooldown
+              {reason, duration_hours:24} → 200 with cooldown_until set
+              ~24h ahead.
+            • B.11 POST /admin/reputation/dealer/{A}/lift/bidding_cooldown
+              {reason} → 200.
+            • E.30 dealer JWT calling /adjust → 403 (RBAC enforced).
+
+          BUG FOUND (BLOCKER):
+          ❌ B.12 POST /admin/reputation/dealer/{A}/notes
+             {note:"Watching closely", visibility:"operator"} → HTTP 500
+             "Internal Server Error".
+             Backend log:
+               TypeError("'ObjectId' object is not iterable")
+               TypeError('vars() argument must have __dict__ attribute')
+             ROOT CAUSE: `add_operator_note` in
+             /app/backend/services/reputation.py (lines 619-633) builds
+             `doc = {...}`, calls `await db.dealer_notes.insert_one(doc)`
+             which mutates `doc` to add `_id: ObjectId(...)`, then
+             `return doc`. FastAPI's JSON encoder fails on ObjectId.
+             The note IS persisted in MongoDB (collection mutation
+             succeeds before the return), but the HTTP response is 500.
+             FIX (one-line): pass `dict(doc)` into insert_one OR pop
+             "_id" before return:
+               `doc.pop("_id", None); return doc`
+             Same root cause hits POST /disputes/{id}/messages and
+             POST /disputes/{id}/evidence — fix needed in 3 places.
+
+          NOT VERIFIED (env limitation):
+            • B.10 dealer-A bid blocked while cooldown is active was
+              SKIPPED because there are zero live auctions in the DB
+              right now (only 2 ended). Code path is wired correctly:
+              place_bid (server.py:861-867) calls
+              `is_dealer_blocked_from_bidding(db, dealer_id)` BEFORE the
+              insert and raises 403 with detail
+              "DEALER_BIDDING_RESTRICTED:<kind>". To exercise end-to-end,
+              the operator console needs to launch a fresh live auction
+              first.
+
+          working=false because the /notes endpoint is one of the seven
+          operator controls under this task and it consistently 500s.
+  - task: "Dispute system — raise / evidence / chat / state machine"
+    implemented: true
+    working: false
+    file: "backend/services/disputes.py + server.py routes"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: NA
+        agent: "main"
+        comment: |
+          5-state machine (raised / under_review / evidence_pending /
+          decided / resolved + escalated side-state + withdrawn terminal).
+          8 dispute types with per-type SLA timers. Aging severity is
+          computed on read (ok/warning/breach/critical). Operator priority
+          score derived from base + escalation + SLA breach.
+      - working: false
+        agent: "testing"
+        comment: |
+          Verified via /app/backend_test_reputation_disputes.py.
+          PASS:
+            • C.13 GET /disputes/types as Dealer A → 200, list of 8 types
+              (payment_delay, vehicle_mismatch, hidden_damage,
+              title_legal_issue, fake_bidding, settlement_failure,
+              abusive_conduct, reserve_manipulation), each with
+              sla_ack_hours + sla_resolve_hours.
+            • C.14 POST /disputes (Dealer A → Dealer B, payment_delay)
+              → 200 with dispute_id.
+            • C.15 GET /disputes/me → 200; new dispute present;
+              aging.severity == 'ok' (just raised).
+            • C.16 GET /disputes/{id} as Dealer A → 200 with aging,
+              evidence:[] (initially empty), messages:[] (initially empty).
+            • C.19 GET /disputes/{id} after evidence + message persisted
+              → message_count=1, evidence_count=1 (counters incremented
+              by service even though POSTs returned 500 — see bug below).
+            • C.20 GET /disputes/{id} as Dealer B → 200 (counterparty
+              access ok).
+            • D.22 GET /admin/disputes/queue as operator → 200; new
+              dispute present with raiser_reputation + against_reputation
+              inline; priority_score=60 (matches DISPUTE_TYPES.payment_delay
+              .priority_base).
+            • D.23 GET /admin/disputes/summary → 200, open_total>=1.
+            • D.24 take-review → 200, state='under_review'.
+            • D.25 request-evidence → 200, state='evidence_pending'.
+            • D.26 escalate → 200, is_escalated=true.
+            • D.27 decide {outcome:'decided_for_raiser'} → 200,
+              state='resolved'.
+            • E.31 dealer JWT POST /admin/disputes/{id}/decide → 403.
+            • E.32 second decide on resolved → 400 "dispute is already
+              terminal".
+            • E.33 POST /disputes with dispute_type="not_a_real_type"
+              → 400 "Unknown dispute_type".
+
+          BUGS FOUND (same root cause × 2):
+          ❌ C.17 POST /disputes/{id}/messages
+             {body:"Please pay ASAP."} → HTTP 500 "Internal Server Error"
+             — but the message IS persisted (verified by C.19 message_count
+             incrementing to 1).
+             Backend log:
+               TypeError("'ObjectId' object is not iterable")
+               TypeError('vars() argument must have __dict__ attribute')
+             ROOT CAUSE:
+             /app/backend/services/disputes.py:248-276  add_message
+             builds `doc = {...}`, calls
+             `await db.dispute_messages.insert_one(doc)` (mutates `doc`
+             with `_id: ObjectId(...)`), then
+             `return {**doc, "ts": doc["ts"].isoformat()}` — the spread
+             still includes `_id` ObjectId. FastAPI's JSON encoder fails.
+          ❌ C.18 POST /disputes/{id}/evidence
+             {kind:"note", note:"Evidence note text"} → HTTP 500 with
+             the same trace. Evidence IS persisted (C.19
+             evidence_count=1).
+             ROOT CAUSE:
+             /app/backend/services/disputes.py:201-245  add_evidence,
+             same `{**doc, ...}` spread of the post-insert mutated doc.
+
+          FIX (same in 3 places — minimal):
+            doc.pop("_id", None)
+            return {**doc, ...}            # or just `return doc`
+          OR, even simpler — pass a copy into insert_one:
+            await db.X.insert_one(dict(doc))
+          OR, pass `bypass_document_validation=False`-irrelevant — the
+          canonical pymongo idiom is `doc.pop("_id", None)` after insert
+          when you want to return the same shape.
+
+          working=false set because two of the four dealer-side dispute
+          mutations 500 even though the side-effects succeed. This is a
+          direct in-scope regression for the dispute system task.
+  - task: "Dispute reputation hooks"
+    implemented: true
+    working: true
+    file: "backend/server.py admin_dispute_decide"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: NA
+        agent: "main"
+        comment: |
+          On decide → dispute_lost recorded against loser, dispute_won
+          for winner. On frivolous → dispute_raised_frivolous against
+          raiser. Reputation re-aggregates next read.
+      - working: true
+        agent: "testing"
+        comment: |
+          Verified via /app/backend_test_reputation_disputes.py.
+            • D.28 After deciding the dispute for the raiser, Dealer B
+              (counterparty / loser) reputation: score dropped 70 → 60
+              (dispute_lost weight = -10 in SIGNAL_DEFINITIONS); timeline
+              contains a `dispute_lost` event whose payload references
+              the resolved dispute_id.
+            • D.29 Dealer A (raiser / winner) timeline contains a
+              `dispute_won` event referencing the same dispute_id
+              (weight = +2; bumps score from base by the configured cap).
+          Hooks are correctly invoked from admin_dispute_decide via
+          rep_svc.on_dispute_resolved when rep_effect.loser_dealer_id is
+          set, and via direct record_signal('dispute_raised_frivolous')
+          for the frivolous outcome (latter not exercised end-to-end —
+          covered by code review only).
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      P1 — Dealer Reputation Engine + Dispute System backend testing
+      complete. 29 PASS / 3 FAIL / 2 SKIP across 34 review steps.
+
+      ### CRITICAL BUG (single root cause, hits 3 endpoints):
+      All three endpoints below return HTTP 500 even though the database
+      side-effect succeeds. The 500 is a JSON-serialization error caused
+      by returning a Mongo doc that pymongo mutated to include `_id` as
+      a non-JSON-serializable ObjectId after `insert_one()`:
+
+        1. POST /api/admin/reputation/dealer/{id}/notes
+           file: backend/services/reputation.py  fn: add_operator_note
+           lines 619-633   — `return doc` after `insert_one(doc)`.
+
+        2. POST /api/disputes/{id}/messages
+           file: backend/services/disputes.py    fn: add_message
+           lines 248-276   — `return {**doc, "ts": ...}` spreads the
+           mutated doc (which now has `_id`).
+
+        3. POST /api/disputes/{id}/evidence
+           file: backend/services/disputes.py    fn: add_evidence
+           lines 201-245   — same `{**doc, ...}` pattern.
+
+      Backend traceback (consistent across all 3):
+        TypeError("'ObjectId' object is not iterable")
+        TypeError('vars() argument must have __dict__ attribute')
+
+      One-line fix per function:
+        ```python
+        await db.X.insert_one(doc)
+        doc.pop("_id", None)         # <-- add this line
+        return {**doc, "ts": doc["ts"].isoformat()}
+        ```
+      OR pass a copy in:  `await db.X.insert_one(dict(doc))`.
+
+      ### Skipped (env limitation, NOT a bug):
+        • B.10 (Dealer A bid blocked by active cooldown returning 403
+          DEALER_BIDDING_RESTRICTED:bidding_cooldown). The DB has no
+          live auctions right now (only 2 ended). The wiring is verified
+          by code inspection: place_bid (server.py:861-867) calls
+          `is_dealer_blocked_from_bidding` BEFORE the insert and raises
+          the expected 403. Re-running this step requires the operator
+          to launch a live auction first.
+        • C.21 third-party access (only 2 dealers used in test).
+
+      ### What works (29 PASS):
+        • Reputation reads (self + summary + admin list + sort/filter
+          + admin detail).
+        • Reputation mutations: adjust (delta + reason), flag, cooldown,
+          lift restriction.
+        • RBAC: dealer JWT → 403 on every /admin/* path.
+        • Disputes: types catalog (8 types), raise, list mine, detail
+          (party-only), aging severity, operator queue (with inline
+          raiser/against reputation summaries), summary counters.
+        • Operator dispute state machine: take-review → request-evidence
+          → escalate → decide_for_raiser. Each transition reflects in
+          the queue and detail.
+        • Reputation hooks fire on decide: loser gets dispute_lost (-10
+          → score 70→60), winner gets dispute_won.
+        • Negative cases: 403 for dealer-on-admin endpoints, 400 for
+          terminal-redecide, 400 for unknown dispute_type, 404 for
+          unknown dealer on /adjust.
+
+      Test artifact: /app/backend_test_reputation_disputes.py
+      Run: `python /app/backend_test_reputation_disputes.py`

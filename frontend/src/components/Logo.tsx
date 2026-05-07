@@ -1,21 +1,20 @@
 /**
  * Q Drives brand mark.
  *
- * Two surfaces:
- *   <LogoMark size={40} />     — shield-only icon (compact headers, app icon)
- *   <LogoLockup width={220} /> — full lockup: shield + "Q DRIVES" wordmark +
- *                                "DEALER AUCTION PLATFORM" subline
+ *   <LogoMark size={32} />            — shield-only icon (compact headers, app icon)
+ *   <LogoLockupHorizontal height={36}/> — shield + "Q DRIVES" wordmark side-by-side
+ *   <LogoLockup width={260} />        — full vertical lockup (splash only)
+ *   <LogoWatermark size={220} />      — empty-state watermark, 12% opacity
  *
- * Source-of-truth: /app/frontend/assets/brand/qdrives-logo-full.png and
- * the cropped shield qdrives-shield.png. Per brand rules, we never recolor,
- * stretch, or distort the logo — `resizeMode="contain"` always.
+ * Source-of-truth: refined `qdrives-logo-full.png` + cropped shield variants.
+ * Per brand rules: never recolor / stretch / distort. `resizeMode="contain"`.
  */
 import React from 'react';
-import { Image, View, StyleSheet, ImageStyle, ViewStyle } from 'react-native';
+import { Image, View, Text, StyleSheet, ImageStyle, ViewStyle } from 'react-native';
+import { colors } from '../theme';
 
-// Import as require() so Metro inlines them as static assets — works in
-// both Expo Go and web bundling.
 const SHIELD = require('../../assets/brand/qdrives-shield.png');
+const SHIELD_WM = require('../../assets/brand/qdrives-shield-watermark.png');
 const FULL = require('../../assets/brand/qdrives-logo-full.png');
 
 export function LogoMark({
@@ -56,4 +55,66 @@ export function LogoLockup({
   );
 }
 
-export const _styles = StyleSheet.create({});
+/**
+ * Compact horizontal lockup — preferred for chrome / login / portal usage.
+ * Renders shield + wordmark in a tight row with restrained typography
+ * matching the operator UI vocabulary. Avoids the "billboard" feel of the
+ * full vertical lockup.
+ */
+export function LogoLockupHorizontal({
+  height = 36,
+  style,
+  showSubline = false,
+}: {
+  height?: number;
+  style?: ViewStyle;
+  showSubline?: boolean;
+}) {
+  return (
+    <View style={[{ flexDirection: 'row', alignItems: 'center', gap: Math.round(height * 0.32) }, style]}>
+      <LogoMark size={height} />
+      <View>
+        <Text style={[styles.lockupWord, { fontSize: Math.round(height * 0.50), letterSpacing: Math.round(height * 0.10) }]}>
+          Q DRIVES
+        </Text>
+        {showSubline && (
+          <Text style={[styles.lockupSub, { fontSize: Math.max(8, Math.round(height * 0.20)) }]}>
+            DEALER AUCTION PLATFORM
+          </Text>
+        )}
+      </View>
+    </View>
+  );
+}
+
+export function LogoWatermark({
+  size = 220,
+  opacity = 0.10,
+  style,
+}: {
+  size?: number;
+  opacity?: number;
+  style?: ImageStyle;
+}) {
+  return (
+    <Image
+      source={SHIELD_WM}
+      style={[{ width: size, height: size, opacity }, style]}
+      resizeMode="contain"
+    />
+  );
+}
+
+const styles = StyleSheet.create({
+  lockupWord: {
+    color: colors.textPrimary,
+    fontWeight: '900',
+    letterSpacing: 3,
+  },
+  lockupSub: {
+    color: colors.silver,
+    fontWeight: '800',
+    letterSpacing: 1.6,
+    marginTop: 2,
+  },
+});

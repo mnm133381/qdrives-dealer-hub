@@ -21,7 +21,7 @@ import {
 } from 'lucide-react-native';
 import { colors, radii } from '../../src/theme';
 import { api } from '../../src/api';
-import { LogoLockup, LogoMark } from '../../src/components/Logo';
+import { LogoLockupHorizontal } from '../../src/components/Logo';
 
 type AccessError = {
   title: string;
@@ -88,7 +88,7 @@ export default function Login() {
       <ImageBackground
         source={{ uri: heroSrc }}
         style={styles.hero}
-        imageStyle={{ opacity: isAdmin ? 0.30 : 0.65 }}
+        imageStyle={{ opacity: isAdmin ? 0.18 : 0.40 }}
       >
         <View style={[styles.heroOverlay, isAdmin && styles.heroOverlayAdmin]} />
         <View style={styles.heroVignette} />
@@ -101,8 +101,7 @@ export default function Login() {
 
         <View style={styles.heroContent}>
           <View style={styles.brandRow}>
-            <LogoMark size={28} />
-            <Text style={styles.brand}>Q DRIVES</Text>
+            <LogoLockupHorizontal height={26} />
             <View style={[styles.brandPill, isAdmin && styles.brandPillAdmin]}>
               {isAdmin && <Lock size={9} color={colors.warning} />}
               <Text style={[styles.brandPillText, isAdmin && styles.brandPillTextAdmin]}>

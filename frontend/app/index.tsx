@@ -54,17 +54,21 @@ export default function Splash() {
       <ImageBackground
         source={{ uri: 'https://images.unsplash.com/photo-1771096095800-fe1f49993bf5?w=1200&q=80' }}
         style={styles.bgTexture}
-        imageStyle={{ opacity: 0.06 }}
+        imageStyle={{ opacity: 0.04 }}
       >
         <View style={styles.center}>
           <Animated.View style={[styles.logoWrap, logoStyle]}>
-            <LogoLockup width={300} />
+            <LogoLockup width={240} />
           </Animated.View>
           <Animated.Text style={[styles.tagline, taglineStyle]}>
-            DEALER AUCTION PLATFORM
+            Dealer Auction Platform
           </Animated.Text>
         </View>
-        <Animated.Text style={[styles.footer, taglineStyle]}>POWERED BY LIQUIDITY</Animated.Text>
+        <View style={styles.loaderRow}>
+          <View style={styles.loaderBar}>
+            <Animated.View style={[styles.loaderFill, taglineStyle]} />
+          </View>
+        </View>
       </ImageBackground>
     </View>
   );
@@ -73,23 +77,31 @@ export default function Splash() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
   bgTexture: { flex: 1, justifyContent: 'center' },
-  center: { alignItems: 'center', paddingTop: 40 },
-  logoWrap: { marginBottom: 18 },
+  center: { alignItems: 'center', paddingTop: 30 },
+  logoWrap: { marginBottom: 14 },
   tagline: {
-    color: colors.textSecondary,
-    fontSize: 11.5,
-    marginTop: 6,
-    letterSpacing: 4,
-    fontWeight: '800',
+    color: colors.silver,
+    fontSize: 11,
+    marginTop: 4,
+    letterSpacing: 5,
+    fontWeight: '700',
     textTransform: 'uppercase',
   },
-  footer: {
+  loaderRow: {
     position: 'absolute',
-    bottom: 50,
+    bottom: 70,
     alignSelf: 'center',
-    color: colors.textMuted,
-    fontSize: 9.5,
-    fontWeight: '800',
-    letterSpacing: 4,
+    width: 96,
+  },
+  loaderBar: {
+    height: 2,
+    backgroundColor: colors.border,
+    borderRadius: 1,
+    overflow: 'hidden',
+  },
+  loaderFill: {
+    height: '100%',
+    backgroundColor: colors.red,
+    width: '60%',
   },
 });

@@ -23,7 +23,7 @@ import {
   ArrowRight, ShieldCheck, Gavel, ChevronRight, Lock, Award, Activity,
   Sparkles, Users, LayoutDashboard, Zap, Eye,
 } from 'lucide-react-native';
-import { LogoLockup } from '../../src/components/Logo';
+import { LogoLockupHorizontal } from '../../src/components/Logo';
 import { colors, radii } from '../../src/theme';
 
 export default function AuthLanding() {
@@ -36,10 +36,9 @@ export default function AuthLanding() {
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
-        {/* Brand header */}
+        {/* Brand header — compact horizontal lockup, institutional feel */}
         <View style={styles.brand}>
-          <LogoLockup width={260} />
-          <Text style={styles.brandTag}>DEALER AUCTION PLATFORM</Text>
+          <LogoLockupHorizontal height={34} showSubline />
         </View>
 
         <Text style={styles.entryHeading}>Choose your access</Text>
@@ -137,7 +136,7 @@ function AdminFeature({ icon, label }: any) {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  brand: { alignItems: 'center', paddingTop: 24, paddingBottom: 16 },
+  brand: { alignItems: 'center', paddingTop: 28, paddingBottom: 8 },
   shield: {
     width: 56, height: 64, backgroundColor: colors.bgCard, borderRadius: 12,
     borderWidth: 1.5, borderColor: colors.red, alignItems: 'center', justifyContent: 'center',

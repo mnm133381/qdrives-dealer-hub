@@ -26,8 +26,12 @@ export function AuctionCard({ auction, onPress, onWatch, watching, testID }: Pro
       activeOpacity={0.92}
       onPress={onPress}
       testID={testID}
-      style={styles.card}
+      style={[styles.card, isLive && styles.cardLive]}
     >
+      {/* Faint red top-edge ambient highlight for active auctions —
+          embeds the card into the page surface vs. floating box look. */}
+      {isLive && <View style={styles.activeEdge} pointerEvents="none" />}
+
       <View style={styles.imageWrap}>
         <Image
           source={{ uri: (car.images && car.images[0]) || 'https://images.unsplash.com/photo-1768965468641-39e87aa78a9d?w=1200&q=80' }}
@@ -170,65 +174,86 @@ function Meta({ icon, text }: { icon: React.ReactNode; text: string }) {
 const styles = StyleSheet.create({
   card: {
     backgroundColor: colors.bgCard,
-    borderRadius: radii.xl,
+    borderRadius: radii.lg,
     borderWidth: 1,
     borderColor: colors.border,
     overflow: 'hidden',
     marginBottom: spacing.lg,
+    // Premium shadow depth — embeds the card into the page surface
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.45,
+    shadowRadius: 12,
+    elevation: 5,
   },
-  imageWrap: { width: '100%', height: 220, position: 'relative', backgroundColor: '#000' },
+  cardLive: {
+    borderColor: 'rgba(255,30,45,0.35)',
+    shadowColor: colors.red,
+    shadowOpacity: 0.20,
+    shadowRadius: 14,
+  },
+  // Faint red top-edge ambient — runs along the top inside edge of live cards
+  activeEdge: {
+    position: 'absolute', top: 0, left: 0, right: 0, height: 1.5,
+    backgroundColor: colors.red,
+    opacity: 0.85,
+    zIndex: 2,
+  },
+  imageWrap: { width: '100%', height: 248, position: 'relative', backgroundColor: '#000' },
   image: { width: '100%', height: '100%' },
-  imageGradTop: { position: 'absolute', top: 0, left: 0, right: 0, height: 70, backgroundColor: 'rgba(11,11,13,0.55)' },
-  imageGradBottom: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 110, backgroundColor: 'rgba(11,11,13,0.85)' },
+  imageGradTop: { position: 'absolute', top: 0, left: 0, right: 0, height: 80, backgroundColor: 'rgba(5,5,8,0.65)' },
+  imageGradBottom: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 130, backgroundColor: 'rgba(5,5,8,0.92)' },
 
   topRow: { position: 'absolute', top: 14, left: 14, right: 14, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   topLeft: { flexDirection: 'row', gap: 6 },
   liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.red, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999 },
-  liveText: { color: '#fff', fontSize: 10, fontWeight: '900', letterSpacing: 1.6 },
-  statusBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, borderWidth: 1, backgroundColor: 'rgba(11,11,13,0.55)' },
-  statusText: { fontSize: 10, fontWeight: '900', letterSpacing: 1.6 },
+  liveText: { color: '#fff', fontSize: 10, fontWeight: '900', letterSpacing: 1.4 },
+  statusBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, borderWidth: 1, backgroundColor: 'rgba(5,5,8,0.62)' },
+  statusText: { fontSize: 10, fontWeight: '900', letterSpacing: 1.4 },
   hotBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 999, backgroundColor: 'rgba(245,158,11,0.95)' },
-  hotText: { color: '#0B0B0D', fontSize: 9, fontWeight: '900', letterSpacing: 1.4 },
+  hotText: { color: '#0B0B0D', fontSize: 9, fontWeight: '900', letterSpacing: 1.2 },
 
-  heart: { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(11,11,13,0.65)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  heart: { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(5,5,8,0.65)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
 
   regPlate: { position: 'absolute', top: 14, right: 60, paddingHorizontal: 8, paddingVertical: 4, backgroundColor: 'rgba(255,255,255,0.95)', borderRadius: 6 },
   regText: { color: '#0B0B0D', fontSize: 10, fontWeight: '900', letterSpacing: 1.2 },
 
   bottomGradientInfo: { position: 'absolute', bottom: 14, left: 16, right: 16 },
-  titleOverlay: { color: colors.textPrimary, fontSize: 19, fontWeight: '800', letterSpacing: -0.4 },
-  variantOverlay: { color: colors.textSecondary, fontSize: 12, marginTop: 3, letterSpacing: 0.2 },
+  // Stronger title contrast — was 19/800/-0.4
+  titleOverlay: { color: colors.textPrimary, fontSize: 21, fontWeight: '900', letterSpacing: -0.5 },
+  variantOverlay: { color: 'rgba(245,247,250,0.62)', fontSize: 12, marginTop: 4, letterSpacing: 0.2, fontWeight: '500' },
 
   body: { padding: 16 },
-  trustStrip: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 },
-  trustText: { color: colors.textSecondary, fontSize: 11, fontWeight: '700', letterSpacing: 0.4, flex: 1 },
-  viewerPill: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 999, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border },
-  viewerText: { color: colors.textChrome, fontSize: 10, fontWeight: '800' },
+  trustStrip: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 12 },
+  trustText: { color: colors.textSecondary, fontSize: 11, fontWeight: '600', letterSpacing: 0.2, flex: 1 },
+  viewerPill: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, backgroundColor: colors.bgDeep, borderWidth: 1, borderColor: colors.border },
+  viewerText: { color: colors.textChrome, fontSize: 10, fontWeight: '700' },
 
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   metaDot: { width: 3, height: 3, borderRadius: 1.5, backgroundColor: colors.border },
-  metaText: { color: colors.textSecondary, fontSize: 11, fontWeight: '600' },
+  metaText: { color: colors.textSecondary, fontSize: 11, fontWeight: '500' },
 
-  divider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginVertical: 12 },
+  divider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginVertical: 14 },
 
   priceRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
-  bidLabel: { color: colors.textMuted, fontSize: 9, fontWeight: '900', letterSpacing: 1.6, marginBottom: 4 },
-  bidValue: { color: colors.textPrimary, fontSize: 24, fontWeight: '800', letterSpacing: -0.6 },
-  bidsNote: { color: colors.textMuted, fontSize: 11, marginTop: 4, fontWeight: '600' },
+  bidLabel: { color: colors.textMuted, fontSize: 9, fontWeight: '900', letterSpacing: 1.4, marginBottom: 6 },
+  // Stronger metric emphasis — was 24/800
+  bidValue: { color: colors.textPrimary, fontSize: 26, fontWeight: '900', letterSpacing: -0.7, fontVariant: ['tabular-nums'] },
+  bidsNote: { color: colors.textMuted, fontSize: 11, marginTop: 5, fontWeight: '500' },
   timerWrap: { alignItems: 'flex-end' },
-  endsIn: { color: colors.textMuted, fontSize: 9, fontWeight: '900', letterSpacing: 1.6, marginBottom: 4 },
-  timerCompactMuted: { color: colors.textSecondary, fontSize: 12, fontWeight: '600' },
+  endsIn: { color: colors.textMuted, fontSize: 9, fontWeight: '900', letterSpacing: 1.4, marginBottom: 6 },
+  timerCompactMuted: { color: colors.textSecondary, fontSize: 12, fontWeight: '500' },
 
   footerRow: { flexDirection: 'row', gap: 6, marginTop: 14 },
   scorePill: {
-    flex: 1, backgroundColor: colors.bg,
-    borderRadius: 10, paddingVertical: 8, paddingHorizontal: 6,
+    flex: 1, backgroundColor: colors.bgDeep,
+    borderRadius: radii.md, paddingVertical: 9, paddingHorizontal: 6,
     borderWidth: 1, borderColor: colors.border, alignItems: 'center',
   },
-  reserveMet: { borderColor: 'rgba(16,185,129,0.3)', backgroundColor: 'rgba(16,185,129,0.05)' },
-  reserveNotMet: { borderColor: 'rgba(245,158,11,0.25)', backgroundColor: 'rgba(245,158,11,0.04)' },
-  scoreLabel: { color: colors.textMuted, fontSize: 9, fontWeight: '900', letterSpacing: 1.2 },
-  scoreVal: { color: colors.textChrome, fontSize: 13, fontWeight: '800', marginTop: 3 },
-  scoreSuffix: { color: colors.textMuted, fontSize: 11, fontWeight: '600' },
+  reserveMet: { borderColor: 'rgba(0,208,132,0.32)', backgroundColor: 'rgba(0,208,132,0.06)' },
+  reserveNotMet: { borderColor: 'rgba(245,158,11,0.28)', backgroundColor: 'rgba(245,158,11,0.05)' },
+  scoreLabel: { color: colors.textMuted, fontSize: 9, fontWeight: '900', letterSpacing: 1.0 },
+  scoreVal: { color: colors.textChrome, fontSize: 13, fontWeight: '800', marginTop: 4 },
+  scoreSuffix: { color: colors.textMuted, fontSize: 11, fontWeight: '500' },
 });

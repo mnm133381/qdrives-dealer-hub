@@ -221,8 +221,8 @@ export default function Home() {
           ) : auctions.length === 0 ? (
             <View style={styles.emptyIntelligence} testID="inv-empty-no-data">
               <View style={styles.emptyIcon}><Inbox size={20} color={colors.textChrome} /></View>
-              <Text style={styles.emptyTitle}>Marketplace is quiet right now</Text>
-              <Text style={styles.emptyBody}>No live or upcoming auctions on the floor. Check back soon — Q Drives lists new wholesale inventory throughout the day.</Text>
+              <Text style={styles.emptyTitle}>No active inventory on the floor right now</Text>
+              <Text style={styles.emptyBody}>Fresh wholesale inventory is uploaded throughout the day. The next listings will appear here automatically.</Text>
             </View>
           ) : inventory.length === 0 && featured ? (
             <View style={styles.emptyIntelligence} testID="inv-empty-featured-only">
@@ -533,18 +533,24 @@ const styles = StyleSheet.create({
      • filter empties results         → reset-filter card */
   emptyIntelligence: {
     backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: 1,
-    borderRadius: radii.lg, padding: 22, alignItems: 'center', marginBottom: 16,
+    borderRadius: radii.lg, padding: 26, alignItems: 'center', marginBottom: 16,
     borderStyle: 'dashed',
+    // Subtle ambient red glow — keeps empty state from feeling dead
+    shadowColor: colors.red,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.10,
+    shadowRadius: 18,
+    elevation: 2,
   },
   emptyIcon: {
-    width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, marginBottom: 12,
+    width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.bgDeep, borderWidth: 1, borderColor: 'rgba(255,30,45,0.18)', marginBottom: 14,
   },
-  emptyTitle: { color: colors.textPrimary, fontSize: 14, fontWeight: '800', letterSpacing: -0.2, textAlign: 'center' },
-  emptyBody: { color: colors.textChrome, fontSize: 12, fontWeight: '500', textAlign: 'center', marginTop: 6, marginBottom: 14, lineHeight: 17 },
+  emptyTitle: { color: colors.textPrimary, fontSize: 14.5, fontWeight: '800', letterSpacing: -0.2, textAlign: 'center' },
+  emptyBody: { color: colors.textChrome, fontSize: 12, fontWeight: '400', textAlign: 'center', marginTop: 8, marginBottom: 16, lineHeight: 18, opacity: 0.85, paddingHorizontal: 8 },
   emptyCta: {
     paddingHorizontal: 14, paddingVertical: 9, borderRadius: 999,
-    backgroundColor: 'rgba(185,28,28,0.10)', borderWidth: 1, borderColor: 'rgba(185,28,28,0.45)',
+    backgroundColor: 'rgba(255,30,45,0.10)', borderWidth: 1, borderColor: 'rgba(255,30,45,0.45)',
   },
   emptyCtaText: { color: colors.red, fontSize: 11, fontWeight: '900', letterSpacing: 1.0 },
 

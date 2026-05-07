@@ -1,29 +1,37 @@
 // Q Drives — Design tokens
 // Premium automotive dealer-auction infrastructure palette.
-// Refined per brand spec: matte black, gunmetal panels, controlled red,
-// chrome/silver muted to gunmetal. NOT a gaming/esports look.
+// Deep navy-tinted blacks for surface depth (avoids pure flat black),
+// gunmetal panels, controlled red, no gaming/esports look.
 export const colors = {
-  bg: '#050505',           // pure matte black
-  bgCard: '#0E1016',       // secondary panel
-  bgElevated: '#13161E',   // raised surfaces (operator panels, modals)
+  // Base surfaces — three depths to create embedded card feel,
+  // each with a faint navy tint for premium depth.
+  bg: '#050505',           // canvas (matte black)
+  bgDeep: '#070B14',       // mid-depth (subtle navy)
+  bgCard: '#0B1020',       // card surface (darkest navy)
+  bgElevated: '#0F1424',   // raised modals / sheets
   bgOverlay: 'rgba(5, 5, 5, 0.88)',
 
-  textPrimary: '#F5F7FA',  // bright white reserved for headings & data
-  textChrome: '#D6DAE2',   // body text on dark
+  // Type ladder
+  textPrimary: '#F5F7FA',  // metric / heading
+  textChrome: '#D6DAE2',   // body
   textSecondary: '#9099A6',
   textMuted: '#6B7280',
 
-  red: '#D4141E',          // primary accent — sharper than B91C1C
-  redHover: '#B30F18',
-  redPulse: 'rgba(212, 20, 30, 0.22)',
-  redGlow: 'rgba(212, 20, 30, 0.32)',  // softened halo
-  silver: '#B7BDC9',       // gunmetal/chrome muted
+  // Accent system
+  red: '#FF1E2D',          // sharper hot red — auction energy
+  redHover: '#D4141E',
+  redPulse: 'rgba(255, 30, 45, 0.22)',
+  redGlow: 'rgba(255, 30, 45, 0.30)',
+  redAmbient: 'rgba(255, 30, 45, 0.10)',  // soft top-edge highlights
+  silver: '#B7BDC9',
 
-  border: '#20232B',       // softer borders, less neon line work
+  border: '#1A1F2D',       // navy-tinted border (was flat #20232B)
+  borderSoft: '#10141F',   // ultra-subtle separators
   borderFocus: '#3A3F4A',
 
-  success: '#10B981',
-  successBg: 'rgba(16, 185, 129, 0.10)',
+  success: '#00D084',
+  successBg: 'rgba(0, 208, 132, 0.10)',
+  successGlow: 'rgba(0, 208, 132, 0.22)',
   warning: '#F59E0B',
   warningBg: 'rgba(245, 158, 11, 0.10)',
   danger: '#EF4444',
@@ -32,7 +40,7 @@ export const colors = {
 
 export const radii = {
   sm: 6,
-  md: 10,        // medium-only per brand spec — not 12+
+  md: 10,
   lg: 14,
   xl: 18,
   pill: 999,
@@ -57,19 +65,25 @@ export const fonts = {
 };
 
 export const shadows = {
-  // Restrained shadow — removes the "oversized neon glow" feel
   card: {
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.35,
-    shadowRadius: 8,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.45,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  cardElevated: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.55,
+    shadowRadius: 14,
+    elevation: 8,
   },
   glow: {
     shadowColor: colors.red,
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.32,    // restrained ambient red glow
-    shadowRadius: 10,
+    shadowOpacity: 0.30,
+    shadowRadius: 12,
     elevation: 6,
   },
 };

@@ -3288,11 +3288,11 @@ agent_communication:
             • E.34 POST /admin/reputation/dealer/<nonexistent>/adjust → 404.
   - task: "Reputation operator controls (adjust/suspend/cooldown/shadow/flag/notes)"
     implemented: true
-    working: false
+    working: true
     file: "backend/server.py + services/reputation.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: NA
         agent: "main"
@@ -3355,11 +3355,11 @@ agent_communication:
           operator controls under this task and it consistently 500s.
   - task: "Dispute system — raise / evidence / chat / state machine"
     implemented: true
-    working: false
+    working: true
     file: "backend/services/disputes.py + server.py routes"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: NA
         agent: "main"
@@ -3540,3 +3540,74 @@ agent_communication:
 
       Test artifact: /app/backend_test_reputation_disputes.py
       Run: `python /app/backend_test_reputation_disputes.py`
+
+
+# ───────────────────────────────────────────────────────────────────────
+# RETEST — ObjectId-leak fixes + B.10 bid-restriction + reputation snapshot
+# 2026-05-07 / agent: testing
+# ───────────────────────────────────────────────────────────────────────
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      [REPUTATION/DISPUTE RETEST — 10/10 PASS]
+      Test runner: /app/backend_test.py
+      Target: https://qdrives-dealer-hub.preview.emergentagent.com/api
+      Operator: +918977986662 (super_admin)  Dealer A: +919900000002 (raiser)
+      Dealer B: +919900000001 (counterparty)
+
+      ### 1) ObjectId-leak fixes verified (previously 500 → now 200):
+        ✅ 1a POST /admin/reputation/dealer/{A}/notes
+           {note:"retest note", visibility:"operator"} → 200 with full shape
+           {id, dealer_id, note, visibility, created_by, created_at}.
+           Verified `doc.pop("_id", None)` line at services/reputation.py:628.
+        ✅ 1b POST /disputes (raise payment_delay A→B) → 200
+           POST /disputes/{id}/messages {body:"retest message"} → 200 with
+           shape {id, dispute_id, actor_id, actor_role:"raiser", body, ts}.
+           Verified `doc.pop("_id", None)` line at services/disputes.py:272.
+        ✅ 1c POST /disputes/{id}/evidence {kind:"note", note:"retest evidence"}
+           → 200 with shape {id, dispute_id, kind, note, ts} (content_base64
+           correctly nulled in response).
+           Verified `doc.pop("_id", None)` line at services/disputes.py:234.
+
+      ### 2) B.10 bid-restriction enforcement (previously SKIPPED):
+        ✅ 2a POST /admin/reputation/dealer/{A}/cooldown
+           {reason:"retest", duration_hours:24} → 200
+           {ok:true, cooldown_until:"2026-05-08T11:20:48...+00:00"}.
+        ✅ 2b No live auction existed — operator (+918977986662) launched a
+           fresh one via POST /api/cars (Maruti Swift, MH99RT2848, starting
+           ₹3,50,000). Auction id=715da5f6-9e9b-4d78-b57c-209ffd5720ca,
+           seller=operator (≠ Dealer A).
+        ✅ 2c Dealer A POST /api/auctions/{id}/bid {amount:355000} → 403
+           {"detail":"DEALER_BIDDING_RESTRICTED:bidding_cooldown"}. Exact
+           prefix matched as required.
+        ✅ 2d POST /admin/reputation/dealer/{A}/lift/bidding_cooldown
+           {reason:"retest done"} → 200 {ok:true}.
+        ✅ 2e Dealer A retried same bid → 200 (success). Bid was accepted
+           into the auction (bid_id=b0a326e1-... amount=355000). Confirms
+           lift was effective; no longer 403. Not 400 because the previous
+           403 path never persisted a bid, so min-increment was still met.
+
+      ### 3) Reputation snapshot integrity:
+        ✅ 3a GET /reputation/me as Dealer A → 200.
+           score=47, total_events=3.
+           Cumulative signals:
+             • operator_score_adjustment: count=1 delta=-5
+             • operator_flag:              count=1 delta=-20
+             • dispute_won:                count=1 delta=+2
+             • dispute_lost:               count=0 delta=0  (Dealer A is the
+               raiser and won — dispute_lost legitimately 0)
+        ✅ 3b GET /reputation/me/timeline?limit=200 → 200, len=3.
+           Kinds present: ['dispute_won', 'operator_flag',
+           'operator_score_adjustment'] — required operator_score_adjustment
+           and dispute_won both present.
+
+      ### SUMMARY: 10 PASS / 0 FAIL / 0 SKIP
+      All previously-blocked steps (1a, 1b, 1c, B.10) now PASS. The two
+      task entries that were working:false are flipped to working:true:
+        - "Reputation operator controls (adjust/suspend/cooldown/shadow/flag/notes)"
+        - "Dispute system — raise / evidence / chat / state machine"
+
+      No 500s observed. No backend tracebacks during the run. Backend hot-
+      reloaded once at run start (WatchFiles picked up the `doc.pop("_id")`
+      patches), then served the entire suite cleanly.

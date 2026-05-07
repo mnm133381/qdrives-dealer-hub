@@ -625,6 +625,7 @@ async def add_operator_note(
         "created_at": now_utc(),
     }
     await db.dealer_notes.insert_one(doc)
+    doc.pop("_id", None)
     await record_operator_action(
         db, actor_id=actor_id, target_dealer_id=target_dealer_id,
         action="add_note", reason=None,

@@ -231,6 +231,7 @@ async def add_evidence(
         raise ValueError("evidence file too large (>6MB)")
 
     await db.dispute_evidence.insert_one(doc)
+    doc.pop("_id", None)
     await db.disputes.update_one(
         {"id": dispute_id},
         {"$set": {"updated_at": now_utc()},
@@ -268,6 +269,7 @@ async def add_message(
         "ts": now_utc(),
     }
     await db.dispute_messages.insert_one(doc)
+    doc.pop("_id", None)
     await db.disputes.update_one(
         {"id": dispute_id},
         {"$set": {"updated_at": now_utc()},

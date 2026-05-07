@@ -464,6 +464,19 @@ export default function AuctionScreen() {
             </View>
           </View>
         )}
+
+        {/* Raise Dispute — visible to anyone who has bid or won. Lean: links to
+            the my-disputes screen with auction_id pre-populated. */}
+        {!isOwn && (
+          <TouchableOpacity
+            onPress={() => router.push({ pathname: '/my-disputes', params: { raise: '1', auction_id: auction.id } } as any)}
+            style={styles.raiseDisputeBtn}
+            activeOpacity={0.75}
+            testID="auction-raise-dispute">
+            <AlertTriangle size={14} color={colors.textMuted} />
+            <Text style={styles.raiseDisputeTxt}>RAISE DISPUTE ON THIS LOT</Text>
+          </TouchableOpacity>
+        )}
       </ScrollView>
 
       {/* Sticky bid module */}
@@ -591,6 +604,15 @@ const styles = StyleSheet.create({
     shadowColor: colors.red, shadowOpacity: 0.6, shadowRadius: 16, elevation: 12,
   },
   outbidText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+  raiseDisputeBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, marginHorizontal: 16, marginTop: 16, paddingVertical: 12,
+    borderRadius: 6, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  raiseDisputeTxt: {
+    color: colors.textMuted, fontSize: 11, fontWeight: '900', letterSpacing: 0.7,
+  },
 
   hero: { width: '100%', height: HERO_H, backgroundColor: '#000', position: 'relative' },
   heroImg: { width: '100%', height: '100%' },

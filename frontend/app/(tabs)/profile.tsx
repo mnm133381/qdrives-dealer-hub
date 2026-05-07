@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BadgeCheck, ShieldCheck, TrendingUp, Award, LogOut, Settings, ChevronRight, Star, Bell, FileText, Send } from 'lucide-react-native';
 import { colors, radii, formatINR } from '../../src/theme';
 import { useAuth } from '../../src/auth';
+import { TrustCard } from '../../src/components/TrustCard';
 import { PendingApprovalCard } from '../../src/components/PendingApprovalCard';
 import { api } from '../../src/api';
 import { useToast } from '../../src/toast';
@@ -94,6 +95,9 @@ export default function Profile() {
 
         {/* Pending / suspended state — operator-side gating surface */}
         {!isAdmin && <PendingApprovalCard status={dealer.status} />}
+
+        {/* Trust card — institutional, B2B, fed by deterministic reputation engine */}
+        {!isAdmin && <TrustCard accountCreatedAt={dealer.created_at} />}
 
         <View style={styles.statsRow}>
           <BigStat label="LIVE BIDS" value={`${stats?.your_bids ?? 0}`} />

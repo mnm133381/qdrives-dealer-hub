@@ -3697,3 +3697,122 @@ agent_communication:
           with inline raiser/against reputation, severity color rail,
           aging hours, P-score. Detail not screenshot-tested but
           structurally identical pattern to drilldown.
+
+
+# ───────────────────────────────────────────────────────────────────────
+# P1 — DEALER UI (PHASE D COMPLETE)
+# 2026-05-07 / agent: main / verified via screenshot tool
+# ───────────────────────────────────────────────────────────────────────
+
+  Files created:
+    + /app/frontend/src/components/TrustCard.tsx        (institutional card +
+                                                          ConfidencePill export)
+    + /app/frontend/app/my-disputes/index.tsx           (list + raise modal)
+    + /app/frontend/app/my-disputes/[id].tsx            (detail + composer)
+
+  Files modified:
+    M /app/frontend/app/(tabs)/profile.tsx              (mount TrustCard)
+    M /app/frontend/app/lot/[id].tsx                    (Raise Dispute CTA)
+
+  Per the product brief — what was built:
+    ✅ Dealer Profile Trust Card — institutional/B2B feel:
+       - Score + risk-language Tier pill (TRUSTED/VERIFIED/WATCH/RISK
+         REVIEW/RESTRICTED) — no "Top dealer" / "Gold" / "Elite" copy
+       - Risk banner ONLY when active restrictions or risk signals exist
+       - 4-cell KPI grid: SETTLEMENT % · PAYMENT % · OPEN DSPT · AGE
+       - Last operator review line (date + truncated note)
+       - "VIEW MY DISPUTES" link — single CTA, no clutter
+       - Internal scoring formula NOT exposed (only operator-grade KPIs)
+
+    ✅ My-Disputes list — operational, evidence-driven:
+       - OPEN / CLOSED grouping
+       - Severity color rail (left edge), state pill, aging hours
+       - Linked auction reference visible on each row
+       - "What happens next" copy under every row in plain language
+       - Top-right RAISE button → dispute creation modal
+       - Modal: 8 type chips + linked auction pill + warn banner
+         ("False or frivolous disputes are tracked and impact your trust score")
+
+    ✅ My-Disputes detail — read-mostly + audit-grade:
+       - Header: type + title + state pill (severity-colored)
+       - WHAT HAPPENS NEXT box (every state has copy: dealer always
+         knows what happened, why, and what to do next)
+       - OUTCOME box renders only when resolved (with operator reason
+         + decided timestamp). Color/icon by outcome type.
+       - Meta cells: AGING / SLA / ESC / LOT
+       - YOUR FILING section with description + filed timestamp (immutable)
+       - VIEW LINKED LOT shortcut → /lot/<id>
+       - EVIDENCE list with + ADD button (note evidence supported here;
+         file uploads via base64 plumbed in API)
+       - OPERATOR MESSAGES — color-coded (you=blue / counterparty=green
+         / operator=red), each with timestamp, immutable timeline
+       - WITHDRAW DISPUTE button — only shows in raised state
+       - Sticky message composer (auto-hides on terminal states)
+
+    ✅ Auction detail Raise Dispute CTA:
+       - Visible to anyone NOT the seller of the lot
+       - Subtle institutional border button (not flashy CTA)
+       - Routes to /my-disputes with raise=1&auction_id pre-filled
+
+  ConfidencePill (exported from TrustCard.tsx):
+       - Risk-signaling only — pill is HIDDEN for trusted/stable tiers
+       - Renders for: WATCH (amber) / RISK REVIEW (red) / RESTRICTED
+       - Component is mounted-ready; wiring into AuctionCard list-side
+         intentionally deferred to avoid N+1 API calls (will land when
+         backend `_enrich_auction` includes seller_reputation_summary).
+         Detail-screen confidence pill can be added in a future micro-pass.
+
+  Acceptance E2E (mobile viewport 390x844, web preview):
+    ✅ trust_card mounts with real score (47), risk banner, KPIs
+    ✅ trust_card → my-disputes nav works
+    ✅ my-disputes list renders OPEN + CLOSED with state pills + next-step copy
+    ✅ dispute_drilldown opens detail with full operator log
+    ✅ auction_raise_cta visible to non-seller dealer
+    ✅ auction_to_raise navigates to /my-disputes?raise=1&auction_id=…
+       (modal opens with LINKED AUCTION pill + 8 type chips)
+
+  Constraints respected (per product brief):
+    ✓ No gamification, no leaderboards, no achievements
+    ✓ No "Top dealer" / "Elite seller" / "Gold seller" copy
+    ✓ No public dealer comparisons
+    ✓ Internal scoring formula NOT exposed (only normalized KPIs)
+    ✓ Only operator-grade language, B2B feel
+    ✓ Evidence-driven dispute UI with immutable timeline
+    ✓ Plain-language "what happens next" everywhere
+    ✓ No chat surfaces beyond the operator message thread
+    ✓ No social / networking / public profiles / AI summaries
+
+  ## frontend (yaml)
+  - task: "Dealer Trust Card on Profile (P1, institutional)"
+    implemented: true
+    working: true
+    file: "frontend/src/components/TrustCard.tsx + (tabs)/profile.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Verified via screenshot tool. Renders score 47, RISK REVIEW
+          tier pill, risk banner with operator flag count, 4-cell KPI
+          grid (SETTLEMENT/PAYMENT/OPEN DSPT/AGE), last operator
+          review line, VIEW MY DISPUTES CTA. No formulas exposed.
+  - task: "My Disputes (list + raise + detail)"
+    implemented: true
+    working: true
+    file: "frontend/app/my-disputes/*"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Verified via screenshot tool. List groups OPEN/CLOSED with
+          severity rails. Detail shows WHAT-HAPPENS-NEXT box, outcome
+          box, meta cells, your-filing, evidence add, operator messages
+          with role color-coding, withdraw button (raised only),
+          composer (auto-hides on terminal states). Raise modal opens
+          from auction detail with pre-filled auction reference.
+

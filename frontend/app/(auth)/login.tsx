@@ -21,6 +21,7 @@ import {
 } from 'lucide-react-native';
 import { colors, radii } from '../../src/theme';
 import { api } from '../../src/api';
+import { LogoLockup, LogoMark } from '../../src/components/Logo';
 
 type AccessError = {
   title: string;
@@ -100,7 +101,7 @@ export default function Login() {
 
         <View style={styles.heroContent}>
           <View style={styles.brandRow}>
-            <View style={styles.shieldMini}><Text style={styles.qMini}>Q</Text></View>
+            <LogoMark size={28} />
             <Text style={styles.brand}>Q DRIVES</Text>
             <View style={[styles.brandPill, isAdmin && styles.brandPillAdmin]}>
               {isAdmin && <Lock size={9} color={colors.warning} />}

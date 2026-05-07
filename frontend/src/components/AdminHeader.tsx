@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ShieldCheck, Activity } from 'lucide-react-native';
+import { Activity } from 'lucide-react-native';
 import { colors } from '../theme';
+import { LogoMark } from './Logo';
 
 /**
  * Compact trading-terminal operator shell. Replaces the prior 80px+
@@ -45,7 +46,7 @@ export function AdminHeader({
       {/* Ribbon — single dense row, fused brand + env + tick */}
       <View style={styles.ribbon}>
         <View style={styles.brandPill}>
-          <ShieldCheck size={10} color={colors.red} strokeWidth={2.6} />
+          <LogoMark size={11} />
           <Text style={styles.brandText}>Q DRIVES OPS</Text>
         </View>
         <View style={styles.envChip}>

@@ -1,42 +1,44 @@
 {
   "expo": {
-    "name": "frontend",
-    "slug": "frontend",
+    "name": "Q Drives",
+    "slug": "qdrives-dealer-hub",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
-    "scheme": "frontend",
-    "userInterfaceStyle": "automatic",
+    "icon": "./assets/brand/qdrives-app-icon.png",
+    "scheme": "qdrives",
+    "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "in.qdrives.dealer"
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#000"
+        "foregroundImage": "./assets/brand/qdrives-shield.png",
+        "backgroundColor": "#08080A"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "in.qdrives.dealer"
     },
     "web": {
       "bundler": "metro",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/brand/qdrives-shield.png"
     },
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
+          "image": "./assets/brand/qdrives-splash.png",
+          "imageWidth": 280,
           "resizeMode": "contain",
-          "backgroundColor": "#000"
+          "backgroundColor": "#08080A"
         }
       ],
       [
         "expo-notifications",
         {
-          "icon": "./assets/images/notification-icon.png",
+          "icon": "./assets/brand/qdrives-shield.png",
           "color": "#B91C1C",
           "defaultChannel": "default"
         }

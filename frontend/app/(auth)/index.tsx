@@ -23,6 +23,7 @@ import {
   ArrowRight, ShieldCheck, Gavel, ChevronRight, Lock, Award, Activity,
   Sparkles, Users, LayoutDashboard, Zap, Eye,
 } from 'lucide-react-native';
+import { LogoLockup } from '../../src/components/Logo';
 import { colors, radii } from '../../src/theme';
 
 export default function AuthLanding() {
@@ -37,11 +38,8 @@ export default function AuthLanding() {
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
         {/* Brand header */}
         <View style={styles.brand}>
-          <View style={styles.shield}>
-            <Text style={styles.shieldQ}>Q</Text>
-          </View>
-          <Text style={styles.brandText}>Q DRIVES</Text>
-          <Text style={styles.brandTag}>India's premium dealer auction floor</Text>
+          <LogoLockup width={260} />
+          <Text style={styles.brandTag}>DEALER AUCTION PLATFORM</Text>
         </View>
 
         <Text style={styles.entryHeading}>Choose your access</Text>

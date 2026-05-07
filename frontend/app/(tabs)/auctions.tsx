@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, Link } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radii } from '../../src/theme';
 import { api } from '../../src/api';
@@ -83,14 +83,14 @@ export default function AuctionsTab() {
           </View>
         ) : (
           auctions.map((a) => (
-            <AuctionCard
-              key={a.id}
-              auction={a}
-              testID={`auction-card-${a.id}`}
-              watching={!!watch[a.id]}
-              onWatch={() => toggleWatch(a.id)}
-              onPress={() => router.push(`/auction/${a.id}`)}
-            />
+            <Link key={a.id} href={{ pathname: '/auction/[id]', params: { id: a.id } } as any} asChild>
+              <AuctionCard
+                auction={a}
+                testID={`auction-card-${a.id}`}
+                watching={!!watch[a.id]}
+                onWatch={() => toggleWatch(a.id)}
+              />
+            </Link>
           ))
         )}
       </ScrollView>

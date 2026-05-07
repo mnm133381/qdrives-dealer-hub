@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, ImageBackground } from 'react-native';
+import { View, Text, StyleSheet, ImageBackground, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, withDelay, withRepeat, Easing } from 'react-native-reanimated';
 import { colors } from '../src/theme';
@@ -23,6 +23,18 @@ export default function Splash() {
 
   useEffect(() => {
     if (loading) return;
+    // Splash auto-redirect MUST only fire when the user is actually on
+    // the bare splash route ("/" or "/index"). On web, the same component
+    // tree stays mounted across in-app router pushes; without this guard
+    // the splash's setTimeout would yank dealers OUT of `/auction/[id]`
+    // and back to `/(tabs)` 1.9s after any deep navigation, completely
+    // breaking the BID NOW conversion flow.
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const path = window.location.pathname;
+      if (path && path !== '/' && path !== '/index') {
+        return;
+      }
+    }
     const t = setTimeout(() => {
       if (!dealer) router.replace('/(auth)' as any);
       else if (!dealer.kyc_completed) router.replace('/(auth)/kyc');

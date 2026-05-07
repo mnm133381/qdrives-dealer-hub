@@ -3,7 +3,7 @@ import {
   View, Text, StyleSheet, ScrollView, Pressable, TouchableOpacity, Image, RefreshControl, FlatList, Animated, Platform,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, Link } from 'expo-router';
 import { Bell, Activity, TrendingUp, ShieldCheck, ChevronRight, Search, BadgeCheck, Lock, Zap, Filter, Inbox } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, formatINR, radii } from '../../src/theme';
@@ -165,7 +165,8 @@ export default function Home() {
 
         {/* Featured Live Auction — Pressable for tactile feedback,
             urgency edge tint that pulses red when ending<60s, explicit
-            reserve status pill so dealers see whether the floor is met. */}
+            reserve status pill so dealers see whether the floor is met.
+            Wrapped in <Link> internally — single canonical nav path. */}
         {featured && (
           <View style={styles.section}>
             <View style={styles.sectionHead}>
@@ -173,14 +174,13 @@ export default function Home() {
                 <Text style={styles.sectionKicker}>FEATURED LIVE AUCTION</Text>
                 <Text style={styles.sectionTitle}>Hottest deal right now</Text>
               </View>
-              <Pressable onPress={() => router.push({ pathname: '/auction/[id]', params: { id: featured.id } } as any)} hitSlop={8}>
-                <Text style={styles.seeAll}>Open →</Text>
-              </Pressable>
+              <Link href={{ pathname: '/auction/[id]', params: { id: featured.id } } as any} asChild>
+                <Pressable hitSlop={8} testID="featured-open-link">
+                  <Text style={styles.seeAll}>Open →</Text>
+                </Pressable>
+              </Link>
             </View>
-            <FeaturedCard
-              auction={featured}
-              onPress={() => router.push({ pathname: '/auction/[id]', params: { id: featured.id } } as any)}
-            />
+            <FeaturedCard auction={featured} />
           </View>
         )}
 
@@ -241,12 +241,12 @@ export default function Home() {
               </TouchableOpacity>
             </View>
           ) : inventory.slice(0, 5).map((a) => (
-            <AuctionCard
-              key={a.id}
-              auction={a}
-              testID={`auction-card-${a.id}`}
-              onPress={() => router.push(`/auction/${a.id}`)}
-            />
+            <Link key={a.id} href={{ pathname: '/auction/[id]', params: { id: a.id } } as any} asChild>
+              <AuctionCard
+                auction={a}
+                testID={`auction-card-${a.id}`}
+              />
+            </Link>
           ))}
         </View>
 
@@ -284,27 +284,23 @@ function PulseStat({ label, value, accent }: { label: string; value: any; accent
 /* ------------------------------------------------------------------ *
  * FeaturedCard — premium dealer-facing live auction tile.
  *
- * P0 routing-failure post-mortem (2026-05-07):
- *   The card *visually* rendered but tapping never navigated. Root cause
- *   was multi-layered:
- *     (a) StyleSheet.absoluteFillObject Image and the two gradient
- *         Views were intercepting touch events on web because none of
- *         them had pointerEvents="none". On iOS (where this matters
- *         less) they still consumed the first touch frame and broke
- *         haptic latency. Fix: every decorative absolute layer is now
- *         pointer-events disabled.
- *     (b) BID NOW was a passive <View>. On RN Web, click events on
- *         deeply nested children inside a Pressable do bubble, BUT only
- *         if no intermediate layer captures them. The transparent-
- *         positioned overlays were silently capturing them. Fix: BID
- *         NOW is now its own TouchableOpacity with the same onPress AND
- *         a stopPropagation no-op so the parent doesn't fire twice.
- *     (c) Outer container is now a TouchableOpacity (instead of
- *         Pressable) because TouchableOpacity has a stable web onClick
- *         binding without the styled-pressed function form that some
- *         RN-Web versions defer.
+ * Architecture (post-P0 routing fix):
+ *   • Whole card wrapped in <Link asChild> → on web renders as a real
+ *     <a href> tag, browser handles navigation natively (no SPA quirks
+ *     and no "<button> inside <button>" hydration error). On native it
+ *     resolves through the standard expo-router stack.
+ *   • Inner Pressable is the single visible touch target for the entire
+ *     card. Press scale + opacity feedback fire on every tap.
+ *   • BID NOW is a styled <View> (NOT a button) inside the same tap
+ *     target. The visual chip looks like a CTA but is functionally
+ *     identical to tapping anywhere else on the card — no nested
+ *     interactives, no broken bubble paths.
+ *   • Decorative absolute layers (Image, gradients, top row, title text,
+ *     price column) carry pointerEvents="none" so they cannot intercept
+ *     the click on web.
+ *   • Reserve pill, urgency pulse, ENDING NOW state are purely visual.
  * ------------------------------------------------------------------ */
-function FeaturedCard({ auction, onPress }: { auction: any; onPress: () => void }) {
+function FeaturedCard({ auction }: { auction: any }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
   const endMs = auction.end_time ? new Date(auction.end_time).getTime() : 0;
@@ -325,61 +321,24 @@ function FeaturedCard({ auction, onPress }: { auction: any; onPress: () => void 
   }, [ending]);
   const glowOpacity = ending ? pulse.interpolate({ inputRange: [0, 1], outputRange: [0.25, 0.7] }) : 0;
 
-  // Single navigation handler. Triggers haptic on native, then fires the
-  // parent-supplied onPress (which calls router.push to the auction
-  // detail). Both the card and the BID NOW chip call this directly so
-  // nested-bubble failure modes can never block conversion.
-  const handleNavigate = useCallback(() => {
-    // Diagnostic — emits a window-scoped beacon so external test runners
-    // can confirm onPress fired even if the router.push side-effect is
-    // delayed in the web environment. Safe in production: no-ops on
-    // native, costs zero on the production-build code path.
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      (window as any).__qd_lastFeatPress = { id: auction.id, at: Date.now() };
-      // eslint-disable-next-line no-console
-      console.log('[FeaturedCard] BID NOW pressed →', auction.id);
+  const onCardPress = () => {
+    if (Platform.OS !== 'web') {
+      try { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {}); } catch {}
     }
-    try {
-      if (Platform.OS !== 'web') {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-      }
-    } catch {}
-    // Primary navigation path: expo-router push. On web we observed
-    // intermittent silent no-ops when router.push is invoked from inside
-    // the (tabs) group targeting a root-level dynamic route. The
-    // window.location fallback below guarantees the dealer ALWAYS lands
-    // on the auction detail screen, even if the router fails. The
-    // fallback is gated by an auth-aware delay so we don't double-
-    // navigate when push succeeds.
-    onPress();
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      const before = window.location.pathname;
-      setTimeout(() => {
-        if (window.location.pathname === before && !window.location.pathname.endsWith(auction.id)) {
-          // eslint-disable-next-line no-console
-          console.log('[FeaturedCard] router.push did not navigate; using window.location fallback');
-          window.location.assign(`/auction/${auction.id}`);
-        }
-      }, 200);
-    }
-  }, [onPress, auction.id]);
+  };
 
   return (
-    <View style={styles.featCardWrap}>
-      {/* Background tap layer — covers the whole card via absoluteFill so
-          tapping any non-interactive surface (image, gradients, title,
-          price column) navigates. We use Pressable WITHOUT
-          accessibilityRole so it renders as a plain <div> on web; this
-          avoids the "<button> inside <button>" hydration bug that broke
-          BID NOW navigation. */}
+    <Link
+      href={{ pathname: '/auction/[id]', params: { id: auction.id } } as any}
+      asChild
+    >
       <Pressable
-        onPress={handleNavigate}
+        onPress={onCardPress}
         testID={`featured-auction-${auction.id}`}
         accessibilityLabel={`Open auction for ${auction.car?.year || ''} ${auction.car?.make || ''} ${auction.car?.model || ''}`}
         style={({ pressed }) => [styles.featCard, pressed && styles.featCardPressed]}
       >
-        {/* Decorative absolute layers — pointerEvents="none" so they
-            never steal the touch event. */}
+        {/* Decorative absolute layers — pointer-events disabled. */}
         <Image source={{ uri: auction.car?.images?.[0] }} style={styles.featImage} pointerEvents="none" />
         <View style={styles.featGradTop} pointerEvents="none" />
         <View style={styles.featGradBottom} pointerEvents="none" />
@@ -398,8 +357,8 @@ function FeaturedCard({ auction, onPress }: { auction: any; onPress: () => void 
           </View>
         </View>
 
-        <View style={styles.featBottom}>
-          <View style={styles.featMetaRow} pointerEvents="none">
+        <View style={styles.featBottom} pointerEvents="none">
+          <View style={styles.featMetaRow}>
             <View style={styles.featRegPlate}>
               <Text style={styles.featRegText}>{auction.car?.registration_number}</Text>
             </View>
@@ -417,39 +376,29 @@ function FeaturedCard({ auction, onPress }: { auction: any; onPress: () => void 
               </Text>
             </View>
           </View>
-          <Text style={styles.featTitle} numberOfLines={1} pointerEvents="none">{auction.car?.year} {auction.car?.make} {auction.car?.model}</Text>
-          <Text style={styles.featVariant} numberOfLines={1} pointerEvents="none">
+          <Text style={styles.featTitle} numberOfLines={1}>{auction.car?.year} {auction.car?.make} {auction.car?.model}</Text>
+          <Text style={styles.featVariant} numberOfLines={1}>
             {auction.car?.variant ? auction.car?.variant + ' · ' : ''}{(auction.car?.km_driven || 0).toLocaleString('en-IN')} km · {auction.car?.fuel_type}
           </Text>
           <View style={styles.featPriceRow}>
-            <View style={{ flex: 1 }} pointerEvents="none">
+            <View style={{ flex: 1 }}>
               <Text style={styles.featPriceLabel}>CURRENT BID</Text>
               <Text style={styles.featPrice}>{formatINR(auction.current_bid)}</Text>
               <Text style={styles.featBids}>{auction.total_bids || 0} bids · {auction.interested_dealers || 0} watching</Text>
             </View>
+            {/* BID NOW chip — visual CTA, NOT a separate button. Tap on
+                this region triggers the same Link navigation as the card. */}
+            <View
+              style={[styles.featCta, ending && { backgroundColor: colors.red }]}
+              testID={`featured-bid-now-${auction.id}`}
+            >
+              <Text style={styles.featCtaText}>BID NOW</Text>
+              <ChevronRight size={14} color="#fff" />
+            </View>
           </View>
         </View>
       </Pressable>
-
-      {/* BID NOW — rendered OUTSIDE the Pressable card region (visually
-          overlaid via absolute positioning) so it has its own
-          accessibilityRole="button" without producing the
-          <button>-in-<button> hydration error. Tap on it ALWAYS fires
-          its own onPress; tap anywhere else on the card fires the card's
-          onPress. Both routes lead to /auction/{id}. */}
-      <TouchableOpacity
-        onPress={handleNavigate}
-        activeOpacity={0.85}
-        testID={`featured-bid-now-${auction.id}`}
-        accessibilityRole="button"
-        accessibilityLabel="Open auction and place bid"
-        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-        style={[styles.featCtaFloat, ending && { backgroundColor: colors.red }]}
-      >
-        <Text style={styles.featCtaText}>BID NOW</Text>
-        <ChevronRight size={14} color="#fff" />
-      </TouchableOpacity>
-    </View>
+    </Link>
   );
 }
 

@@ -92,7 +92,7 @@ export default function Purchases() {
             return (
               <TouchableOpacity
                 key={a.id}
-                onPress={() => router.push(`/auction/${a.id}`)}
+                onPress={() => router.push({ pathname: '/lot/[id]', params: { id: a.id } } as any)}
                 style={styles.card}
                 activeOpacity={0.85}
               >

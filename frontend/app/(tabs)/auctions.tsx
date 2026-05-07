@@ -89,7 +89,7 @@ export default function AuctionsTab() {
               testID={`auction-card-${a.id}`}
               watching={!!watch[a.id]}
               onWatch={() => toggleWatch(a.id)}
-              onPress={() => router.push(`/dealer/auction/${a.id}` as any)}
+              onPress={() => router.push({ pathname: '/lot/[id]', params: { id: a.id } } as any)}
             />
           ))
         )}

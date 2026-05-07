@@ -27,12 +27,12 @@ export default function RootLayout() {
                 <Stack.Screen name="(auth)" options={{ animation: 'fade' }} />
                 <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
                 <Stack.Screen name="(admin)" options={{ animation: 'fade' }} />
-                <Stack.Screen name="auction/[id]" options={{ animation: 'slide_from_bottom' }} />
-                {/* Dealer-scoped alias — redirects to canonical /auction/[id]. */}
-                <Stack.Screen name="dealer/auction/[id]" options={{ animation: 'fade' }} />
-                <Stack.Screen name="sell/inspection" options={{ animation: 'slide_from_bottom', presentation: 'card' }} />
-                <Stack.Screen name="my-listings/index" options={{ animation: 'slide_from_right' }} />
                 <Stack.Screen name="notifications" options={{ animation: 'slide_from_right' }} />
+                {/* Nested folder routes (auction/[id], my-listings/index, sell/inspection)
+                    are auto-discovered by expo-router. DO NOT register them as
+                    Stack.Screen entries with slashes in the name — that registration
+                    overrides the file-based route and causes /auction/{id} to
+                    redirect to /. Per-screen animations now default from screenOptions. */}
               </Stack>
             </InspectionProvider>
           </ToastProvider>

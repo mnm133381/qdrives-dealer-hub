@@ -223,7 +223,7 @@ export default function AuctionScreen() {
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       {/* Outbid flash overlay */}
-      <Animated.View pointerEvents="none" style={[styles.outbidFlash, flashStyle]}>
+      <Animated.View style={[styles.outbidFlash, flashStyle, { pointerEvents: 'none' }]}>
         <View style={styles.outbidContent}>
           <AlertTriangle size={20} color="#fff" />
           <Text style={styles.outbidText}>{feedToast}</Text>

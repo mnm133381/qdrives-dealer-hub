@@ -203,7 +203,7 @@ export default function MyListings() {
             const lockedByOperator = !!a.operator_lock;
             return (
               <View key={a.id} style={styles.card} testID={`my-listing-${a.id}`}>
-                <TouchableOpacity onPress={() => router.push(`/auction/${a.id}`)} style={styles.cardHead} activeOpacity={0.85}>
+                <TouchableOpacity onPress={() => router.push({ pathname: '/lot/[id]', params: { id: a.id } } as any)} style={styles.cardHead} activeOpacity={0.85}>
                   <Image source={{ uri: car.images?.[0] }} style={styles.thumb} />
                   <View style={{ flex: 1, marginLeft: 12 }}>
                     <View style={styles.titleRow}>

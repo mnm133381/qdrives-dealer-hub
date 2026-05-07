@@ -296,7 +296,7 @@ export default function Sell() {
       } else {
         toast.show('Auction launched successfully', 'success');
       }
-      router.push(`/auction/${res.auction.id}`);
+      router.push({ pathname: '/lot/[id]', params: { id: res.auction.id } } as any);
       // Clear form + draft for next listing
       setForm(EMPTY_FORM);
       setErrors({});

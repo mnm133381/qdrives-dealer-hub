@@ -69,7 +69,7 @@ export default function Home() {
   }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
-  useEffect(() => { const t = setInterval(load, 12000); return () => clearInterval(t); }, [load]);
+  useEffect(() => { const t = setInterval(load, 60000); return () => clearInterval(t); }, [load]);
 
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
@@ -174,7 +174,7 @@ export default function Home() {
                 <Text style={styles.sectionTitle}>Hottest deal right now</Text>
               </View>
               <TouchableOpacity
-                onPress={() => router.push(`/dealer/auction/${featured.id}` as any)}
+                onPress={() => router.push({ pathname: '/lot/[id]', params: { id: featured.id } } as any)}
                 hitSlop={8}
                 activeOpacity={0.7}
                 testID="featured-open-link"
@@ -247,7 +247,7 @@ export default function Home() {
               key={a.id}
               auction={a}
               testID={`auction-card-${a.id}`}
-              onPress={() => router.push(`/dealer/auction/${a.id}` as any)}
+              onPress={() => router.push({ pathname: '/lot/[id]', params: { id: a.id } } as any)}
             />
           ))}
         </View>
@@ -300,8 +300,8 @@ function PulseStat({ label, value, accent }: { label: string; value: any; accent
  *     the tap on web.
  *   • activeOpacity={0.85} provides the press feedback (instant
  *     "tap registered" feel). On native we also fire a Medium haptic.
- *   • Routes to `/dealer/auction/{id}` — the canonical bid-execution
- *     surface per the routing manifesto.
+ *   • Routes to `/auction/{id}` — the canonical bid-execution
+ *     surface (single source of truth, no duplicate dealer alias).
  * ------------------------------------------------------------------ */
 function FeaturedCard({ auction }: { auction: any }) {
   const router = useRouter();
@@ -329,7 +329,7 @@ function FeaturedCard({ auction }: { auction: any }) {
     if (Platform.OS !== 'web') {
       try { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {}); } catch {}
     }
-    router.push(`/dealer/auction/${auction.id}` as any);
+    router.push({ pathname: '/lot/[id]', params: { id: auction.id } } as any);
   }, [router, auction.id]);
 
   return (
@@ -341,14 +341,14 @@ function FeaturedCard({ auction }: { auction: any }) {
       accessibilityLabel={`Open auction for ${auction.car?.year || ''} ${auction.car?.make || ''} ${auction.car?.model || ''}`}
       style={styles.featCard}
     >
-      <Image source={{ uri: auction.car?.images?.[0] }} style={styles.featImage} pointerEvents="none" />
-      <View style={styles.featGradTop} pointerEvents="none" />
-      <View style={styles.featGradBottom} pointerEvents="none" />
+      <Image source={{ uri: auction.car?.images?.[0] }} style={[styles.featImage, { pointerEvents: 'none' }]} />
+      <View style={[styles.featGradTop, { pointerEvents: 'none' }]} />
+      <View style={[styles.featGradBottom, { pointerEvents: 'none' }]} />
       {ending && (
-        <Animated.View pointerEvents="none" style={[styles.featUrgencyGlow, { opacity: glowOpacity }]} />
+        <Animated.View style={[styles.featUrgencyGlow, { opacity: glowOpacity, pointerEvents: 'none' }]} />
       )}
 
-      <View style={styles.featTopRow} pointerEvents="none">
+      <View style={[styles.featTopRow, { pointerEvents: 'none' }]}>
         <View style={styles.liveBadge}>
           <LivePulse size={6} />
           <Text style={styles.liveBadgeText}>LIVE</Text>
@@ -359,7 +359,7 @@ function FeaturedCard({ auction }: { auction: any }) {
         </View>
       </View>
 
-      <View style={styles.featBottom} pointerEvents="none">
+      <View style={[styles.featBottom, { pointerEvents: 'none' }]}>
         <View style={styles.featMetaRow}>
           <View style={styles.featRegPlate}>
             <Text style={styles.featRegText}>{auction.car?.registration_number}</Text>

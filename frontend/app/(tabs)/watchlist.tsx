@@ -52,7 +52,7 @@ export default function Watchlist() {
               testID={`watch-card-${a.id}`}
               watching
               onWatch={() => remove(a.id)}
-              onPress={() => router.push(`/auction/${a.id}`)}
+              onPress={() => router.push({ pathname: '/lot/[id]', params: { id: a.id } } as any)}
             />
           ))
         )}

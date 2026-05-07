@@ -60,7 +60,7 @@ export default function Notifications() {
             return (
               <TouchableOpacity
                 key={n.id}
-                onPress={() => n.auction_id && router.push(`/auction/${n.auction_id}`)}
+                onPress={() => n.auction_id && router.push({ pathname: '/lot/[id]', params: { id: n.auction_id } } as any)}
                 style={[styles.notif, !n.read && styles.notifUnread]}
               >
                 <View style={[styles.icon, { backgroundColor: `${conf.color}22`, borderColor: `${conf.color}55` }]}>

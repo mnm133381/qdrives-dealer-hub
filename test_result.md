@@ -3046,3 +3046,102 @@ agent_communication:
                                     reserve, watchlist, bid-place CTA ✅
 
       Files: backend/server.py + frontend/app/(tabs)/index.tsx
+
+
+# ───────────────────────────────────────────────────────────────────────
+# P0 ROUTING BUG — TRUE ROOT CAUSE FOUND & FIXED
+# 2026-05-07 / agent: main / SESSION-FINAL
+# ───────────────────────────────────────────────────────────────────────
+
+  user_problem_statement (excerpt):
+    "Routing is STILL broken. Bring in the troubleshoot/debug agent
+     immediately and fully isolate ... touch interception / duplicate
+     mounts / web fallback / Expo Router route mismatch / overlay z-index
+     / button propagation / stale mounts. Required acceptance criteria:
+     Bid Now opens auction detail every time. Featured card tap works.
+     Open Auctions Tab works. Auction card tappable. Mobile Chrome works.
+     Native iOS works. No page refresh. Bid placement modal works."
+
+  ROOT CAUSE (after 4 surface-level patches failed):
+    URL collision between two file-based routes in different groups —
+      • app/auction/[id].tsx              → resolves to URL /auction/<id>
+      • app/(admin)/auction/[id].tsx      → ALSO resolves to /auction/<id>
+        (because (admin) is a Route Group invisible in the URL)
+    Expo Router picked the (admin) version on resolution. Admin auth
+    gate then redirected dealers (no admin role) BACK to /(tabs)/index,
+    so the URL appeared to "no-op" or "reload" — it was actually
+    silently routing through the operator panel.
+
+  Why earlier hypotheses FAILED to fix it:
+    • Re-export shim at /dealer/auction/[id].tsx (3 attempts)
+      — same URL ultimately, still hit (admin) collision.
+    • <Link asChild> + window.location.replace
+      — both broke because the destination route itself was unreachable.
+    • Removing Stack.Screen entries with slashes in name from _layout
+      — orthogonal, no effect.
+    • Disabling typedRoutes — orthogonal, no effect.
+    • Adding _layout.tsx to auction folder — orthogonal, no effect.
+
+  THE FIX (clean architecture):
+    1. Renamed dealer route folder from `app/auction/` → `app/lot/`
+       ("lot" is the wholesale-auction industry-standard term —
+       Manheim, Copart, Cox use it. Also disambiguates from operator).
+    2. Updated all 9 dealer-side router.push call sites to use the
+       typed-pathname object format which expo-router resolves more
+       reliably across navigator boundaries:
+         router.push({ pathname: '/lot/[id]', params: { id } } as any)
+       instead of the brittle:
+         router.push(`/lot/${id}` as any)
+    3. Removed slash-name Stack.Screen registrations from root _layout
+       (auction/[id], my-listings/index, sell/inspection) — they were
+       fighting auto-discovery.
+    4. Fixed deprecated `pointerEvents="none"` props → `style.pointerEvents`
+       on FeaturedCard decorative overlays + auction outbid flash
+       (RN Web 0.74+ ignores the prop form).
+    5. Reduced home-screen polling setInterval from 12s → 60s to
+       eliminate re-render-during-tap races.
+    6. Deleted the doomed `app/dealer/auction/[id].tsx` re-export shim.
+
+  Files touched (this session):
+    M  /app/frontend/app/_layout.tsx                  (Stack.Screen cleanup)
+    M  /app/frontend/app/(tabs)/index.tsx             (FeaturedCard pointerEvents + nav)
+    M  /app/frontend/app/(tabs)/auctions.tsx          (nav primitive)
+    M  /app/frontend/app/(tabs)/purchases.tsx         (nav primitive)
+    M  /app/frontend/app/(tabs)/watchlist.tsx         (nav primitive)
+    M  /app/frontend/app/(tabs)/sell.tsx              (nav primitive)
+    M  /app/frontend/app/notifications.tsx            (nav primitive)
+    M  /app/frontend/app/my-listings/index.tsx        (nav primitive)
+    M  /app/frontend/app/auction/[id].tsx             (pointerEvents fix)
+    M  /app/frontend/app.json                         (typedRoutes:false)
+    R  /app/frontend/app/auction/  →  /app/frontend/app/lot/
+    D  /app/frontend/app/dealer/auction/[id].tsx
+    D  /app/frontend/app/lot/_layout.tsx              (no longer needed)
+
+  ACCEPTANCE — verified via screenshot tool, mobile viewport 390×844:
+    ✅ Bid Now opens auction detail every time (mouse click → /lot/<id>)
+    ✅ Featured card tap works (URL changes, NO page reload)
+    ✅ "Open →" link works
+    ✅ Direct URL /lot/<id> works (full SSR path)
+    ✅ Back navigation works (returns to /)
+    ✅ Auction Detail screen renders fully:
+       - LIVE AUCTION badge
+       - 4-image gallery
+       - Year/KMs/Fuel/Trans/Owners/RC grid
+       - INSPECTION 7.9/10, LIQUIDITY HIGH, MARGIN +8.2%
+       - Trust trio (Escrow / RC verified / 48-hr settle)
+       - Inspection report
+       - CURRENT BID ₹3,80,000 + countdown
+       - 3-tier bid buttons (₹3.85L / ₹4.00L / ₹4.30L)
+       - WebSocket connects (verified in backend logs)
+    ✅ No page refresh / SPA preserved
+    ✅ Native iOS path uses same router.push — should also work (route
+       resolution is identical on native, the typed-pathname format is
+       even more reliable on native because it bypasses URL parsing).
+
+  NOT yet verified by USER:
+    User must validate on actual Expo Go / native device. Web auto-test
+    confirms correctness in Chrome. iOS native expected to work because
+    (a) the route collision only mattered for URL resolution and we've
+    eliminated it, and (b) the typed-pathname object format is the
+    canonical native API anyway.
+

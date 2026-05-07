@@ -2913,6 +2913,26 @@ async def _push_auction_ended(auction: dict) -> None:
     if docs:
         await db.notifications.insert_many(docs)
 
+    # ---- Settlement intake hook ---------------------------------------
+    # If the auction has a winner whose final bid hits reserve, create
+    # the operator-controlled settlement record. Idempotent — repeated
+    # ticks won't double-create.
+    if won and top:
+        try:
+            full_auction = await db.auctions.find_one({"id": auction["id"]}, {"_id": 0}) or auction
+            full_auction = dict(full_auction)
+            full_auction["car"] = car
+            full_auction["ended_at"] = full_auction.get("end_time") or now
+            full_auction["reserve_met"] = True
+            await sett_svc.create_for_auction_win(
+                db,
+                auction=full_auction,
+                winner_dealer_id=top,
+                winning_amount=float(final_bid),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("settlement intake failed for %s: %s", auction.get("id"), exc)
+
 
 async def auction_scheduler() -> None:
     """
@@ -3507,6 +3527,7 @@ async def root():
 # ═════════════════════════════════════════════════════════════════════
 from services import reputation as rep_svc           # noqa: E402
 from services import disputes as disp_svc            # noqa: E402
+from services import settlement as sett_svc          # noqa: E402
 
 
 # ── Pydantic models ─────────────────────────────────────────────────
@@ -4061,6 +4082,283 @@ async def admin_dispute_decide(
             source="operator", actor_id=admin["id"], note=req.reason,
         )
     return dispute_doc
+
+
+# =====================================================================
+# Settlement & Deal Completion (16-state, operator-controlled)
+# =====================================================================
+class SettlementTransitionReq(BaseModel):
+    action: str
+    payload: Optional[Dict[str, Any]] = None
+    reason: Optional[str] = None
+
+
+class SettlementNoteReq(BaseModel):
+    text: str
+
+
+class SettlementMessageReq(BaseModel):
+    text: str
+
+
+class SettlementProofReq(BaseModel):
+    kind: str = "image"   # "image" | "document" | "note" | "utr"
+    filename: Optional[str] = None
+    mime_type: Optional[str] = None
+    content_base64: Optional[str] = None
+    note: Optional[str] = None
+
+
+@api.get("/settlements/states")
+async def settlement_states_catalog():
+    """Public catalog of states + transitions for the UI to render
+    contextual help. No auth required."""
+    return {
+        "states": list(sett_svc.STATES),
+        "terminal_states": list(sett_svc.TERMINAL_STATES),
+        "annotation_states": list(sett_svc.ANNOTATION_STATES),
+        "transitions": {
+            k: {
+                "from": list(v["from"]),
+                "to": v["to"],
+                "operator_only": v["operator_only"],
+            } for k, v in sett_svc.TRANSITIONS.items()
+        },
+        "dealer_allowed_actions": list(sett_svc.DEALER_ALLOWED_ACTIONS),
+    }
+
+
+# ---- Dealer-facing ---------------------------------------------------
+@api.get("/settlements/me")
+async def settlements_for_me(dealer = Depends(get_current_dealer)):
+    return await sett_svc.list_for_dealer(db, dealer["id"])
+
+
+@api.get("/settlements/{settlement_id}")
+async def settlement_detail(settlement_id: str, dealer = Depends(get_current_dealer)):
+    is_operator = has_permission(dealer, "manage_reputation") or has_permission(dealer, "resolve_disputes") or (dealer.get("role") in ("super_admin", "admin", "operations_admin"))
+    if is_operator:
+        out = await sett_svc.get_operator_view(db, settlement_id)
+    else:
+        out = await sett_svc.get_dealer_view(db, settlement_id, dealer["id"])
+    if not out:
+        raise HTTPException(status_code=404, detail="Settlement not found")
+    return out
+
+
+@api.post("/settlements/{settlement_id}/mark-payment-sent")
+async def settlement_mark_payment_sent(
+    settlement_id: str,
+    req: SettlementProofReq,
+    dealer = Depends(get_current_dealer),
+):
+    """Dealer uploads proof that they have sent the deposit. This is the
+    ONLY dealer-driven transition. Operator must verify before any
+    further progression."""
+    try:
+        return await sett_svc.transition(
+            db, settlement_id=settlement_id, action="mark_payment_sent",
+            actor_id=dealer["id"], actor_is_operator=False,
+            payload=req.dict(), reason="dealer uploaded payment proof",
+        )
+    except sett_svc.TransitionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.get("/settlements/{settlement_id}/proof")
+async def settlement_get_own_proof(
+    settlement_id: str, dealer = Depends(get_current_dealer),
+):
+    p = await sett_svc.get_dealer_proof_content(db, settlement_id, dealer["id"])
+    if not p:
+        raise HTTPException(status_code=404, detail="No proof on file")
+    return p
+
+
+# ---- Operator-facing -------------------------------------------------
+def _require_settlement_operator(admin_user):
+    """Settlements need ops/super-admin authority. Inspection admins
+    cannot move payment states, but they CAN mark visit/inspection done.
+    For MVP we gate everything to ops + admin + super_admin."""
+    role = (admin_user.get("role") or "")
+    if role not in ("super_admin", "admin", "operations_admin"):
+        raise HTTPException(status_code=403, detail="Operator authority required")
+    return admin_user
+
+
+@api.get("/admin/settlements/queue")
+async def admin_settlements_queue(
+    state: Optional[str] = None,
+    limit: int = 200,
+    admin = Depends(get_current_admin),
+):
+    _require_settlement_operator(admin)
+    return await sett_svc.operator_queue(db, state=state, limit=limit)
+
+
+@api.get("/admin/settlements/summary")
+async def admin_settlements_summary(admin = Depends(get_current_admin)):
+    _require_settlement_operator(admin)
+    counts = await sett_svc.operator_queue_summary(db)
+    # Group into the buckets the operator dashboard cares about
+    buckets = {
+        "deposit_pending":      counts.get("awaiting_operator_review", 0) + counts.get("deposit_requested", 0),
+        "deposit_submitted":    counts.get("deposit_under_verification", 0),
+        "visit_scheduled":      counts.get("visit_scheduled", 0),
+        "inspection_completed": counts.get("inspection_completed", 0),
+        "payment_pending":      counts.get("full_payment_requested", 0),
+        "refund_pending":       counts.get("refund_approved", 0),
+        "delayed":              counts.get("settlement_delayed", 0) + counts.get("no_show_review", 0) + counts.get("dispute", 0),
+        "completed":            counts.get("completed", 0) + counts.get("refund_completed", 0),
+    }
+    return {
+        "by_state": counts,
+        "buckets": buckets,
+        "total_open": sum(v for k, v in counts.items() if k not in sett_svc.TERMINAL_STATES),
+    }
+
+
+@api.get("/admin/settlements/{settlement_id}")
+async def admin_settlement_detail(
+    settlement_id: str, admin = Depends(get_current_admin),
+):
+    _require_settlement_operator(admin)
+    out = await sett_svc.get_operator_view(db, settlement_id)
+    if not out:
+        raise HTTPException(status_code=404, detail="Settlement not found")
+    return out
+
+
+@api.post("/admin/settlements/{settlement_id}/transition")
+async def admin_settlement_state_transition(
+    settlement_id: str,
+    req: SettlementTransitionReq,
+    admin = Depends(get_current_admin),
+):
+    """Generic operator-driven state transition. The action key drives
+    target state + side-effects. EVERY transition is appended to the
+    settlement_audit ledger."""
+    _require_settlement_operator(admin)
+    try:
+        result = await sett_svc.transition(
+            db, settlement_id=settlement_id, action=req.action,
+            actor_id=admin["id"], actor_is_operator=True,
+            payload=req.payload or {}, reason=req.reason,
+        )
+    except sett_svc.TransitionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # ---- Reputation hooks (system-recorded, deterministic) -----------
+    try:
+        if req.action == "complete_deal" and result.get("dealer_id"):
+            await rep_svc.on_settlement_completed(
+                db, dealer_id=result["dealer_id"],
+                auction_id=result.get("auction_id"),
+                amount=float(result.get("winning_amount") or 0),
+            )
+        elif req.action == "mark_delayed" and result.get("dealer_id"):
+            await rep_svc.on_payment_delayed(
+                db, dealer_id=result["dealer_id"],
+                auction_id=result.get("auction_id"),
+            )
+        elif req.action == "flag_no_show" and result.get("dealer_id"):
+            await rep_svc.on_cancellation_after_win(
+                db, dealer_id=result["dealer_id"],
+                auction_id=result.get("auction_id"),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("settlement→reputation hook failed: %s", exc)
+
+    asyncio.create_task(audit(db, "settlement_transition", admin["id"], settlement_id, {
+        "action": req.action,
+        "from": result.get("prior_state"),
+        "to": result.get("state"),
+        "reason": req.reason,
+    }))
+    # Notify dealer (best-effort)
+    dealer_id = result.get("dealer_id")
+    if dealer_id:
+        try:
+            label_map = {
+                "deposit_requested":         ("Deposit requested", "Operator has requested the 5% refundable deposit. Tap to view instructions."),
+                "deposit_verified":          ("Deposit verified", "Your deposit has been verified. Visit will be scheduled shortly."),
+                "visit_scheduled":           ("Visit scheduled", "Your physical inspection visit is scheduled. Tap to view details."),
+                "inspection_completed":      ("Inspection complete", "Inspection done. Operator will request next step."),
+                "full_payment_requested":    ("Full payment requested", "Final payment instructions are now available."),
+                "vehicle_delivered":         ("Vehicle handover", "Vehicle has been marked as delivered. Final settlement closing."),
+                "completed":                 ("Deal complete", "Your purchase has been settled. Audit trail is live."),
+                "refund_approved":           ("Refund approved", "Operator has approved the refund of your deposit."),
+                "refund_completed":          ("Refund completed", "Your deposit has been refunded. See ledger for reference."),
+                "settlement_delayed":        ("Settlement delayed", "Operator has flagged a delay. Tap to view note."),
+                "no_show_review":            ("No-show review", "Operator has flagged a no-show. Please contact ops."),
+                "dispute":                   ("Dispute opened", "A dispute has been opened on this settlement."),
+            }
+            tup = label_map.get(result.get("state"))
+            if tup:
+                title, body = tup
+                asyncio.create_task(send_to_dealer(
+                    db, dealer_id, title, body,
+                    data={"type": "settlement_state", "settlement_id": settlement_id, "state": result.get("state")},
+                ))
+                await db.notifications.insert_one({
+                    "id": str(uuid.uuid4()),
+                    "dealer_id": dealer_id,
+                    "type": "settlement_state",
+                    "title": title, "body": body,
+                    "settlement_id": settlement_id,
+                    "auction_id": result.get("auction_id"),
+                    "read": False, "created_at": now_utc(),
+                })
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("settlement notify failed: %s", exc)
+    return result
+
+
+@api.post("/admin/settlements/{settlement_id}/note")
+async def admin_settlement_internal_note(
+    settlement_id: str,
+    req: SettlementNoteReq,
+    admin = Depends(get_current_admin),
+):
+    """Append-only internal note (operators only)."""
+    _require_settlement_operator(admin)
+    if not (req.text or "").strip():
+        raise HTTPException(status_code=400, detail="Note text required")
+    try:
+        return await sett_svc.add_internal_note(
+            db, settlement_id=settlement_id, actor_id=admin["id"], text=req.text,
+        )
+    except sett_svc.TransitionError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@api.post("/admin/settlements/{settlement_id}/dealer-message")
+async def admin_settlement_dealer_message(
+    settlement_id: str,
+    req: SettlementMessageReq,
+    admin = Depends(get_current_admin),
+):
+    """Append-only dealer-visible message (visit address, payment instructions, etc.)"""
+    _require_settlement_operator(admin)
+    if not (req.text or "").strip():
+        raise HTTPException(status_code=400, detail="Message text required")
+    try:
+        return await sett_svc.add_dealer_message(
+            db, settlement_id=settlement_id, actor_id=admin["id"], text=req.text,
+        )
+    except sett_svc.TransitionError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@api.get("/admin/settlements/{settlement_id}/proof")
+async def admin_settlement_get_proof(
+    settlement_id: str, admin = Depends(get_current_admin),
+):
+    _require_settlement_operator(admin)
+    p = await sett_svc.get_operator_proof_content(db, settlement_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="No proof on file")
+    return p
 
 
 # Mount router

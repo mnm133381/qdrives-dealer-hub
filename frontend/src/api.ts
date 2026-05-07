@@ -278,6 +278,40 @@ export const api = {
       method: 'POST', body: JSON.stringify({ note }),
     }),
 
+  // ---- Settlement v2 (16-state, operator-controlled) ----
+  settlementStatesCatalog: () => request<any>('/settlements/states'),
+  settlementsMine: () => request<any[]>('/settlements/me'),
+  settlementMine: (id: string) => request<any>(`/settlements/${id}`),
+  settlementMarkPaymentSent: (id: string, payload: {
+    kind?: string; filename?: string; mime_type?: string; content_base64?: string; note?: string;
+  }) => request<any>(`/settlements/${id}/mark-payment-sent`, {
+    method: 'POST', body: JSON.stringify(payload),
+  }),
+  settlementMyProof: (id: string) => request<any>(`/settlements/${id}/proof`),
+
+  adminSettlementsQueue: (state?: string, limit = 200) =>
+    request<any[]>(`/admin/settlements/queue?limit=${limit}${state ? `&state=${state}` : ''}`),
+  adminSettlementsSummary: () =>
+    request<{ by_state: Record<string, number>; buckets: Record<string, number>; total_open: number }>(
+      '/admin/settlements/summary',
+    ),
+  adminSettlementDetail: (id: string) =>
+    request<any>(`/admin/settlements/${id}`),
+  adminSettlementTransitionV2: (id: string, action: string, payload?: Record<string, any>, reason?: string) =>
+    request<any>(`/admin/settlements/${id}/transition`, {
+      method: 'POST', body: JSON.stringify({ action, payload: payload || null, reason: reason || null }),
+    }),
+  adminSettlementInternalNote: (id: string, text: string) =>
+    request<any>(`/admin/settlements/${id}/note`, {
+      method: 'POST', body: JSON.stringify({ text }),
+    }),
+  adminSettlementDealerMessage: (id: string, text: string) =>
+    request<any>(`/admin/settlements/${id}/dealer-message`, {
+      method: 'POST', body: JSON.stringify({ text }),
+    }),
+  adminSettlementProof: (id: string) =>
+    request<any>(`/admin/settlements/${id}/proof`),
+
   // ---- Phase 2C lifecycle ----
   inventoryWithdraw: (id: string, reason: string) =>
     request<{ ok: boolean; status: string }>(`/inventory/${id}/withdraw`, {

@@ -108,6 +108,102 @@ export const api = {
   // ---- Media ----
   carMedia: (carId: string, section?: string) =>
     request<any[]>(`/cars/${carId}/media${section ? `?section=${section}` : ''}`),
+
+  // ──────────────────────────────────────────────────────────────
+  // Reputation Engine (P1)
+  // ──────────────────────────────────────────────────────────────
+  reputationMe: () => request<any>('/reputation/me'),
+  reputationMeTimeline: (limit = 100) => request<any[]>(`/reputation/me/timeline?limit=${limit}`),
+  reputationDealerSummary: (dealerId: string) =>
+    request<any>(`/reputation/dealer/${dealerId}/summary`),
+
+  adminReputationList: (params?: { sort?: string; tier?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.sort) q.set('sort', params.sort);
+    if (params?.tier) q.set('tier', params.tier);
+    if (params?.limit) q.set('limit', String(params.limit));
+    const qs = q.toString();
+    return request<any[]>(`/admin/reputation/dealers${qs ? `?${qs}` : ''}`);
+  },
+  adminReputationDealer: (dealerId: string) =>
+    request<any>(`/admin/reputation/dealer/${dealerId}`),
+  adminReputationAdjust: (dealerId: string, delta: number, reason: string) =>
+    request<any>(`/admin/reputation/dealer/${dealerId}/adjust`, {
+      method: 'POST', body: JSON.stringify({ delta, reason }),
+    }),
+  adminReputationSuspend: (dealerId: string, reason: string, duration_hours?: number | null) =>
+    request<any>(`/admin/reputation/dealer/${dealerId}/suspend`, {
+      method: 'POST', body: JSON.stringify({ reason, duration_hours: duration_hours ?? null }),
+    }),
+  adminReputationCooldown: (dealerId: string, reason: string, duration_hours: number) =>
+    request<any>(`/admin/reputation/dealer/${dealerId}/cooldown`, {
+      method: 'POST', body: JSON.stringify({ reason, duration_hours }),
+    }),
+  adminReputationShadow: (dealerId: string, reason: string, duration_hours?: number | null) =>
+    request<any>(`/admin/reputation/dealer/${dealerId}/shadow-restrict`, {
+      method: 'POST', body: JSON.stringify({ reason, duration_hours: duration_hours ?? null }),
+    }),
+  adminReputationFlag: (dealerId: string, reason: string) =>
+    request<any>(`/admin/reputation/dealer/${dealerId}/flag`, {
+      method: 'POST', body: JSON.stringify({ reason, duration_hours: null }),
+    }),
+  adminReputationForceKyc: (dealerId: string, reason: string) =>
+    request<any>(`/admin/reputation/dealer/${dealerId}/force-kyc-review`, {
+      method: 'POST', body: JSON.stringify({ reason, duration_hours: null }),
+    }),
+  adminReputationLift: (dealerId: string, kind: string, reason: string) =>
+    request<any>(`/admin/reputation/dealer/${dealerId}/lift/${kind}`, {
+      method: 'POST', body: JSON.stringify({ reason, duration_hours: null }),
+    }),
+  adminReputationAddNote: (dealerId: string, note: string, visibility: 'operator' | 'dealer' = 'operator') =>
+    request<any>(`/admin/reputation/dealer/${dealerId}/notes`, {
+      method: 'POST', body: JSON.stringify({ note, visibility }),
+    }),
+
+  // ──────────────────────────────────────────────────────────────
+  // Disputes (P1)
+  // ──────────────────────────────────────────────────────────────
+  disputeTypes: () => request<any[]>('/disputes/types'),
+  disputesMine: () => request<any[]>('/disputes/me'),
+  raiseDispute: (payload: {
+    against_dealer_id?: string | null; auction_id?: string | null;
+    dispute_type: string; title: string; description: string;
+  }) => request<any>('/disputes', { method: 'POST', body: JSON.stringify(payload) }),
+  getDispute: (id: string) => request<any>(`/disputes/${id}`),
+  getDisputeEvidenceContent: (id: string, evidenceId: string) =>
+    request<any>(`/disputes/${id}/evidence/${evidenceId}`),
+  postDisputeMessage: (id: string, body: string) =>
+    request<any>(`/disputes/${id}/messages`, { method: 'POST', body: JSON.stringify({ body }) }),
+  postDisputeEvidence: (id: string, payload: {
+    kind: 'image' | 'document' | 'note'; filename?: string;
+    mime_type?: string; content_base64?: string; note?: string;
+  }) => request<any>(`/disputes/${id}/evidence`, { method: 'POST', body: JSON.stringify(payload) }),
+  withdrawDispute: (id: string, reason?: string) =>
+    request<any>(`/disputes/${id}/withdraw`, { method: 'POST', body: JSON.stringify({ reason: reason || null }) }),
+
+  adminDisputeQueue: (params?: { state?: string; dispute_type?: string; only_open?: boolean }) => {
+    const q = new URLSearchParams();
+    if (params?.state) q.set('state', params.state);
+    if (params?.dispute_type) q.set('dispute_type', params.dispute_type);
+    if (params?.only_open !== undefined) q.set('only_open', String(params.only_open));
+    const qs = q.toString();
+    return request<any[]>(`/admin/disputes/queue${qs ? `?${qs}` : ''}`);
+  },
+  adminDisputeSummary: () => request<any>('/admin/disputes/summary'),
+  adminDisputeTakeReview: (id: string) =>
+    request<any>(`/admin/disputes/${id}/take-review`, { method: 'POST' }),
+  adminDisputeRequestEvidence: (id: string, requestText: string) =>
+    request<any>(`/admin/disputes/${id}/request-evidence`, {
+      method: 'POST', body: JSON.stringify({ request: requestText }),
+    }),
+  adminDisputeEscalate: (id: string, reason: string) =>
+    request<any>(`/admin/disputes/${id}/escalate`, {
+      method: 'POST', body: JSON.stringify({ reason }),
+    }),
+  adminDisputeDecide: (id: string, outcome: string, reason: string) =>
+    request<any>(`/admin/disputes/${id}/decide`, {
+      method: 'POST', body: JSON.stringify({ outcome, reason }),
+    }),
   mediaCompleteness: (carId: string) =>
     request<any>(`/cars/${carId}/media/completeness`),
   deleteMedia: (id: string) => request(`/media/${id}`, { method: 'DELETE' }),

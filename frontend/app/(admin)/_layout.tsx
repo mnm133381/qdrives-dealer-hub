@@ -65,6 +65,10 @@ export default function AdminLayout() {
           ghost tabs on web (Expo Router file-based discovery quirk). */}
       <Tabs.Screen name="auction/[id]" options={{ href: null }} />
       <Tabs.Screen name="dealer/[id]" options={{ href: null }} />
+      <Tabs.Screen name="reputation" options={{ href: null }} />
+      <Tabs.Screen name="reputation/[id]" options={{ href: null }} />
+      <Tabs.Screen name="disputes" options={{ href: null }} />
+      <Tabs.Screen name="disputes/[id]" options={{ href: null }} />
       {/* Broadcast is now reached via Ops dashboard quick-action; route remains. */}
       <Tabs.Screen name="broadcast" options={{ href: null }} />
     </Tabs>

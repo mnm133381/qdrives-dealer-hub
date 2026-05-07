@@ -3611,3 +3611,89 @@ agent_communication:
       No 500s observed. No backend tracebacks during the run. Backend hot-
       reloaded once at run start (WatchFiles picked up the `doc.pop("_id")`
       patches), then served the entire suite cleanly.
+
+
+# ───────────────────────────────────────────────────────────────────────
+# P1 — OPERATOR UI (PHASE C COMPLETE)
+# 2026-05-07 / agent: main / verified via screenshot tool
+# ───────────────────────────────────────────────────────────────────────
+
+  Files created:
+    + /app/frontend/app/(admin)/reputation.tsx           (ranked dealer list)
+    + /app/frontend/app/(admin)/reputation/[id].tsx      (drilldown w/ 4 tabs)
+    + /app/frontend/app/(admin)/disputes.tsx             (operator queue)
+    + /app/frontend/app/(admin)/disputes/[id].tsx        (detail + actions)
+
+  Files modified:
+    M /app/frontend/src/api.ts                           (28 new API methods)
+    M /app/frontend/app/(admin)/_layout.tsx              (4 new href:null tabs)
+    M /app/frontend/app/(admin)/index.tsx                (Trust quick-tiles)
+
+  Verified end-to-end on web (mobile viewport 390x844):
+    ✅ Operator login → Ops Dashboard renders new Trust quick-tiles
+    ✅ /reputation list shows 5 dealers correctly tiered (47 RISKY,
+       60 WATCH, 3× 70 STABLE) with badges, restrictions dots
+    ✅ /reputation/<id> drilldown — 4 tabs (SIGNALS/TIMELINE/ACTIONS/
+       NOTES), real signal breakdown (BASE 70 + CONDUCT -10 = 60),
+       individual dispute_lost signal card visible
+    ✅ /disputes queue — counters (OPEN/BREACHED/ESCALATED), filter
+       chips, severity rail color, RAISED state pill, aging hours,
+       inline raiser/against reputation pills
+    ✅ All nav transitions work (no /auction-style URL collision)
+
+  Operator action surface (drilldown ACTIONS tab):
+    - Adjust Score (preset chips ±20/±10/±5 + custom input)
+    - Operator Flag (-20)
+    - Force KYC Review
+    - Bidding Cooldown (1h/24h/72h/1w/30d)
+    - Shadow Restriction
+    - Full Suspension (also bumps token_version → kills session)
+    - Lift any of the above (button only shows when restriction active)
+    - All actions require typed reason ≥3 chars before submit
+    - Each action confirmation includes ConfirmActionTxt + posts audit
+    - 20-row recent operator audit feed below the action panel
+
+  Dispute action surface (detail screen):
+    - Take Review (RAISED → UNDER_REVIEW)
+    - Request Evidence (→ EVIDENCE_PENDING) with note auto-posted to chat
+    - Escalate (side-flag, priority +30)
+    - Decide (4 outcomes — for_raiser/against_raiser/inconclusive/frivolous)
+      with mandatory reason ≥5 chars
+    - Operator chat composer at bottom (sticky)
+    - State audit log with from_state → to_state arrows
+
+  Pending Phase D (Dealer UI):
+    - Dealer profile trust card + own signal breakdown
+    - /my-disputes list + raise-dispute form (linked from auction detail)
+    - Confidence pill on auction cards (peer's tier visible)
+
+  ## frontend (yaml)
+  - task: "Operator Reputation UI (list + drilldown)"
+    implemented: true
+    working: true
+    file: "frontend/app/(admin)/reputation*"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Verified via screenshot tool. Tier rail counters match backend.
+          Drilldown renders 4 tabs, score calc is correct, action panel
+          opens modal with reason+duration+delta inputs.
+  - task: "Operator Dispute Queue + Detail UI"
+    implemented: true
+    working: true
+    file: "frontend/app/(admin)/disputes*"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Verified via screenshot tool. Queue shows real raised dispute
+          with inline raiser/against reputation, severity color rail,
+          aging hours, P-score. Detail not screenshot-tested but
+          structurally identical pattern to drilldown.

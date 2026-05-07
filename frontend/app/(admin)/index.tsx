@@ -211,6 +211,30 @@ export default function AdminOpsDashboard() {
           dispute={counts.dispute} released={counts.released} gmv={gmv} bids={liveBids}
         />
 
+        {/* TRUST & RISK QUICK ACCESS — Reputation + Disputes operator hubs */}
+        <View style={styles.trustRow}>
+          <TouchableOpacity onPress={() => router.push('/reputation' as any)}
+            activeOpacity={0.8} style={styles.trustTile}
+            testID="ops-quick-reputation">
+            <View style={styles.trustIcon}><ShieldX size={14} color={colors.red} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.trustLabel}>REPUTATION</Text>
+              <Text style={styles.trustHint}>Trust scores · restrictions · audit</Text>
+            </View>
+            <ArrowRight size={14} color={colors.textMuted} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => router.push('/disputes' as any)}
+            activeOpacity={0.8} style={styles.trustTile}
+            testID="ops-quick-disputes">
+            <View style={styles.trustIcon}><AlertOctagon size={14} color={colors.warning || '#F59E0B'} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.trustLabel}>DISPUTES</Text>
+              <Text style={styles.trustHint}>Operator queue · SLA · evidence</Text>
+            </View>
+            <ArrowRight size={14} color={colors.textMuted} />
+          </TouchableOpacity>
+        </View>
+
         {/* LIVE AUCTIONS */}
         <View style={styles.sectionHead}>
           <Gavel size={12} color={colors.textChrome} />
@@ -666,6 +690,11 @@ const styles = StyleSheet.create({
   emptyBody: { color: colors.textChrome, fontSize: 10.5, fontWeight: '600', textAlign: 'center', marginTop: 3, marginBottom: 10, lineHeight: 14 },
   emptyCta: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 4, backgroundColor: 'rgba(185,28,28,0.10)', borderWidth: 1, borderColor: 'rgba(185,28,28,0.45)' },
   emptyCtaText: { color: colors.red, fontSize: 10, fontWeight: '900', letterSpacing: 1 },
+  trustRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, marginTop: 12 },
+  trustTile: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10, borderRadius: 6, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  trustIcon: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
+  trustLabel: { color: colors.text, fontSize: 11, fontWeight: '900', letterSpacing: 0.6 },
+  trustHint: { color: colors.textMuted, fontSize: 9, fontWeight: '600', letterSpacing: 0.3 },
 
   /* AUCTION ROW — dense urgency-prioritized tile */
   rowWrap: { marginBottom: 8 },

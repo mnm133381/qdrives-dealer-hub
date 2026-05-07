@@ -1,16 +1,11 @@
 /**
  * Dealer-scoped auction detail route — `/dealer/auction/[id]`.
  *
- * This is a thin Redirect alias that resolves the URL the user mandated
- * in the cleanup brief to the canonical detail screen at /auction/[id].
- * Keeping a single underlying screen avoids duplicating the WebSocket /
- * bid-feed / inspection logic in two places. Both routes lead to the
- * same UX, the same auth gating, and the same backend contract.
+ * This is the canonical bid-execution surface for dealers per the
+ * routing manifesto. The implementation is the existing /auction/[id]
+ * screen re-exported here so we don't duplicate the WS / bid-feed /
+ * inspection logic in two places. The legacy /auction/[id] route is
+ * preserved as a backwards-compatible alias that redirects to this
+ * canonical path.
  */
-import { Redirect, useLocalSearchParams } from 'expo-router';
-
-export default function DealerAuctionAlias() {
-  const { id } = useLocalSearchParams<{ id: string }>();
-  if (!id) return <Redirect href="/(tabs)" />;
-  return <Redirect href={`/auction/${id}` as any} />;
-}
+export { default } from '../../auction/[id]';

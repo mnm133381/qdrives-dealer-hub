@@ -3,7 +3,7 @@ import {
   View, Text, StyleSheet, ScrollView, Pressable, TouchableOpacity, Image, RefreshControl, FlatList, Animated, Platform,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import { useRouter, useFocusEffect, Link } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Bell, Activity, TrendingUp, ShieldCheck, ChevronRight, Search, BadgeCheck, Lock, Zap, Filter, Inbox } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, formatINR, radii } from '../../src/theme';
@@ -163,10 +163,9 @@ export default function Home() {
           <StatCard label="Wins" value={`${stats?.your_wins ?? 0}`} icon={<TrendingUp size={13} color={colors.silver} />} />
         </View>
 
-        {/* Featured Live Auction — Pressable for tactile feedback,
-            urgency edge tint that pulses red when ending<60s, explicit
-            reserve status pill so dealers see whether the floor is met.
-            Wrapped in <Link> internally — single canonical nav path. */}
+        {/* Featured Live Auction — single TouchableOpacity primitive,
+            press feedback via activeOpacity, navigates to the canonical
+            dealer auction route. No Link, no Pressable, no fallbacks. */}
         {featured && (
           <View style={styles.section}>
             <View style={styles.sectionHead}>
@@ -174,11 +173,14 @@ export default function Home() {
                 <Text style={styles.sectionKicker}>FEATURED LIVE AUCTION</Text>
                 <Text style={styles.sectionTitle}>Hottest deal right now</Text>
               </View>
-              <Link href={{ pathname: '/auction/[id]', params: { id: featured.id } } as any} asChild>
-                <Pressable hitSlop={8} testID="featured-open-link">
-                  <Text style={styles.seeAll}>Open →</Text>
-                </Pressable>
-              </Link>
+              <TouchableOpacity
+                onPress={() => router.push(`/dealer/auction/${featured.id}` as any)}
+                hitSlop={8}
+                activeOpacity={0.7}
+                testID="featured-open-link"
+              >
+                <Text style={styles.seeAll}>Open →</Text>
+              </TouchableOpacity>
             </View>
             <FeaturedCard auction={featured} />
           </View>
@@ -241,12 +243,12 @@ export default function Home() {
               </TouchableOpacity>
             </View>
           ) : inventory.slice(0, 5).map((a) => (
-            <Link key={a.id} href={{ pathname: '/auction/[id]', params: { id: a.id } } as any} asChild>
-              <AuctionCard
-                auction={a}
-                testID={`auction-card-${a.id}`}
-              />
-            </Link>
+            <AuctionCard
+              key={a.id}
+              auction={a}
+              testID={`auction-card-${a.id}`}
+              onPress={() => router.push(`/dealer/auction/${a.id}` as any)}
+            />
           ))}
         </View>
 
@@ -284,23 +286,25 @@ function PulseStat({ label, value, accent }: { label: string; value: any; accent
 /* ------------------------------------------------------------------ *
  * FeaturedCard — premium dealer-facing live auction tile.
  *
- * Architecture (post-P0 routing fix):
- *   • Whole card wrapped in <Link asChild> → on web renders as a real
- *     <a href> tag, browser handles navigation natively (no SPA quirks
- *     and no "<button> inside <button>" hydration error). On native it
- *     resolves through the standard expo-router stack.
- *   • Inner Pressable is the single visible touch target for the entire
- *     card. Press scale + opacity feedback fire on every tap.
- *   • BID NOW is a styled <View> (NOT a button) inside the same tap
- *     target. The visual chip looks like a CTA but is functionally
- *     identical to tapping anywhere else on the card — no nested
- *     interactives, no broken bubble paths.
- *   • Decorative absolute layers (Image, gradients, top row, title text,
- *     price column) carry pointerEvents="none" so they cannot intercept
- *     the click on web.
- *   • Reserve pill, urgency pulse, ENDING NOW state are purely visual.
+ * Architecture (P0 routing fix, 2026-05-07 r3):
+ *   • Single TouchableOpacity wrapper — the simplest, most reliable
+ *     React Native touch primitive. Works identically on iOS Expo Go,
+ *     Android, and web. No Pressable, no Link, no nested-button HTML
+ *     concerns, no SPA-history fallbacks. Just onPress → router.push.
+ *   • Whole card is one tap target. The "BID NOW" chip is a styled
+ *     <View> for visual affordance — tapping it triggers the same
+ *     onPress as tapping anywhere else on the card. No nested
+ *     interactives.
+ *   • Decorative absolute layers (Image, gradients, top row, bottom
+ *     content) carry pointerEvents="none" so they cannot intercept
+ *     the tap on web.
+ *   • activeOpacity={0.85} provides the press feedback (instant
+ *     "tap registered" feel). On native we also fire a Medium haptic.
+ *   • Routes to `/dealer/auction/{id}` — the canonical bid-execution
+ *     surface per the routing manifesto.
  * ------------------------------------------------------------------ */
 function FeaturedCard({ auction }: { auction: any }) {
+  const router = useRouter();
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
   const endMs = auction.end_time ? new Date(auction.end_time).getTime() : 0;
@@ -321,84 +325,80 @@ function FeaturedCard({ auction }: { auction: any }) {
   }, [ending]);
   const glowOpacity = ending ? pulse.interpolate({ inputRange: [0, 1], outputRange: [0.25, 0.7] }) : 0;
 
-  const onCardPress = () => {
+  const onTap = useCallback(() => {
     if (Platform.OS !== 'web') {
       try { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {}); } catch {}
     }
-  };
+    router.push(`/dealer/auction/${auction.id}` as any);
+  }, [router, auction.id]);
 
   return (
-    <Link
-      href={{ pathname: '/auction/[id]', params: { id: auction.id } } as any}
-      asChild
+    <TouchableOpacity
+      onPress={onTap}
+      activeOpacity={0.85}
+      testID={`featured-auction-${auction.id}`}
+      accessibilityRole="button"
+      accessibilityLabel={`Open auction for ${auction.car?.year || ''} ${auction.car?.make || ''} ${auction.car?.model || ''}`}
+      style={styles.featCard}
     >
-      <Pressable
-        onPress={onCardPress}
-        testID={`featured-auction-${auction.id}`}
-        accessibilityLabel={`Open auction for ${auction.car?.year || ''} ${auction.car?.make || ''} ${auction.car?.model || ''}`}
-        style={({ pressed }) => [styles.featCard, pressed && styles.featCardPressed]}
-      >
-        {/* Decorative absolute layers — pointer-events disabled. */}
-        <Image source={{ uri: auction.car?.images?.[0] }} style={styles.featImage} pointerEvents="none" />
-        <View style={styles.featGradTop} pointerEvents="none" />
-        <View style={styles.featGradBottom} pointerEvents="none" />
-        {ending && (
-          <Animated.View pointerEvents="none" style={[styles.featUrgencyGlow, { opacity: glowOpacity }]} />
-        )}
+      <Image source={{ uri: auction.car?.images?.[0] }} style={styles.featImage} pointerEvents="none" />
+      <View style={styles.featGradTop} pointerEvents="none" />
+      <View style={styles.featGradBottom} pointerEvents="none" />
+      {ending && (
+        <Animated.View pointerEvents="none" style={[styles.featUrgencyGlow, { opacity: glowOpacity }]} />
+      )}
 
-        <View style={styles.featTopRow} pointerEvents="none">
-          <View style={styles.liveBadge}>
-            <LivePulse size={6} />
-            <Text style={styles.liveBadgeText}>LIVE</Text>
-          </View>
-          <View style={[styles.featTimer, ending && styles.featTimerEnding]}>
-            <Text style={[styles.featTimerLabel, ending && { color: colors.red }]}>{ending ? 'ENDING NOW' : 'ENDS IN'}</Text>
-            <CountdownTimer endTime={auction.end_time} compact />
-          </View>
+      <View style={styles.featTopRow} pointerEvents="none">
+        <View style={styles.liveBadge}>
+          <LivePulse size={6} />
+          <Text style={styles.liveBadgeText}>LIVE</Text>
         </View>
+        <View style={[styles.featTimer, ending && styles.featTimerEnding]}>
+          <Text style={[styles.featTimerLabel, ending && { color: colors.red }]}>{ending ? 'ENDING NOW' : 'ENDS IN'}</Text>
+          <CountdownTimer endTime={auction.end_time} compact />
+        </View>
+      </View>
 
-        <View style={styles.featBottom} pointerEvents="none">
-          <View style={styles.featMetaRow}>
-            <View style={styles.featRegPlate}>
-              <Text style={styles.featRegText}>{auction.car?.registration_number}</Text>
-            </View>
-            <View style={[
-              styles.featReservePill,
-              reserveMet && styles.featReserveMet,
-              noReserve && styles.featReserveNone,
+      <View style={styles.featBottom} pointerEvents="none">
+        <View style={styles.featMetaRow}>
+          <View style={styles.featRegPlate}>
+            <Text style={styles.featRegText}>{auction.car?.registration_number}</Text>
+          </View>
+          <View style={[
+            styles.featReservePill,
+            reserveMet && styles.featReserveMet,
+            noReserve && styles.featReserveNone,
+          ]}>
+            <Text style={[
+              styles.featReserveText,
+              reserveMet && { color: colors.success },
+              noReserve && { color: colors.textChrome },
             ]}>
-              <Text style={[
-                styles.featReserveText,
-                reserveMet && { color: colors.success },
-                noReserve && { color: colors.textChrome },
-              ]}>
-                {noReserve ? 'NO RESERVE' : reserveMet ? '✓ RESERVE MET' : 'BELOW RESERVE'}
-              </Text>
-            </View>
-          </View>
-          <Text style={styles.featTitle} numberOfLines={1}>{auction.car?.year} {auction.car?.make} {auction.car?.model}</Text>
-          <Text style={styles.featVariant} numberOfLines={1}>
-            {auction.car?.variant ? auction.car?.variant + ' · ' : ''}{(auction.car?.km_driven || 0).toLocaleString('en-IN')} km · {auction.car?.fuel_type}
-          </Text>
-          <View style={styles.featPriceRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.featPriceLabel}>CURRENT BID</Text>
-              <Text style={styles.featPrice}>{formatINR(auction.current_bid)}</Text>
-              <Text style={styles.featBids}>{auction.total_bids || 0} bids · {auction.interested_dealers || 0} watching</Text>
-            </View>
-            {/* BID NOW chip — visual CTA, NOT a separate button. Tap on
-                this region triggers the same Link navigation as the card. */}
-            <View
-              style={[styles.featCta, ending && { backgroundColor: colors.red }]}
-              testID={`featured-bid-now-${auction.id}`}
-            >
-              <Text style={styles.featCtaText}>BID NOW</Text>
-              <ChevronRight size={14} color="#fff" />
-            </View>
+              {noReserve ? 'NO RESERVE' : reserveMet ? '✓ RESERVE MET' : 'BELOW RESERVE'}
+            </Text>
           </View>
         </View>
-      </Pressable>
-    </Link>
+        <Text style={styles.featTitle} numberOfLines={1}>{auction.car?.year} {auction.car?.make} {auction.car?.model}</Text>
+        <Text style={styles.featVariant} numberOfLines={1}>
+          {auction.car?.variant ? auction.car?.variant + ' · ' : ''}{(auction.car?.km_driven || 0).toLocaleString('en-IN')} km · {auction.car?.fuel_type}
+        </Text>
+        <View style={styles.featPriceRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.featPriceLabel}>CURRENT BID</Text>
+            <Text style={styles.featPrice}>{formatINR(auction.current_bid)}</Text>
+            <Text style={styles.featBids}>{auction.total_bids || 0} bids · {auction.interested_dealers || 0} watching</Text>
+          </View>
+          {/* BID NOW chip — visual CTA inside the same tap target. */}
+          <View
+            style={[styles.featCta, ending && { backgroundColor: colors.red }]}
+            testID={`featured-bid-now-${auction.id}`}
+          >
+            <Text style={styles.featCtaText}>BID NOW</Text>
+            <ChevronRight size={14} color="#fff" />
+          </View>
+        </View>
+      </View>
+    </TouchableOpacity>
   );
 }
 

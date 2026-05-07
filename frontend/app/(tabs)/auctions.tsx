@@ -83,14 +83,14 @@ export default function AuctionsTab() {
           </View>
         ) : (
           auctions.map((a) => (
-            <Link key={a.id} href={{ pathname: '/auction/[id]', params: { id: a.id } } as any} asChild>
-              <AuctionCard
-                auction={a}
-                testID={`auction-card-${a.id}`}
-                watching={!!watch[a.id]}
-                onWatch={() => toggleWatch(a.id)}
-              />
-            </Link>
+            <AuctionCard
+              key={a.id}
+              auction={a}
+              testID={`auction-card-${a.id}`}
+              watching={!!watch[a.id]}
+              onWatch={() => toggleWatch(a.id)}
+              onPress={() => router.push(`/dealer/auction/${a.id}` as any)}
+            />
           ))
         )}
       </ScrollView>

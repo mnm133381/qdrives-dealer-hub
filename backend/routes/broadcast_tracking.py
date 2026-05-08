@@ -39,7 +39,7 @@ import uuid
 from datetime import timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
 
 
@@ -253,7 +253,7 @@ def register(api: APIRouter, deps: dict) -> None:
     @api.post("/auctions/{auction_id}/track-view")
     async def track_view(
         auction_id: str,
-        req: TrackViewReq,
+        req: TrackViewReq = Body(default_factory=TrackViewReq),
         dealer=Depends(get_current_dealer),
     ):
         # Confirm the auction exists; we don't want to write events for

@@ -338,6 +338,12 @@ export const api = {
     }),
   adminSellerLookupVehicle: (q: string) =>
     request<any[]>(`/admin/sellers/lookup-vehicle?q=${encodeURIComponent(q)}`),
+
+  // ---- Operator broadcasts ----
+  adminBroadcastTemplates: () => request<any[]>('/admin/broadcasts/templates'),
+  adminBroadcastsRecent: (limit = 30) => request<any[]>(`/admin/broadcasts/recent?limit=${limit}`),
+  adminBroadcastSend: (payload: { type: string; auction_id?: string; title?: string; body?: string; audience?: string }) =>
+    request<any>('/admin/broadcasts', { method: 'POST', body: JSON.stringify(payload) }),
   adminSellerSendAccess: (id: string) =>
     request<any>(`/admin/sellers/${id}/send-access`, { method: 'POST', body: JSON.stringify({}) }),
   adminSellerRevoke: (id: string, reason?: string) =>

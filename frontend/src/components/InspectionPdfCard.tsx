@@ -134,15 +134,34 @@ export function InspectionPdfCard({ inspection }: Props) {
         <Text style={styles.trustText}>Document securely served · auth-gated download</Text>
       </View>
 
-      {/* Actions */}
+      {/* Actions — responsive: primary keeps emphasis, both wrap to full
+           width on narrow screens so labels never clip. */}
       <View style={styles.actions}>
-        <TouchableOpacity onPress={() => open('view')} disabled={opening !== null} style={[styles.actionBtn, styles.actionPrimary]} testID="insp-pdf-view">
-          {opening === 'view' ? <ActivityIndicator color="#fff" /> : <Eye size={15} color="#fff" />}
-          <Text style={styles.actionPrimaryText}>View Inspection Report</Text>
+        <TouchableOpacity
+          onPress={() => open('view')}
+          disabled={opening !== null}
+          style={[styles.actionBtn, styles.actionPrimary]}
+          testID="insp-pdf-view"
+        >
+          {opening === 'view'
+            ? <ActivityIndicator color="#fff" />
+            : <Eye size={16} color="#fff" strokeWidth={2.4} />}
+          <Text style={styles.actionPrimaryText} numberOfLines={1} ellipsizeMode="tail">
+            View Inspection Report
+          </Text>
         </TouchableOpacity>
-        <TouchableOpacity onPress={() => open('download')} disabled={opening !== null} style={[styles.actionBtn, styles.actionSecondary]} testID="insp-pdf-download">
-          {opening === 'download' ? <ActivityIndicator color={colors.textChrome} /> : <Download size={15} color={colors.textChrome} />}
-          <Text style={styles.actionSecondaryText}>Download PDF</Text>
+        <TouchableOpacity
+          onPress={() => open('download')}
+          disabled={opening !== null}
+          style={[styles.actionBtn, styles.actionSecondary]}
+          testID="insp-pdf-download"
+        >
+          {opening === 'download'
+            ? <ActivityIndicator color={colors.textChrome} />
+            : <Download size={15} color={colors.textChrome} strokeWidth={2.2} />}
+          <Text style={styles.actionSecondaryText} numberOfLines={1} ellipsizeMode="tail">
+            Download PDF
+          </Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -172,10 +191,52 @@ const styles = StyleSheet.create({
   trustNote: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10, paddingHorizontal: 4 },
   trustText: { color: colors.textMuted, fontSize: 10, fontWeight: '600' },
 
-  actions: { flexDirection: 'row', gap: 8, marginTop: 12 },
-  actionBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, borderRadius: 10 },
-  actionPrimary: { backgroundColor: colors.red, shadowColor: colors.red, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 6 },
-  actionSecondary: { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border },
-  actionPrimaryText: { color: '#fff', fontSize: 13, fontWeight: '800', letterSpacing: 0.3 },
-  actionSecondaryText: { color: colors.textChrome, fontSize: 13, fontWeight: '700' },
+  // Action row — responsive: primary keeps emphasis on wider screens
+  // (≥ ~340px usable width), wraps to its own row on narrow screens so the
+  // "View Inspection Report" label is never clipped. flexBasis values are
+  // tuned so the primary always gets enough width to show its full label.
+  actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
+  actionBtn: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minHeight: 52,                // premium touch target
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  actionPrimary: {
+    flexBasis: 220,               // primary needs ~220px for full label;
+    backgroundColor: colors.red,  // when row width < 220+8+140, it wraps
+    shadowColor: colors.red,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.30,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  actionSecondary: {
+    flexBasis: 140,               // secondary baseline; wraps below 280px
+    backgroundColor: colors.bgDeep,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  actionPrimaryText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+    flexShrink: 1,
+    textAlign: 'center',
+  },
+  actionSecondaryText: {
+    color: colors.textChrome,
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    flexShrink: 1,
+    textAlign: 'center',
+  },
 });

@@ -926,6 +926,19 @@ async def place_bid(auction_id: str, req: BidReq, dealer = Depends(require_appro
         "total_bids": a.get("total_bids", 0) + 1,
     })
 
+    # Silent funnel attribution — if this dealer received a recent
+    # broadcast for this auction (or a recent network-wide broadcast),
+    # emit a `bid_placed` event into broadcast_events. Strictly
+    # background, never blocks the bid response.
+    try:
+        from routes import broadcast_tracking as _track
+        asyncio.create_task(_track.attribute_bid_to_recent_broadcast(
+            db, dealer_id=dealer["id"], auction_id=auction_id,
+            bid_id=bid["id"], now_utc=now_utc, logger=logger,
+        ))
+    except Exception:
+        pass
+
     return {"success": True, "bid": serialize(bid)}
 
 
@@ -2913,6 +2926,19 @@ async def _push_auction_ended(auction: dict) -> None:
     if docs:
         await db.notifications.insert_many(docs)
 
+    # Silent funnel attribution — if the winner was reached after a
+    # recent broadcast referenced this auction (or a recent network
+    # broadcast), emit a `won` event into broadcast_events.
+    if top:
+        try:
+            from routes import broadcast_tracking as _track
+            asyncio.create_task(_track.attribute_win_to_recent_broadcast(
+                db, dealer_id=top, auction_id=auction["id"],
+                now_utc=now_utc, logger=logger,
+            ))
+        except Exception:
+            pass
+
     # ---- Settlement intake hook ---------------------------------------
     # If the auction has a winner whose final bid hits reserve, create
     # the operator-controlled settlement record. Idempotent — repeated
@@ -4600,6 +4626,17 @@ _admin_broadcasts_routes.register(api, {
     "audit": audit,
     "now_utc": now_utc,
     "iso": iso,
+    "logger": logger,
+})
+
+# Silent broadcast funnel tracking — append-only events ledger.
+# Routes: POST /notifications/{id}/open, POST /auctions/{id}/track-view
+from routes import broadcast_tracking as _broadcast_tracking_routes  # noqa: E402
+
+_broadcast_tracking_routes.register(api, {
+    "db": db,
+    "get_current_dealer": get_current_dealer,
+    "now_utc": now_utc,
     "logger": logger,
 })
 

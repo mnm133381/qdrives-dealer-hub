@@ -60,7 +60,18 @@ export default function Notifications() {
             return (
               <TouchableOpacity
                 key={n.id}
-                onPress={() => n.auction_id && router.push({ pathname: '/lot/[id]', params: { id: n.auction_id } } as any)}
+                onPress={() => {
+                  // Silent funnel tracking — write 'opened' event for
+                  // broadcast notifications. Best-effort; never blocks
+                  // navigation or surfaces an error.
+                  api.notificationOpen(n.id).catch(() => {});
+                  if (n.auction_id) {
+                    router.push({
+                      pathname: '/lot/[id]',
+                      params: { id: n.auction_id, fb: n.broadcast_id || '' },
+                    } as any);
+                  }
+                }}
                 style={[styles.notif, !n.read && styles.notifUnread]}
               >
                 <View style={[styles.icon, { backgroundColor: `${conf.color}22`, borderColor: `${conf.color}55` }]}>

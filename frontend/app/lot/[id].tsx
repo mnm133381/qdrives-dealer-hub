@@ -30,7 +30,7 @@ const HERO_H = 360;
 export default function AuctionScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, fb } = useLocalSearchParams<{ id: string; fb?: string }>();
   const { dealer } = useAuth();
   const toast = useToast();
 
@@ -44,6 +44,8 @@ export default function AuctionScreen() {
   const [zoomOpen, setZoomOpen] = useState(false);
   const [zoomStartIdx, setZoomStartIdx] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
+  // Track-view fires once per mount per auction id.
+  const trackedRef = useRef<string | null>(null);
 
   const bidPulse = useSharedValue(1);
   const outbidFlash = useSharedValue(0);
@@ -88,6 +90,17 @@ export default function AuctionScreen() {
 
   // Reset image index when filter changes
   useEffect(() => { setImgIdx(0); }, [galleryFilter]);
+
+  // Silent funnel tracking — fires once per auction-id mount. The
+  // optional `fb` query param carries explicit broadcast deep-link
+  // attribution; backend falls back to recent-broadcast lookup when
+  // omitted. Failures are swallowed so the lot screen never blocks.
+  useEffect(() => {
+    if (!id || !dealer) return;
+    if (trackedRef.current === id) return;
+    trackedRef.current = id as string;
+    api.auctionTrackView(id as string, (fb as string) || undefined).catch(() => {});
+  }, [id, fb, dealer]);
 
   const sectionsAvailable = useMemo(() => {
     const set = new Set<string>(media.map((m: any) => m.section));

@@ -415,6 +415,22 @@ export const api = {
   notifications: () => request('/notifications'),
   markNotificationsRead: () => request('/notifications/mark-read', { method: 'POST' }),
   unreadCount: () => request<{ unread: number }>('/notifications/unread-count'),
+  // Silent funnel tracking — fired when a dealer opens a single
+  // notification (used to attribute Broadcast → Opened in
+  // db.broadcast_events). Best-effort; failures are swallowed.
+  notificationOpen: (id: string) =>
+    request<{ ok: boolean }>(`/notifications/${id}/open`, { method: 'POST' }),
+  // Silent funnel tracking — fired when a dealer lands on an auction
+  // page. `from_broadcast_id` carries explicit deep-link attribution;
+  // server falls back to recent-broadcast lookup when omitted.
+  auctionTrackView: (auctionId: string, fromBroadcastId?: string) =>
+    request<{ ok: boolean; tracked: boolean }>(
+      `/auctions/${auctionId}/track-view`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ from_broadcast_id: fromBroadcastId || null }),
+      },
+    ),
   registerPushToken: (token: string, platform?: string) =>
     request('/notifications/register-token', { method: 'POST', body: JSON.stringify({ token, platform }) }),
   unregisterPushToken: (token: string) =>

@@ -99,11 +99,19 @@ export async function getExpoPushToken(): Promise<string | null> {
 function handleNotificationData(data: any) {
   if (!data || typeof data !== 'object') return;
   const auctionId = data.auction_id || data.auctionId;
+  const broadcastId = data.broadcast_id || data.broadcastId;
   if (auctionId && typeof auctionId === 'string') {
     try {
-      // Slight delay so router is mounted on cold start
+      // Slight delay so router is mounted on cold start.
+      // Carry the broadcast_id in the `fb` query param so the lot
+      // screen can attribute the auction-view to this broadcast.
       setTimeout(() => {
-        try { router.push(`/auction/${auctionId}` as any); } catch {}
+        try {
+          const path = broadcastId
+            ? `/lot/${auctionId}?fb=${encodeURIComponent(broadcastId)}`
+            : `/lot/${auctionId}`;
+          router.push(path as any);
+        } catch {}
       }, 80);
     } catch {}
   }

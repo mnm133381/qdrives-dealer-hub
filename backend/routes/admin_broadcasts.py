@@ -386,8 +386,22 @@ def register(api: APIRouter, deps: dict) -> None:
             "sent_by_name": admin.get("dealership_name") or admin.get("full_name"),
             "ts": now_utc(),
         }
+        # Broadcast fanout: persist the audit row first, then dispatch
+        # tracking events, inbox, and push in parallel best-effort tasks.
         await db.broadcasts.insert_one(dict(rec))
         rec["ts"] = iso(rec["ts"])
+
+        # Tracking — record one `sent` row per recipient. Lazy-imported so
+        # `routes/admin_broadcasts.py` stays dependency-free of tracking.
+        if dealer_ids:
+            try:
+                from routes import broadcast_tracking as _track
+                asyncio.create_task(_track.record_sent_fanout(
+                    db, broadcast_id=bid_, dealer_ids=dealer_ids,
+                    auction_id=req.auction_id, now_utc=now_utc,
+                ))
+            except Exception as exc:
+                logger.warning("broadcast tracking fanout failed: %s", exc)
 
         # Inbox notifications + push fanout, best effort
         if dealer_ids:

@@ -235,8 +235,6 @@ export const api = {
     request<any>(`/admin/dealers/${id}/approve`, { method: 'POST', body: JSON.stringify(payload || {}) }),
   adminSetMaxBid: (id: string, max_bid_limit: number | null) =>
     request<any>(`/admin/dealers/${id}/max-bid`, { method: 'POST', body: JSON.stringify({ max_bid_limit }) }),
-  adminBroadcast: (payload: { title: string; body: string; audience?: string }) =>
-    request<{ sent: number }>('/admin/notifications/broadcast', { method: 'POST', body: JSON.stringify(payload) }),
 
   // ---- Phase 2B: Live ops console ----
   adminLiveGrid: () => request<{ items: any[]; ts: string }>('/admin/auctions/live-grid'),
@@ -342,8 +340,15 @@ export const api = {
   // ---- Operator broadcasts ----
   adminBroadcastTemplates: () => request<any[]>('/admin/broadcasts/templates'),
   adminBroadcastsRecent: (limit = 30) => request<any[]>(`/admin/broadcasts/recent?limit=${limit}`),
-  adminBroadcastSend: (payload: { type: string; auction_id?: string; title?: string; body?: string; audience?: string }) =>
-    request<any>('/admin/broadcasts', { method: 'POST', body: JSON.stringify(payload) }),
+  adminBroadcastAuctions: () => request<any[]>('/admin/broadcasts/auctions'),
+  adminBroadcastSend: (payload: {
+    type: string;
+    auction_id?: string;
+    title?: string;
+    body?: string;
+    audience?: string;
+    dealer_ids?: string[];
+  }) => request<any>('/admin/broadcasts', { method: 'POST', body: JSON.stringify(payload) }),
   adminSellerSendAccess: (id: string) =>
     request<any>(`/admin/sellers/${id}/send-access`, { method: 'POST', body: JSON.stringify({}) }),
   adminSellerRevoke: (id: string, reason?: string) =>

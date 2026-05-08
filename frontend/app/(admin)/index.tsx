@@ -245,6 +245,23 @@ export default function AdminOpsDashboard() {
           </TouchableOpacity>
         </View>
 
+        {/* LIQUIDITY TOOLS — broadcast composer (manual marketplace nudges) */}
+        <TouchableOpacity onPress={() => router.push('/(admin)/broadcast' as any)}
+          activeOpacity={0.85} style={styles.broadcastTile}
+          testID="ops-quick-broadcast">
+          <View style={styles.broadcastIcon}>
+            <Zap size={15} color={colors.red} strokeWidth={2.4} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.broadcastKicker}>LIQUIDITY · BROADCASTS</Text>
+            <Text style={styles.broadcastTitle}>Activate auction participation</Text>
+            <Text style={styles.broadcastHint} numberOfLines={1}>
+              New listings · live alerts · reserve met · ending soon · settlement closes
+            </Text>
+          </View>
+          <ChevronRight size={14} color={colors.red} />
+        </TouchableOpacity>
+
         {/* LIVE AUCTIONS */}
         <View style={styles.sectionHead}>
           <Gavel size={12} color={colors.textChrome} />
@@ -705,6 +722,24 @@ const styles = StyleSheet.create({
   trustIcon: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
   trustLabel: { color: colors.text, fontSize: 11, fontWeight: '900', letterSpacing: 0.6 },
   trustHint: { color: colors.textMuted, fontSize: 9, fontWeight: '600', letterSpacing: 0.3 },
+
+  /* LIQUIDITY · BROADCAST tile — high-prominence operator entry point */
+  broadcastTile: {
+    flexDirection: 'row', alignItems: 'center', gap: 11,
+    padding: 12, marginTop: 12,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,30,45,0.06)',
+    borderWidth: 1, borderColor: 'rgba(255,30,45,0.40)',
+  },
+  broadcastIcon: {
+    width: 34, height: 34, borderRadius: 8,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,30,45,0.10)',
+    borderWidth: 1, borderColor: 'rgba(255,30,45,0.45)',
+  },
+  broadcastKicker: { color: colors.red, fontSize: 9, fontWeight: '900', letterSpacing: 1.4 },
+  broadcastTitle: { color: colors.textPrimary, fontSize: 12.5, fontWeight: '900', marginTop: 2, letterSpacing: 0.1 },
+  broadcastHint: { color: colors.textMuted, fontSize: 10, fontWeight: '600', marginTop: 2 },
 
   /* AUCTION ROW — dense urgency-prioritized tile */
   rowWrap: { marginBottom: 8 },

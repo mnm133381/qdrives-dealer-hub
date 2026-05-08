@@ -2,7 +2,7 @@ import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BadgeCheck, ShieldCheck, TrendingUp, Award, LogOut, Settings, ChevronRight, Star, Bell, FileText, Send } from 'lucide-react-native';
+import { BadgeCheck, ShieldCheck, TrendingUp, Award, LogOut, Settings, ChevronRight, Star, Bell, FileText } from 'lucide-react-native';
 import { colors, radii, formatINR } from '../../src/theme';
 import { useAuth } from '../../src/auth';
 import { TrustCard } from '../../src/components/TrustCard';
@@ -10,7 +10,6 @@ import { PendingApprovalCard } from '../../src/components/PendingApprovalCard';
 import { api } from '../../src/api';
 import { useToast } from '../../src/toast';
 import { Platform } from 'react-native';
-import { registerForPushNotifications } from '../../src/notifications';
 
 export default function Profile() {
   const router = useRouter();
@@ -37,24 +36,6 @@ export default function Profile() {
     }
     await signOut();
     router.replace('/(auth)/login');
-  };
-
-  const sendTestPush = async () => {
-    if (Platform.OS === 'web') {
-      toast.show('Push notifications only work on mobile devices', 'info');
-      return;
-    }
-    try {
-      const token = await registerForPushNotifications();
-      if (!token) {
-        toast.show('Allow notifications in settings to test', 'error');
-        return;
-      }
-      await api.testPush('Q Drives', 'Test alert — your device is reachable.');
-      toast.show('Test notification sent — check your device', 'success');
-    } catch {
-      toast.show('Could not send test notification', 'error');
-    }
   };
 
   if (!dealer) return null;
@@ -160,12 +141,6 @@ export default function Profile() {
         <TouchableOpacity onPress={() => router.push('/notifications')} style={[styles.menuItem, { marginTop: 8 }]} testID="profile-notifications">
           <Bell size={18} color={colors.textChrome} />
           <Text style={styles.menuText}>Notifications & alerts</Text>
-          <ChevronRight size={16} color={colors.textMuted} />
-        </TouchableOpacity>
-
-        <TouchableOpacity onPress={sendTestPush} style={[styles.menuItem, { marginTop: 8 }]} testID="profile-test-push">
-          <Send size={18} color={colors.textChrome} />
-          <Text style={styles.menuText}>Send test push notification</Text>
           <ChevronRight size={16} color={colors.textMuted} />
         </TouchableOpacity>
 

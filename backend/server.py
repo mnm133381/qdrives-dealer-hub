@@ -4585,160 +4585,23 @@ async def admin_seller_revoke(
 
 # =====================================================================
 # Operator → Dealer Broadcasts (auction lifecycle notifications)
+#
+# The full implementation lives in routes/admin_broadcasts.py — kept
+# modular because this surface will keep growing (segmented targeting,
+# auto-trigger event listeners, delivery telemetry, etc.) and we want
+# to avoid bloating server.py further.
 # =====================================================================
-class BroadcastReq(BaseModel):
-    type: str                     # new_listing | auction_live | reserve_met | ending_soon | custom
-    auction_id: Optional[str] = None
-    title: Optional[str] = None
-    body: Optional[str] = None
-    audience: Optional[str] = None   # all_verified | bidders | watchers | bidders_and_watchers
+from routes import admin_broadcasts as _admin_broadcasts_routes  # noqa: E402
 
-
-_BROADCAST_TEMPLATES = {
-    "new_listing": {
-        "title": "New inventory on the floor",
-        "body": "A new vehicle is listed for auction. Tap to view details.",
-        "audience": "all_verified",
-        "label": "New listing",
-    },
-    "auction_live": {
-        "title": "Auction is live",
-        "body": "Live bidding has started. Place your bid before the timer runs out.",
-        "audience": "watchers",
-        "label": "Auction live",
-    },
-    "reserve_met": {
-        "title": "Reserve has been met",
-        "body": "Reserve cleared — the highest bidder will close this deal if the timer expires.",
-        "audience": "bidders_and_watchers",
-        "label": "Reserve met",
-    },
-    "ending_soon": {
-        "title": "Auction ending soon",
-        "body": "Less than 10 minutes left on this auction. Last chance to bid.",
-        "audience": "bidders_and_watchers",
-        "label": "Ending soon",
-    },
-}
-
-
-async def _resolve_broadcast_audience(audience: str, auction_id: Optional[str]) -> List[str]:
-    """Resolve a logical audience to a concrete list of dealer ids."""
-    if audience == "all_verified":
-        ids = await db.dealers.distinct("id", {"verified": True, "blocked": {"$ne": True}})
-        return list(ids or [])
-    if not auction_id:
-        return []
-    ids: set = set()
-    if audience in ("bidders", "bidders_and_watchers"):
-        async for b in db.bids.find({"auction_id": auction_id}, {"dealer_id": 1, "_id": 0}).limit(2000):
-            if b.get("dealer_id"):
-                ids.add(b["dealer_id"])
-    if audience in ("watchers", "bidders_and_watchers"):
-        async for w in db.watchlist.find({"auction_id": auction_id}, {"dealer_id": 1, "_id": 0}).limit(2000):
-            if w.get("dealer_id"):
-                ids.add(w["dealer_id"])
-    return list(ids)
-
-
-@api.get("/admin/broadcasts/templates")
-async def admin_broadcast_templates(admin = Depends(get_current_admin)):
-    """Returns the catalog of broadcast templates the operator UI offers."""
-    out = []
-    for k, t in _BROADCAST_TEMPLATES.items():
-        out.append({
-            "type": k,
-            "label": t["label"],
-            "default_title": t["title"],
-            "default_body": t["body"],
-            "audience": t["audience"],
-            "needs_auction": k != "new_listing",
-        })
-    return out
-
-
-@api.get("/admin/broadcasts/recent")
-async def admin_broadcast_recent(limit: int = 30, admin = Depends(get_current_admin)):
-    cur = db.broadcasts.find({}, {"_id": 0}).sort("ts", -1).limit(min(limit, 100))
-    return await cur.to_list(length=limit)
-
-
-@api.post("/admin/broadcasts")
-async def admin_broadcast_send(req: BroadcastReq, admin = Depends(get_current_admin)):
-    """Trigger a real auction-lifecycle broadcast. Persisted in
-    db.broadcasts as an audit ledger entry; delivered via push +
-    notifications inbox."""
-    # Resolve template
-    tpl = _BROADCAST_TEMPLATES.get(req.type) if req.type != "custom" else None
-    if req.type != "custom" and not tpl:
-        raise HTTPException(status_code=400, detail=f"Unknown broadcast type: {req.type}")
-
-    title = (req.title or (tpl or {}).get("title") or "").strip()
-    body = (req.body or (tpl or {}).get("body") or "").strip()
-    if not title or not body:
-        raise HTTPException(status_code=400, detail="title and body are required")
-
-    audience = (req.audience or (tpl or {}).get("audience") or "all_verified")
-    if (tpl and tpl.get("audience") != "all_verified") and not req.auction_id:
-        raise HTTPException(status_code=400, detail="auction_id is required for this broadcast type")
-
-    auction = None
-    if req.auction_id:
-        auction = await db.auctions.find_one({"id": req.auction_id}, {"_id": 0})
-        if not auction:
-            raise HTTPException(status_code=404, detail="Auction not found")
-        car = await db.cars.find_one({"id": auction.get("car_id")}, {"_id": 0})
-        if car:
-            ctx = f"{car.get('year','')} {car.get('make','')} {car.get('model','')}".strip()
-            if ctx and ctx not in body:
-                body = f"{body} ({ctx})"
-
-    dealer_ids = await _resolve_broadcast_audience(audience, req.auction_id)
-
-    # Persist audit row
-    bid_ = str(uuid.uuid4())
-    rec = {
-        "id": bid_,
-        "type": req.type,
-        "title": title,
-        "body": body,
-        "audience": audience,
-        "auction_id": req.auction_id,
-        "recipient_count": len(dealer_ids),
-        "sent_by": admin["id"],
-        "sent_by_name": admin.get("dealership_name") or admin.get("full_name"),
-        "ts": now_utc(),
-    }
-    await db.broadcasts.insert_one(rec)
-    rec.pop("_id", None)
-
-    # Inbox notifications + push fanout (best effort)
-    if dealer_ids:
-        try:
-            inbox_docs = [{
-                "id": str(uuid.uuid4()),
-                "dealer_id": d,
-                "type": "broadcast",
-                "title": title, "body": body,
-                "auction_id": req.auction_id,
-                "broadcast_id": bid_,
-                "read": False, "created_at": now_utc(),
-            } for d in dealer_ids]
-            await db.notifications.insert_many(inbox_docs)
-        except Exception as exc:
-            logger.warning("broadcast inbox fanout failed: %s", exc)
-        try:
-            asyncio.create_task(send_to_dealers(
-                db, dealer_ids, title, body,
-                data={"type": "broadcast", "broadcast_id": bid_, "auction_id": req.auction_id},
-            ))
-        except Exception as exc:
-            logger.warning("broadcast push fanout failed: %s", exc)
-
-    asyncio.create_task(audit(db, "broadcast_sent", admin["id"], bid_, {
-        "type": req.type, "audience": audience, "recipients": len(dealer_ids),
-    }))
-    return rec
+_admin_broadcasts_routes.register(api, {
+    "db": db,
+    "get_current_admin": get_current_admin,
+    "send_to_dealers": send_to_dealers,
+    "audit": audit,
+    "now_utc": now_utc,
+    "iso": iso,
+    "logger": logger,
+})
 
 
 # Mount router

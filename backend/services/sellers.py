@@ -125,6 +125,9 @@ async def operator_create_seller(
         "last_viewed_vehicle_at": None,
     }
     await db.sellers.insert_one(doc)
+    # Motor mutates doc with `_id` post-insert — strip it so FastAPI's
+    # jsonable_encoder doesn't choke on the ObjectId.
+    doc.pop("_id", None)
     await _audit(db, seller_id=sid, action="seller_created", actor_id=operator_id,
                  actor_role="operator", meta={"name": name, "phone": phone_n})
     return doc

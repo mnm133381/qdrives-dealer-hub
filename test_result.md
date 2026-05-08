@@ -2421,8 +2421,7 @@ phase_2b_complete_marker:
           seller_id → return None → route raises 404). Not blocking.
 
 test_plan:
-  current_focus:
-    - "Sellers (vehicle owner) backend — controlled read-only visibility layer"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"

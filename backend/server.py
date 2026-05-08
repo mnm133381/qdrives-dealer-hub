@@ -4480,7 +4480,8 @@ class CreateSellerReq(BaseModel):
 
 
 class LinkVehicleReq(BaseModel):
-    car_id: str
+    car_id: Optional[str] = None
+    registration_number: Optional[str] = None
 
 
 class RevokeSellerReq(BaseModel):
@@ -4537,10 +4538,22 @@ async def admin_seller_link_vehicle(
     _require_seller_operator(admin)
     try:
         return await sellers_svc.operator_link_vehicle(
-            db, seller_id=seller_id, car_id=req.car_id, operator_id=admin["id"],
+            db, seller_id=seller_id,
+            car_id=req.car_id,
+            registration_number=req.registration_number,
+            operator_id=admin["id"],
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@api.get("/admin/sellers/lookup-vehicle")
+async def admin_sellers_lookup_vehicle(
+    q: str, admin = Depends(get_current_admin),
+):
+    """Operator autocomplete: search vehicles by registration prefix."""
+    _require_seller_operator(admin)
+    return await sellers_svc.search_vehicle_by_registration(db, query=q, limit=8)
 
 
 @api.post("/admin/sellers/{seller_id}/send-access")

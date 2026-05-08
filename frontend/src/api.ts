@@ -332,10 +332,12 @@ export const api = {
       method: 'POST', body: JSON.stringify({ name, phone, email: email || null }),
     }),
   adminSellerDetail: (id: string) => request<any>(`/admin/sellers/${id}`),
-  adminSellerLinkVehicle: (id: string, car_id: string) =>
+  adminSellerLinkVehicle: (id: string, payload: { car_id?: string; registration_number?: string }) =>
     request<any>(`/admin/sellers/${id}/link-vehicle`, {
-      method: 'POST', body: JSON.stringify({ car_id }),
+      method: 'POST', body: JSON.stringify(payload),
     }),
+  adminSellerLookupVehicle: (q: string) =>
+    request<any[]>(`/admin/sellers/lookup-vehicle?q=${encodeURIComponent(q)}`),
   adminSellerSendAccess: (id: string) =>
     request<any>(`/admin/sellers/${id}/send-access`, { method: 'POST', body: JSON.stringify({}) }),
   adminSellerRevoke: (id: string, reason?: string) =>

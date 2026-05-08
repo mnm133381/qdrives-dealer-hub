@@ -134,36 +134,92 @@ async def operator_create_seller(
 
 
 async def operator_link_vehicle(
-    db, *, seller_id: str, car_id: str, operator_id: str,
+    db, *, seller_id: str, car_id: Optional[str] = None,
+    registration_number: Optional[str] = None, operator_id: str,
 ) -> Dict[str, Any]:
-    """Bind a vehicle (car_id) to a seller. The car must exist; the
-    auction with this car_id is the canonical record. We also denormalise
-    `seller_id` onto the car for fast filtering."""
+    """Bind a vehicle to a seller. Operators identify vehicles by REG
+    NUMBER (e.g. TS09AB1234) — we resolve to internal car_id here.
+    `car_id` is still accepted for backwards compatibility / programmatic
+    callers."""
     seller = await db.sellers.find_one({"id": seller_id}, {"_id": 0})
     if not seller:
         raise ValueError("Seller not found")
     if seller["status"] == "revoked":
         raise ValueError("Seller access is revoked")
 
-    car = await db.cars.find_one({"id": car_id}, {"_id": 0})
-    if not car:
-        raise ValueError("Vehicle not found")
+    car = None
+    if registration_number:
+        # Case-insensitive exact match, ignoring whitespace
+        reg = re.sub(r"\s+", "", registration_number).upper()
+        cur = db.cars.find({}, {"_id": 0})
+        async for c in cur:
+            cr = re.sub(r"\s+", "", (c.get("registration_number") or "")).upper()
+            if cr and cr == reg:
+                car = c; break
+        if not car:
+            raise ValueError(f"No vehicle on file with registration {reg}")
+    elif car_id:
+        car = await db.cars.find_one({"id": car_id}, {"_id": 0})
+        if not car:
+            raise ValueError("Vehicle not found")
+    else:
+        raise ValueError("Provide registration_number or car_id")
 
-    # Denormalise seller_id onto the car (single source of truth: cars)
-    await db.cars.update_one({"id": car_id}, {"$set": {"seller_id": seller_id, "updated_at": now_utc()}})
+    # Single source of truth: cars.{id}.seller_id
+    await db.cars.update_one(
+        {"id": car["id"]},
+        {"$set": {"seller_id": seller_id, "updated_at": now_utc()}},
+    )
 
-    if car_id not in (seller.get("linked_vehicles") or []):
+    if car["id"] not in (seller.get("linked_vehicles") or []):
         await db.sellers.update_one(
             {"id": seller_id},
             {
-                "$addToSet": {"linked_vehicles": car_id},
+                "$addToSet": {"linked_vehicles": car["id"]},
                 "$set": {"updated_at": now_utc()},
             },
         )
-    await _audit(db, seller_id=seller_id, vehicle_id=car_id,
+    await _audit(db, seller_id=seller_id, vehicle_id=car["id"],
                  action="vehicle_linked", actor_id=operator_id,
-                 actor_role="operator", meta={"car_reg": car.get("registration_number")})
-    return {"ok": True, "seller_id": seller_id, "car_id": car_id}
+                 actor_role="operator",
+                 meta={"car_reg": car.get("registration_number"),
+                       "lookup_method": "registration" if registration_number else "car_id"})
+    return {
+        "ok": True,
+        "seller_id": seller_id,
+        "car_id": car["id"],
+        "registration_number": car.get("registration_number"),
+        "make": car.get("make"), "model": car.get("model"),
+        "year": car.get("year"),
+    }
+
+
+async def search_vehicle_by_registration(
+    db, *, query: str, limit: int = 8,
+) -> List[Dict[str, Any]]:
+    """Operator-side autocomplete for vehicle lookup by registration.
+    Case-insensitive prefix match. Returns minimal vehicle metadata."""
+    q = re.sub(r"\s+", "", (query or "")).upper()
+    if not q or len(q) < 2:
+        return []
+    out: List[Dict[str, Any]] = []
+    async for c in db.cars.find({}, {"_id": 0}).limit(limit * 4):
+        cr = re.sub(r"\s+", "", (c.get("registration_number") or "")).upper()
+        if not cr or q not in cr:
+            continue
+        # Existing seller binding (for operator awareness)
+        existing = c.get("seller_id")
+        out.append({
+            "car_id": c["id"],
+            "registration_number": c.get("registration_number"),
+            "make": c.get("make"), "model": c.get("model"),
+            "year": c.get("year"),
+            "variant": c.get("variant"),
+            "already_linked_seller_id": existing,
+        })
+        if len(out) >= limit:
+            break
+    return out
 
 
 async def operator_send_access(

@@ -21,12 +21,12 @@ import { api } from '../../../src/api';
 import { useToast } from '../../../src/toast';
 
 function formatTime(iso?: string | null) {
-  if (!iso) return '\u2014';
+  if (!iso) return '—';
   try {
     return new Date(iso).toLocaleString('en-IN', {
       day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
     });
-  } catch { return '\u2014'; }
+  } catch { return '—'; }
 }
 
 function useCountdown(endIso?: string | null) {
@@ -113,9 +113,9 @@ export default function SellerVehicleDetail() {
 
         <View style={styles.regCard}>
           <Text style={styles.regLabel}>REGISTRATION</Text>
-          <Text style={styles.regValue}>{data.registration_number || '\u2014'}</Text>
+          <Text style={styles.regValue}>{data.registration_number || '—'}</Text>
           <View style={styles.regMeta}>
-            <Text style={styles.regMetaText}>{data.variant} \u00B7 {data.fuel_type} \u00B7 {(data.km_driven || 0).toLocaleString('en-IN')} km</Text>
+            <Text style={styles.regMetaText}>{data.variant} · {data.fuel_type} · {(data.km_driven || 0).toLocaleString('en-IN')} km</Text>
           </View>
         </View>
 

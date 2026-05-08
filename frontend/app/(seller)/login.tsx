@@ -121,7 +121,7 @@ export default function SellerLogin() {
 
       <View style={styles.foot}>
         <Text style={styles.footText}>
-          Access is operator-controlled. If you don\u2019t have an account on file, contact Q Drives operations.
+          Access is operator-controlled. If you don’t have an account on file, contact Q Drives operations.
         </Text>
       </View>
     </KeyboardAvoidingView>

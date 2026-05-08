@@ -102,11 +102,11 @@ export default function SellerHome() {
         <View style={styles.trustCard}>
           <ShieldCheck size={14} color={colors.success} />
           <Text style={styles.trustText}>
-            You\u2019re viewing a <Text style={{ color: colors.textPrimary, fontWeight: '900' }}>read-only</Text> tracking layer. Q Drives operations control all auction actions.
+            You’re viewing a <Text style={{ color: colors.textPrimary, fontWeight: '900' }}>read-only</Text> tracking layer. Q Drives operations control all auction actions.
           </Text>
         </View>
 
-        <Text style={styles.sectionLabel}>YOUR VEHICLES \u00B7 {vehicles.length}</Text>
+        <Text style={styles.sectionLabel}>YOUR VEHICLES · {vehicles.length}</Text>
 
         {vehicles.length === 0 ? (
           <View style={styles.empty}>
@@ -142,7 +142,7 @@ export default function SellerHome() {
                     )}
                   </View>
                   <Text style={styles.title} numberOfLines={1}>{v.year} {v.make} {v.model}</Text>
-                  <Text style={styles.sub} numberOfLines={1}>{v.registration_number || '\u2014'} \u00B7 {v.variant || ''}</Text>
+                  <Text style={styles.sub} numberOfLines={1}>{v.registration_number || '—'} · {v.variant || ''}</Text>
                   <View style={styles.metricRow}>
                     <View style={styles.metricCell}>
                       <Text style={styles.metricLabel}>CURRENT BID</Text>

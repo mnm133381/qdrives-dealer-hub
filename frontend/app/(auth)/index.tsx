@@ -126,8 +126,8 @@ export default function AuthLanding() {
               <ShieldCheck size={14} color={colors.silver} strokeWidth={2.2} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.sellerTitle}>I sold my car to Q Drives</Text>
-              <Text style={styles.sellerSub}>Track your vehicle on the auction floor · read-only</Text>
+              <Text style={styles.sellerTitle}>Seller Access · Track Your Vehicle</Text>
+              <Text style={styles.sellerSub}>Monitor your vehicle auction and settlement progress · read-only access</Text>
             </View>
           </View>
           <ChevronRight size={14} color={colors.textChrome} strokeWidth={2.2} />

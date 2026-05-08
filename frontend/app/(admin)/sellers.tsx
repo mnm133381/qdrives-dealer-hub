@@ -67,7 +67,7 @@ export default function AdminSellers() {
 
   return (
     <View style={styles.root}>
-      <AdminHeader kicker="Sellers" title="Vehicle Owners" sub="Operator-controlled visibility \u00B7 read-only tracking" />
+      <AdminHeader kicker="Sellers" title="Vehicle Owners" sub="Operator-controlled visibility · read-only tracking" />
       <View style={styles.toolbar}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
           {STATUSES.map((s) => (
@@ -108,13 +108,13 @@ export default function AdminSellers() {
                 <View style={[styles.statusDot, { backgroundColor: tint }]} />
                 <View style={{ flex: 1 }}>
                   <View style={styles.rowHead}>
-                    <Text style={styles.name} numberOfLines={1}>{s.name || '\u2014'}</Text>
+                    <Text style={styles.name} numberOfLines={1}>{s.name || '—'}</Text>
                     <View style={[styles.statusPill, { borderColor: tint + '88', backgroundColor: tint + '14' }]}>
                       <Text style={[styles.statusText, { color: tint }]}>{(s.status || '').toUpperCase().replace('_', ' ')}</Text>
                     </View>
                   </View>
                   <Text style={styles.rowSub} numberOfLines={1}>
-                    {s.phone} \u00B7 {s.linked_vehicles_count || 0} vehicle{s.linked_vehicles_count === 1 ? '' : 's'}
+                    {s.phone} · {s.linked_vehicles_count || 0} vehicle{s.linked_vehicles_count === 1 ? '' : 's'}
                   </Text>
                 </View>
                 <ChevronRight size={14} color={colors.textMuted} />
@@ -156,44 +156,71 @@ function CreateSellerModal({ onClose, onCreated }: any) {
   };
   return (
     <Modal visible animationType="slide" transparent onRequestClose={onClose}>
-      <Pressable style={styles.bd} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={{ flex: 1 }}
+      >
+        <Pressable style={styles.bd} onPress={onClose}>
+          <Pressable style={[styles.sheet, { maxHeight: '88%' }]} onPress={(e) => e.stopPropagation()}>
             <View style={styles.sheetHandle} />
             <View style={styles.sheetHead}>
               <Text style={styles.sheetTitle}>New Seller</Text>
               <TouchableOpacity onPress={onClose} style={styles.sheetClose}><X size={16} color={colors.textChrome} /></TouchableOpacity>
             </View>
-            <View style={{ padding: 18 }}>
+            <ScrollView
+              contentContainerStyle={{ padding: 18, paddingBottom: 80 }}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
               <Text style={styles.fLabel}>Name</Text>
-              <TextInput value={name} onChangeText={setName} placeholder="Vehicle owner full name" placeholderTextColor={colors.textMuted} style={styles.input} />
+              <TextInput value={name} onChangeText={setName} placeholder="Vehicle owner full name" placeholderTextColor={colors.textMuted} style={styles.input} returnKeyType="next" />
               <Text style={styles.fLabel}>Phone (10-digit)</Text>
-              <TextInput value={phone} onChangeText={setPhone} keyboardType="phone-pad" maxLength={10} placeholder="9876543210" placeholderTextColor={colors.textMuted} style={styles.input} />
+              <TextInput value={phone} onChangeText={setPhone} keyboardType="phone-pad" maxLength={10} placeholder="9876543210" placeholderTextColor={colors.textMuted} style={styles.input} returnKeyType="next" />
               <Text style={styles.fLabel}>Email (optional)</Text>
-              <TextInput value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" placeholder="owner@email.com" placeholderTextColor={colors.textMuted} style={styles.input} />
+              <TextInput value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" placeholder="owner@email.com" placeholderTextColor={colors.textMuted} style={styles.input} returnKeyType="done" onSubmitEditing={submit} />
               <TouchableOpacity onPress={submit} disabled={busy} style={[styles.modalCta, busy && { opacity: 0.5 }]} testID="seller-create-submit">
-                <Text style={styles.modalCtaText}>CREATE SELLER</Text>
+                <Text style={styles.modalCtaText}>{busy ? 'CREATING…' : 'CREATE SELLER'}</Text>
               </TouchableOpacity>
-            </View>
-          </KeyboardAvoidingView>
+            </ScrollView>
+          </Pressable>
         </Pressable>
-      </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
 
 function SellerDetailModal({ seller, onClose, onAction }: any) {
   const toast = useToast();
-  const [carId, setCarId] = useState('');
+  const [regQuery, setRegQuery] = useState('');
+  const [results, setResults] = useState<any[]>([]);
+  const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  // Debounced search by registration number
+  React.useEffect(() => {
+    const q = (regQuery || '').trim();
+    if (q.length < 2) { setResults([]); return; }
+    const t = setTimeout(async () => {
+      setSearching(true);
+      try { setResults(await api.adminSellerLookupVehicle(q)); }
+      catch { setResults([]); }
+      finally { setSearching(false); }
+    }, 280);
+    return () => clearTimeout(t);
+  }, [regQuery]);
+
   if (!seller) return (
     <Modal visible transparent><Pressable style={styles.bd} onPress={onClose}><View style={styles.sheet}><ActivityIndicator color={colors.red} style={{ padding: 40 }} /></View></Pressable></Modal>
   );
   const tint = STATUS_TINT[seller.status] || colors.silver;
-  const link = async () => {
-    if (!carId.trim()) { toast.show('Enter car_id', 'error'); return; }
+  const linkByReg = async (reg: string) => {
+    if (!reg.trim()) { toast.show('Enter a registration', 'error'); return; }
     setBusy(true);
-    try { await api.adminSellerLinkVehicle(seller.id, carId.trim()); setCarId(''); await onAction(); toast.show('Vehicle linked', 'success'); }
+    try {
+      await api.adminSellerLinkVehicle(seller.id, { registration_number: reg.trim() });
+      setRegQuery(''); setResults([]);
+      await onAction(); toast.show('Vehicle linked', 'success');
+    }
     catch (e: any) { toast.show(e.message || 'Failed', 'error'); }
     finally { setBusy(false); }
   };
@@ -211,68 +238,122 @@ function SellerDetailModal({ seller, onClose, onAction }: any) {
   };
   return (
     <Modal visible animationType="slide" transparent onRequestClose={onClose}>
-      <Pressable style={styles.bd} onPress={onClose}>
-        <Pressable style={[styles.sheet, { maxHeight: '92%' }]} onPress={(e) => e.stopPropagation()}>
-          <View style={styles.sheetHandle} />
-          <View style={styles.sheetHead}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.sheetTitle}>{seller.name || '\u2014'}</Text>
-              <Text style={[styles.statusText, { color: tint, marginTop: 4 }]}>{(seller.status || '').toUpperCase().replace('_', ' ')}</Text>
-            </View>
-            <TouchableOpacity onPress={onClose} style={styles.sheetClose}><X size={16} color={colors.textChrome} /></TouchableOpacity>
-          </View>
-          <ScrollView contentContainerStyle={{ padding: 18, paddingBottom: 40 }}>
-            <View style={styles.kvCard}>
-              <KV k="Phone" v={seller.phone || '\u2014'} />
-              {seller.email && <KV k="Email" v={seller.email} />}
-              <KV k="Created" v={new Date(seller.created_at).toLocaleString('en-IN')} />
-              {seller.last_login_at && <KV k="Last login" v={new Date(seller.last_login_at).toLocaleString('en-IN')} />}
-            </View>
-
-            <Text style={styles.fLabel}>Linked vehicles \u00B7 {(seller.vehicles || []).length}</Text>
-            {(seller.vehicles || []).map((v: any) => (
-              <View key={v.id} style={styles.veh}>
-                <Text style={styles.vehTitle}>{v.year} {v.make} {v.model}</Text>
-                <Text style={styles.vehSub}>{v.registration_number || '\u2014'} \u00B7 {(v.auction_status || '').toUpperCase()}</Text>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={{ flex: 1 }}
+      >
+        <Pressable style={styles.bd} onPress={onClose}>
+          <Pressable style={[styles.sheet, { maxHeight: '92%' }]} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHead}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sheetTitle}>{seller.name || '—'}</Text>
+                <Text style={[styles.statusText, { color: tint, marginTop: 4 }]}>{(seller.status || '').toUpperCase().replace('_', ' ')}</Text>
               </View>
-            ))}
-
-            {seller.status !== 'revoked' && (
-              <>
-                <Text style={styles.fLabel}>Link a vehicle (car_id)</Text>
-                <View style={{ flexDirection: 'row', gap: 8 }}>
-                  <TextInput value={carId} onChangeText={setCarId} placeholder="car uuid" placeholderTextColor={colors.textMuted} style={[styles.input, { flex: 1 }]} />
-                  <TouchableOpacity onPress={link} disabled={busy} style={styles.linkBtn} testID="seller-link-vehicle">
-                    <Link2 size={13} color={colors.textChrome} />
-                  </TouchableOpacity>
-                </View>
-
-                <View style={styles.actionsRow}>
-                  <TouchableOpacity onPress={send} disabled={busy} style={[styles.actionBtn, styles.actionPrimary]} testID="seller-send-access">
-                    <Send size={13} color="#fff" />
-                    <Text style={styles.actionPrimaryText}>SEND ACCESS</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={revoke} disabled={busy} style={[styles.actionBtn, styles.actionDanger]} testID="seller-revoke">
-                    <Ban size={13} color={colors.red} />
-                    <Text style={styles.actionDangerText}>REVOKE</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
-
-            <Text style={styles.fLabel}>Audit ledger</Text>
-            {(seller.audit || []).map((a: any) => (
-              <View key={a.id} style={styles.audit}>
-                <Activity size={11} color={colors.textChrome} />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.auditAction}>{(a.action || '').toUpperCase().replace(/_/g, ' ')}</Text>
-                  <Text style={styles.auditMeta}>{new Date(a.ts).toLocaleString('en-IN')} \u00B7 {a.actor_role}</Text>
-                </View>
+              <TouchableOpacity onPress={onClose} style={styles.sheetClose}><X size={16} color={colors.textChrome} /></TouchableOpacity>
+            </View>
+            <ScrollView
+              contentContainerStyle={{ padding: 18, paddingBottom: 80 }}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={styles.kvCard}>
+                <KV k="Phone" v={seller.phone || '—'} />
+                {seller.email && <KV k="Email" v={seller.email} />}
+                <KV k="Created" v={new Date(seller.created_at).toLocaleString('en-IN')} />
+                {seller.last_login_at && <KV k="Last login" v={new Date(seller.last_login_at).toLocaleString('en-IN')} />}
               </View>
-            ))}
-          </ScrollView>
+
+              <Text style={styles.fLabel}>Linked vehicles · {(seller.vehicles || []).length}</Text>
+              {(seller.vehicles || []).map((v: any) => (
+                <View key={v.id} style={styles.veh}>
+                  <Text style={styles.vehTitle}>{v.year} {v.make} {v.model}</Text>
+                  <Text style={styles.vehSub}>{v.registration_number || '—'} · {(v.auction_status || '').toUpperCase()}</Text>
+                </View>
+              ))}
+
+              {seller.status !== 'revoked' && (
+                <>
+                  <Text style={styles.fLabel}>Link vehicle by registration</Text>
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <TextInput
+                      value={regQuery}
+                      onChangeText={(t) => setRegQuery(t.toUpperCase())}
+                      placeholder="e.g. TS09AB1234"
+                      placeholderTextColor={colors.textMuted}
+                      autoCapitalize="characters"
+                      autoCorrect={false}
+                      style={[styles.input, { flex: 1, fontVariant: ['tabular-nums'], letterSpacing: 1 }]}
+                      testID="seller-reg-input"
+                    />
+                    <TouchableOpacity onPress={() => linkByReg(regQuery)} disabled={busy || !regQuery.trim()} style={[styles.linkBtn, (busy || !regQuery.trim()) && { opacity: 0.5 }]} testID="seller-link-vehicle">
+                      <Link2 size={13} color={colors.textChrome} />
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Search results */}
+                  {searching ? (
+                    <View style={styles.searchHint}><ActivityIndicator size="small" color={colors.textMuted} /></View>
+                  ) : results.length > 0 ? (
+                    <View style={{ marginTop: 8, gap: 6 }}>
+                      {results.map((v: any) => {
+                        const taken = v.already_linked_seller_id && v.already_linked_seller_id !== seller.id;
+                        return (
+                          <TouchableOpacity
+                            key={v.car_id} disabled={taken || busy}
+                            onPress={() => linkByReg(v.registration_number)}
+                            activeOpacity={0.85}
+                            style={[styles.searchRow, taken && { opacity: 0.45 }]}
+                          >
+                            <View style={styles.searchPlate}>
+                              <Text style={styles.searchPlateText}>{v.registration_number}</Text>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.searchTitle} numberOfLines={1}>
+                                {v.year} {v.make} {v.model}
+                              </Text>
+                              <Text style={styles.searchSub} numberOfLines={1}>
+                                {v.variant || '—'}{taken ? ' · already linked to another seller' : ''}
+                              </Text>
+                            </View>
+                            <ChevronRight size={13} color={colors.textMuted} />
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  ) : regQuery.trim().length >= 2 ? (
+                    <Text style={styles.searchHintText}>No vehicle on file with this registration.</Text>
+                  ) : (
+                    <Text style={styles.searchHintText}>Type at least 2 characters of the registration to search.</Text>
+                  )}
+
+                  <View style={styles.actionsRow}>
+                    <TouchableOpacity onPress={send} disabled={busy} style={[styles.actionBtn, styles.actionPrimary]} testID="seller-send-access">
+                      <Send size={13} color="#fff" />
+                      <Text style={styles.actionPrimaryText}>SEND ACCESS</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={revoke} disabled={busy} style={[styles.actionBtn, styles.actionDanger]} testID="seller-revoke">
+                      <Ban size={13} color={colors.red} />
+                      <Text style={styles.actionDangerText}>REVOKE</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
+
+              <Text style={styles.fLabel}>Audit ledger</Text>
+              {(seller.audit || []).map((a: any) => (
+                <View key={a.id} style={styles.audit}>
+                  <Activity size={11} color={colors.textChrome} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.auditAction}>{(a.action || '').toUpperCase().replace(/_/g, ' ')}</Text>
+                    <Text style={styles.auditMeta}>{new Date(a.ts).toLocaleString('en-IN')} · {a.actor_role}</Text>
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+          </Pressable>
         </Pressable>
-      </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -328,6 +409,15 @@ const styles = StyleSheet.create({
   veh: { padding: 11, marginBottom: 6, borderRadius: radii.md, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border },
   vehTitle: { color: colors.textPrimary, fontSize: 13, fontWeight: '800' },
   vehSub: { color: colors.textChrome, fontSize: 10.5, fontWeight: '500', marginTop: 3 },
+
+  // Registration-search affordances
+  searchHint: { paddingVertical: 12, alignItems: 'center' },
+  searchHintText: { color: colors.textMuted, fontSize: 10.5, fontWeight: '500', marginTop: 8, fontStyle: 'italic' },
+  searchRow: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10, borderRadius: radii.md, backgroundColor: colors.bgDeep, borderWidth: 1, borderColor: colors.border },
+  searchPlate: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: '#FFFFFF' },
+  searchPlateText: { color: '#0B0B0D', fontSize: 11, fontWeight: '900', letterSpacing: 1, fontVariant: ['tabular-nums'] },
+  searchTitle: { color: colors.textPrimary, fontSize: 12, fontWeight: '800' },
+  searchSub: { color: colors.textChrome, fontSize: 10.5, fontWeight: '500', marginTop: 2 },
 
   actionsRow: { flexDirection: 'row', gap: 8, marginTop: 14, flexWrap: 'wrap' },
   actionBtn: { flexGrow: 1, flexShrink: 1, flexBasis: 140, minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: radii.md, paddingHorizontal: 14 },

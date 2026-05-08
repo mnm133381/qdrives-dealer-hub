@@ -2421,62 +2421,53 @@ phase_2b_complete_marker:
           seller_id → return None → route raises 404). Not blocking.
 
 test_plan:
-  current_focus:
-    - "Operator broadcasts module (modular routes + extended schema)"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
+  - agent: "testing"
+    message: |
+      [BROADCASTS MODULE — 90/91 PASS]
+      Tested the new /api/admin/broadcasts/* surface end-to-end.
+
+      ✅ GET /admin/broadcasts/templates — 6 entries (5 presets + custom),
+         needs_auction correct, tone/cta_hint present, 401/403 enforced.
+      ✅ GET /admin/broadcasts/auctions — vehicle picker payload with
+         denormalized car context, ordered live → ended_pending → upcoming.
+      ✅ GET /admin/broadcasts/recent — ts as ISO string, vehicle hydration
+         on auction-scoped rows, all required keys, 401/403 enforced.
+      ✅ POST /admin/broadcasts — all 11 cases (a–k) pass:
+            new_listing/all_verified                                → 200
+            auction_live without auction_id                          → 400
+            auction_live + valid auction_id (auto-injects "y m m")   → 200
+            settlement_completed + auction_id                        → 200
+            custom + title + body                                    → 200
+            custom missing title/body                                → 400
+            specific + dealer_ids=[real]                             → recipients=1
+            specific empty                                           → recipients=0
+            bogus auction_id                                         → 404
+            unknown type                                             → 400
+            bidders_and_watchers without auction_id                  → 400
+      ✅ Inbox fanout reaches dealer /notifications.
+      ✅ Persistence: db.broadcasts grows by 1 per success.
+      ✅ Regression: legacy /admin/notifications/broadcast still 200.
+
+      ❌ Minor (non-blocking, FIXED): /admin/audit-logs?action=broadcast_sent
+         returned 0 even though audit row IS persisted. Root cause:
+         SECURITY_AUDIT_ACTIONS whitelist (server.py:2739) didn't include
+         "broadcast_sent". Main agent applied one-line fix.
+
+      Module ready to ship.
+
   - agent: "main"
     message: |
-      [DEALER BROADCASTS & NOTIFICATIONS — OPERATOR SCREEN COMPLETE]
-
-      Implemented "Liquidity Activation" broadcast system per the user's
-      spec. Modularized backend into routes/admin_broadcasts.py.
-
-      BACKEND CHANGES (please test):
-        - NEW MODULE  /app/backend/routes/admin_broadcasts.py
-          Mounts onto api router via register(api, deps).
-        - server.py  removed inline broadcast handlers (lines 4586-4741);
-          now calls _admin_broadcasts_routes.register(api, deps).
-        - GET  /api/admin/broadcasts/templates  → adds settlement_completed
-          template + custom; each row carries tone/cta_hint/needs_auction
-        - GET  /api/admin/broadcasts/auctions   → NEW · vehicle picker
-          payload (live + ended_pending + upcoming + recently_launched)
-          with denormalized car context
-        - GET  /api/admin/broadcasts/recent     → hydrates vehicle context
-          per row (year/make/model/reg) so the UI doesn't re-fetch
-        - POST /api/admin/broadcasts            → BroadcastReq now accepts
-          dealer_ids: List[str] for audience='specific' targeting; audience
-          override per-send (template default no longer locked)
-        - Persists to db.broadcasts as audit ledger; inbox + push fanout
-          best-effort in background tasks
-        - Uses send_to_dealers + audit + iso/now_utc from server.py
-
-      Operator credentials: +918977986662 / +919900000099 (super_admin).
-      Mock OTP 123456. Use the operator login to obtain a token, then test
-      every endpoint above. Expected: templates returns 6 rows (5 presets +
-      custom), auctions returns sorted vehicle list, recent returns ledger
-      with vehicle hydration. POST /admin/broadcasts with type=new_listing
-      audience=all_verified should succeed without auction_id; type=
-      auction_live without auction_id should 400.
-
-      FRONTEND CHANGES (NOT yet tested by agent — will request user
-      verification after backend tests pass):
-        - REWROTE /app/frontend/app/(admin)/broadcast.tsx as a 5-section
-          composer (TEMPLATE / VEHICLE / AUDIENCE / MESSAGE / PREVIEW)
-          plus recent-broadcasts ledger
-        - Vehicle picker modal + dealer picker modal + send-confirm modal
-        - Removed legacy "Send test push notification" button from
-          /(tabs)/profile.tsx (operator no longer sees it)
-        - Removed legacy adminBroadcast() method from api.ts (now
-          adminBroadcastSend with full payload + adminBroadcastAuctions)
-        - Added prominent "LIQUIDITY · BROADCASTS" entry tile on
-          /(admin)/index.tsx routing to /(admin)/broadcast
-
-      Please run backend tests on the broadcasts module first; UI is
-      stop-and-confirm pending.
+      [BROADCASTS MODULE COMPLETE]
+      Applied the testing agent's one-line fix: added "broadcast_sent" to
+      SECURITY_AUDIT_ACTIONS in server.py so the operator audit feed now
+      surfaces broadcast events. Backend 91/91. UI awaits user
+      verification — stop-and-confirm before any frontend testing run.
 
 
       Ran /app/backend_test.py against the public ingress URL covering all

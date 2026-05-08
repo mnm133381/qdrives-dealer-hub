@@ -2746,7 +2746,7 @@ SECURITY_AUDIT_ACTIONS = {
     "settlement_note_add", "dealer_approved", "dealer_signup",
     "inventory_withdrawn", "inventory_archived",
     "inventory_locked", "inventory_unlocked", "reserve_price_changed",
-    "bid_cancel", "admin_broadcast", "operator_promotion",
+    "bid_cancel", "admin_broadcast", "broadcast_sent", "operator_promotion",
     "token_invalidation", "suspicious_activity_flag",
 }
 

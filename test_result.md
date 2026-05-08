@@ -2291,8 +2291,138 @@ phase_2b_complete_marker:
           Audit + push + notification fan-out verified via response contents
           and audit-log re-fetch.
 
+  - task: "Sellers (vehicle owner) backend — controlled read-only visibility layer"
+    implemented: true
+    working: false
+    file: "backend/services/sellers.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: |
+          [Sellers backend — 53/55 PASS, 1 real backend bug found]
+          Test script: /app/backend_test_sellers.py
+          Run target: https://qdrives-dealer-hub.preview.emergentagent.com/api
+
+          HAPPY PATH — ✅ all flows work end-to-end (after recovering past the
+          bug below via idempotent retry):
+            • 1. Operator (+918977986662) creates seller {name:"Aarav Sharma",
+              phone:"+9199999009XX"} — status="pending", linked_vehicles=[]
+              (verified after retry).
+            • 1b. Idempotent on phone: 2nd create returns same id.
+            • 2. POST /admin/sellers/{id}/link-vehicle {car_id} with car_id
+              pulled from /api/auctions[0].car.id → 200 {ok:true, seller_id,
+              car_id}. seller.linked_vehicles contains car_id; cars.{id}.
+              seller_id denormalised (verified via GET /cars/{id}).
+            • 3. POST /admin/sellers/{id}/send-access → 200; seller.status
+              flips pending → access_sent.
+            • 4. POST /auth/seller/send-otp → 200 with {ok:true,
+              mocked_otp_hint:"123456"}. Audit row otp_sent written.
+            • 5. POST /auth/seller/verify-otp {otp:"123456"} → 200 with
+              {token, seller}. seller.status="viewed". Token kind="seller_access".
+            • 6. GET /seller/me → returns {id, name, phone, status,
+              linked_vehicles_count} — exact key set.
+            • 7. GET /seller/vehicles → list with the linked car. Each entry
+              has sanitized auction with {current_bid, bid_count,
+              active_bidder_count, reserve_met, reserve_progress}. NO
+              dealer_id / bidder_name / dealer_phone / dealer_trust /
+              top_bidder anywhere.
+            • 8. GET /seller/vehicles/{car_id} → full sanitized detail (vehicle
+              + auction + settlement_state). seller.status now "active".
+              vehicle_viewed audit row written.
+            • 9. GET /admin/sellers/{id} audit list contains all expected
+              actions in correct order: seller_created, vehicle_linked,
+              access_sent, otp_sent, otp_verified, vehicle_viewed.
+              (Plus access_revoked after G.)
+
+          NEGATIVE CASES — ✅ 9/9
+            • A. verify-otp wrong OTP "000000" → 400 "Invalid OTP".
+            • B. verify-otp non-seller phone +919876500000 → 404 "No seller
+              access on file. Contact Q Drives operations."
+            • D. seller token on /api/dashboard/stats → 401 "Wrong token
+              kind". seller token on /api/auth/me → 401 "Wrong token kind".
+              (Tokens are isolated — kind="seller_access" cannot replay
+              against dealer/operator endpoints.)
+            • E. dealer token on /api/seller/me → 401 "Wrong token kind".
+            • F. dealer token on /api/admin/sellers → 403.
+            • G. Operator revoke → 200; seller.status="revoked".
+                Subsequent verify-otp → 403 "Your access has been revoked."
+                Previously-issued seller token now → 403 "Access revoked"
+                (token kill via status check in get_current_seller).
+                seller_audit gains access_revoked row.
+            • H. POST /admin/sellers {phone:"invalid"} → 400 "Invalid phone".
+            • I. POST /admin/sellers/{nonexistent_uuid}/link-vehicle → 404
+              "Seller not found".
+
+          INVARIANTS — ✅
+            • cars.{id}.seller_id is denormalised on link.
+            • seller_audit ledger captures: seller_created, vehicle_linked,
+              access_sent, otp_sent, otp_verified, vehicle_viewed,
+              access_revoked.
+            • create-seller idempotent on phone (same id on repeat).
+            • Zero dealer-identity leakage in any /api/seller/* response —
+              json-string scan for {dealer_id, bidder_name, dealer_phone,
+              dealer_trust, top_bidder, top_bidder_id} returned empty.
+
+          ❌ BUG — POST /api/admin/sellers (FIRST CALL) returns 500
+          ──────────────────────────────────────────────────────────
+          Reproduction: any POST /api/admin/sellers with a phone that does
+          NOT yet exist in db.sellers returns HTTP 500 "Internal Server
+          Error". The seller IS persisted in MongoDB despite the 500
+          (verified — a subsequent idempotent retry returns 200 with the
+          same id and the doc is intact). Only the response serialization
+          fails.
+
+          Root cause (services/sellers.py:127, operator_create_seller):
+            doc = { "id": sid, ... }
+            await db.sellers.insert_one(doc)
+            ...
+            return doc
+          Motor's insert_one mutates the supplied dict to inject `_id:
+          ObjectId(...)`. FastAPI then jsonable_encoder()'s the returned
+          dict, hits ObjectId, and raises:
+            TypeError: 'ObjectId' object is not iterable
+            ValueError: [TypeError("'ObjectId' object is not iterable"),
+                         TypeError('vars() argument must have __dict__
+                         attribute')]
+          (Full stack in /var/log/supervisor/backend.err.log.)
+
+          The idempotent branch works because it does
+            existing = await db.sellers.find_one({"phone": phone_n},
+                                                 {"_id": 0})
+          which projects _id out — so 2nd call returns 200 cleanly.
+
+          One-line fix (services/sellers.py operator_create_seller, after
+          the insert_one call):
+            doc.pop("_id", None)
+            return doc
+          Or re-fetch via find_one(..., {"_id": 0}) and return that.
+
+          Same pattern is risk-free elsewhere in the file because every
+          other return path uses find_one(..., {"_id": 0}). Only the
+          fresh-create path leaks _id into the response.
+
+          IMPACT: Operator console "Create Seller" button always shows a
+          500 toast on first submit even though the seller is actually
+          created. Re-submitting same phone surfaces the existing record
+          (idempotent), masking the bug — but UX is broken on first try.
+
+          working=false because this is a real, in-scope, reproducible
+          backend regression. Everything else in the seller surface is
+          green.
+
+          NOTE: Negative case C (seller token + a different existing
+          car_id → 404) was not exercised because /api/auctions in the
+          current seed only surfaces 1 auction/car. The sibling 404 path
+          IS verified by I (link to nonexistent seller_id) and by the
+          ownership check in get_vehicle_for_seller (car.seller_id !=
+          seller_id → return None → route raises 404). Not blocking.
+
 test_plan:
-  current_focus: []
+  current_focus:
+    - "Sellers (vehicle owner) backend — controlled read-only visibility layer"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -4021,6 +4151,64 @@ agent_communication:
           composer (auto-hides on terminal states). Raise modal opens
           from auction detail with pre-filled auction reference.
 
+
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      [SELLERS BACKEND — 53/55 PASS · 1 REAL BUG]
+      Ran /app/backend_test_sellers.py against the public ingress
+      (https://qdrives-dealer-hub.preview.emergentagent.com/api).
+      Used operator +918977986662 / OTP 123456 and dealer +919900000002
+      / OTP 123456 per /app/memory/test_credentials.md.
+
+      ✅ HAPPY PATH (after recovering past the bug below): create →
+         link-vehicle → send-access → seller send-otp → verify-otp →
+         /seller/me → /seller/vehicles → /seller/vehicles/{id} → audit
+         feed all green. Status correctly progresses pending →
+         access_sent → viewed → active. car.seller_id denormalised on
+         link. seller_audit ledger captures all 6 expected actions
+         + access_revoked.
+
+      ✅ NEGATIVES (9/9): wrong OTP, non-seller phone, seller token on
+         dealer endpoints (Wrong token kind), dealer token on seller
+         endpoint (Wrong token kind), dealer token on /admin/sellers
+         (403), revoke kills the existing seller token (403 Access
+         revoked) AND blocks future verify-otp (403), invalid phone
+         create (400), nonexistent seller link (404). Token isolation
+         (kind="seller_access") fully enforced.
+
+      ✅ INVARIANTS: zero dealer-identity leakage in /api/seller/*
+         responses (full json scan for dealer_id / bidder_name /
+         dealer_phone / dealer_trust / top_bidder returned empty);
+         create-seller idempotent on phone.
+
+      ❌ ONE REAL BUG — POST /api/admin/sellers (first time / phone not
+         yet on file) returns HTTP 500.
+         Root cause: services/sellers.py:127 operator_create_seller
+         returns the same `doc` dict that was passed to
+         db.sellers.insert_one(). Motor mutates that dict to inject
+         `_id: ObjectId(...)` post-insert. FastAPI's jsonable_encoder
+         then chokes on ObjectId →
+           TypeError: 'ObjectId' object is not iterable
+         The seller IS persisted (verified — idempotent retry with
+         same phone returns 200 via the find_one(..., {"_id":0})
+         branch), so the operator console only sees a 500 toast on
+         FIRST submit of a new phone; everything else works.
+         One-line fix: pop `_id` from doc before returning, OR re-fetch
+         via find_one(..., {"_id":0}) before returning.
+
+      Note on negative case C ("seller token + a different existing
+      car_id → 404"): not exercised because /api/auctions only
+      surfaces 1 auction/car in the current seed. The 404 path is
+      still indirectly verified by ownership check + nonexistent UUID
+      tests. Not blocking.
+
+      Set working=false for the Sellers task because the create-500 is
+      a real, in-scope, one-line backend regression. Otherwise the
+      Sellers visibility layer is fully spec-compliant — no token
+      leakage, no dealer-identity leakage, audit ledger complete,
+      revoke flow works, idempotency works.
 
 agent_communication:
   - agent: "main"

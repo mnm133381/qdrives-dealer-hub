@@ -3528,6 +3528,7 @@ async def root():
 from services import reputation as rep_svc           # noqa: E402
 from services import disputes as disp_svc            # noqa: E402
 from services import settlement as sett_svc          # noqa: E402
+from services import sellers as sellers_svc          # noqa: E402
 
 
 # ── Pydantic models ─────────────────────────────────────────────────
@@ -4359,6 +4360,214 @@ async def admin_settlement_get_proof(
     if not p:
         raise HTTPException(status_code=404, detail="No proof on file")
     return p
+
+
+# =====================================================================
+# Sellers — operator-controlled vehicle owner tracking
+# =====================================================================
+SELLER_OTP_FIXED = "123456"  # MOCKED — Twilio integration is a follow-up
+
+
+def _create_seller_jwt(seller_id: str) -> str:
+    """Issue a seller access token. Distinct `kind` ensures these tokens
+    cannot be replayed against any dealer/operator endpoint."""
+    payload = {
+        "sub": seller_id,
+        "kind": "seller_access",
+        "exp": now_utc() + timedelta(hours=12),
+        "iat": now_utc(),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+
+
+async def get_current_seller(
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    if not creds or not creds.credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALGO])
+        seller_id = payload["sub"]
+        kind = payload.get("kind")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    if kind != "seller_access":
+        raise HTTPException(status_code=401, detail="Wrong token kind")
+    seller = await db.sellers.find_one({"id": seller_id}, {"_id": 0})
+    if not seller:
+        raise HTTPException(status_code=401, detail="Seller not found")
+    if seller.get("status") == "revoked":
+        raise HTTPException(status_code=403, detail="Access revoked")
+    return seller
+
+
+# ---- Seller-side request models -------------------------------------
+class SellerSendOtpReq(BaseModel):
+    phone: str
+
+
+class SellerVerifyOtpReq(BaseModel):
+    phone: str
+    otp: str
+
+
+# ---- Seller-side public auth ----------------------------------------
+@api.post("/auth/seller/send-otp")
+async def seller_send_otp(req: SellerSendOtpReq):
+    seller = await sellers_svc.find_seller_by_phone(db, req.phone)
+    # Always 200 to avoid leaking which phones are sellers
+    if seller:
+        try:
+            await sellers_svc._audit(
+                db, seller_id=seller["id"], action="otp_sent",
+                actor_id=seller["id"], actor_role="system", meta={"channel": "mock"},
+            )
+            if seller.get("status") == "pending":
+                await db.sellers.update_one(
+                    {"id": seller["id"]},
+                    {"$set": {"status": "access_sent", "updated_at": sellers_svc.now_utc()}},
+                )
+        except Exception as exc:
+            logger.warning("seller otp_sent audit failed: %s", exc)
+    return {"ok": True, "mocked_otp_hint": "123456"}
+
+
+@api.post("/auth/seller/verify-otp")
+async def seller_verify_otp(req: SellerVerifyOtpReq):
+    seller = await sellers_svc.find_seller_by_phone(db, req.phone)
+    if not seller:
+        raise HTTPException(status_code=404, detail="No seller access on file. Contact Q Drives operations.")
+    if seller.get("status") == "revoked":
+        raise HTTPException(status_code=403, detail="Your access has been revoked.")
+    if (req.otp or "").strip() != SELLER_OTP_FIXED:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+    await sellers_svc.mark_seller_login(db, seller_id=seller["id"], otp_method="otp")
+    return {
+        "token": _create_seller_jwt(seller["id"]),
+        "seller": await sellers_svc.get_seller_profile(db, seller_id=seller["id"]),
+    }
+
+
+@api.get("/seller/me")
+async def seller_me(seller = Depends(get_current_seller)):
+    return await sellers_svc.get_seller_profile(db, seller_id=seller["id"])
+
+
+@api.get("/seller/vehicles")
+async def seller_my_vehicles(seller = Depends(get_current_seller)):
+    return await sellers_svc.list_my_vehicles(db, seller_id=seller["id"])
+
+
+@api.get("/seller/vehicles/{vehicle_id}")
+async def seller_vehicle_detail(
+    vehicle_id: str, seller = Depends(get_current_seller),
+):
+    out = await sellers_svc.get_vehicle_for_seller(
+        db, seller_id=seller["id"], vehicle_id=vehicle_id,
+    )
+    if not out:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+    return out
+
+
+# ---- Operator-side request models -----------------------------------
+class CreateSellerReq(BaseModel):
+    name: str
+    phone: str
+    email: Optional[str] = None
+
+
+class LinkVehicleReq(BaseModel):
+    car_id: str
+
+
+class RevokeSellerReq(BaseModel):
+    reason: Optional[str] = None
+
+
+# ---- Operator-side seller console -----------------------------------
+def _require_seller_operator(admin):
+    role = (admin.get("role") or "")
+    if role not in ("super_admin", "admin", "operations_admin"):
+        raise HTTPException(status_code=403, detail="Operator authority required")
+    return admin
+
+
+@api.get("/admin/sellers")
+async def admin_sellers_list(
+    status: Optional[str] = None, limit: int = 200,
+    admin = Depends(get_current_admin),
+):
+    _require_seller_operator(admin)
+    return await sellers_svc.operator_list_sellers(db, status=status, limit=limit)
+
+
+@api.post("/admin/sellers")
+async def admin_sellers_create(
+    req: CreateSellerReq, admin = Depends(get_current_admin),
+):
+    _require_seller_operator(admin)
+    try:
+        return await sellers_svc.operator_create_seller(
+            db, name=req.name, phone=req.phone, email=req.email,
+            operator_id=admin["id"],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.get("/admin/sellers/{seller_id}")
+async def admin_seller_detail(
+    seller_id: str, admin = Depends(get_current_admin),
+):
+    _require_seller_operator(admin)
+    out = await sellers_svc.operator_get_seller(db, seller_id=seller_id)
+    if not out:
+        raise HTTPException(status_code=404, detail="Seller not found")
+    return out
+
+
+@api.post("/admin/sellers/{seller_id}/link-vehicle")
+async def admin_seller_link_vehicle(
+    seller_id: str, req: LinkVehicleReq,
+    admin = Depends(get_current_admin),
+):
+    _require_seller_operator(admin)
+    try:
+        return await sellers_svc.operator_link_vehicle(
+            db, seller_id=seller_id, car_id=req.car_id, operator_id=admin["id"],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@api.post("/admin/sellers/{seller_id}/send-access")
+async def admin_seller_send_access(
+    seller_id: str, admin = Depends(get_current_admin),
+):
+    _require_seller_operator(admin)
+    try:
+        return await sellers_svc.operator_send_access(
+            db, seller_id=seller_id, operator_id=admin["id"],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.post("/admin/sellers/{seller_id}/revoke")
+async def admin_seller_revoke(
+    seller_id: str, req: RevokeSellerReq,
+    admin = Depends(get_current_admin),
+):
+    _require_seller_operator(admin)
+    try:
+        return await sellers_svc.operator_revoke(
+            db, seller_id=seller_id, operator_id=admin["id"], reason=req.reason,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # Mount router

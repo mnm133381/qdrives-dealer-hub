@@ -233,6 +233,16 @@ export default function AdminOpsDashboard() {
             </View>
             <ArrowRight size={14} color={colors.textMuted} />
           </TouchableOpacity>
+          <TouchableOpacity onPress={() => router.push('/sellers' as any)}
+            activeOpacity={0.8} style={styles.trustTile}
+            testID="ops-quick-sellers">
+            <View style={styles.trustIcon}><ShieldX size={14} color={colors.silver} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.trustLabel}>SELLERS</Text>
+              <Text style={styles.trustHint}>Owner access · vehicle linkage</Text>
+            </View>
+            <ArrowRight size={14} color={colors.textMuted} />
+          </TouchableOpacity>
         </View>
 
         {/* LIVE AUCTIONS */}

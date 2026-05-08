@@ -312,6 +312,37 @@ export const api = {
   adminSettlementProof: (id: string) =>
     request<any>(`/admin/settlements/${id}/proof`),
 
+  // ---- Seller portal (read-only owner tracking) ----
+  sellerSendOtp: (phone: string) =>
+    request<{ ok: boolean; mocked_otp_hint?: string }>('/auth/seller/send-otp', {
+      method: 'POST', body: JSON.stringify({ phone }),
+    }),
+  sellerVerifyOtp: (phone: string, otp: string) =>
+    request<{ token: string; seller: any }>('/auth/seller/verify-otp', {
+      method: 'POST', body: JSON.stringify({ phone, otp }),
+    }),
+  sellerMe: () => request<any>('/seller/me'),
+  sellerVehicles: () => request<any[]>('/seller/vehicles'),
+  sellerVehicleDetail: (id: string) => request<any>(`/seller/vehicles/${id}`),
+
+  adminSellersList: (status?: string, limit = 200) =>
+    request<any[]>(`/admin/sellers?limit=${limit}${status ? `&status=${status}` : ''}`),
+  adminSellersCreate: (name: string, phone: string, email?: string) =>
+    request<any>('/admin/sellers', {
+      method: 'POST', body: JSON.stringify({ name, phone, email: email || null }),
+    }),
+  adminSellerDetail: (id: string) => request<any>(`/admin/sellers/${id}`),
+  adminSellerLinkVehicle: (id: string, car_id: string) =>
+    request<any>(`/admin/sellers/${id}/link-vehicle`, {
+      method: 'POST', body: JSON.stringify({ car_id }),
+    }),
+  adminSellerSendAccess: (id: string) =>
+    request<any>(`/admin/sellers/${id}/send-access`, { method: 'POST', body: JSON.stringify({}) }),
+  adminSellerRevoke: (id: string, reason?: string) =>
+    request<any>(`/admin/sellers/${id}/revoke`, {
+      method: 'POST', body: JSON.stringify({ reason: reason || null }),
+    }),
+
   // ---- Phase 2C lifecycle ----
   inventoryWithdraw: (id: string, reason: string) =>
     request<{ ok: boolean; status: string }>(`/inventory/${id}/withdraw`, {

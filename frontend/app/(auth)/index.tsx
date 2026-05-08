@@ -27,6 +27,7 @@ export default function AuthLanding() {
 
   const goDealer = () => router.push({ pathname: '/(auth)/login', params: { role: 'dealer' } });
   const goAdmin = () => router.push({ pathname: '/(auth)/login', params: { role: 'admin' } });
+  const goSeller = () => router.push('/(seller)/login' as any);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
@@ -116,6 +117,20 @@ export default function AuthLanding() {
             <Text style={styles.adminCardCtaText}>Continue as operator</Text>
             <ChevronRight size={13} color={colors.warning} strokeWidth={2.2} />
           </View>
+        </TouchableOpacity>
+
+        {/* Seller (vehicle owner) — read-only access path */}
+        <TouchableOpacity activeOpacity={0.92} onPress={goSeller} style={styles.sellerCard} testID="entry-seller">
+          <View style={styles.sellerLeft}>
+            <View style={styles.sellerIcon}>
+              <ShieldCheck size={14} color={colors.silver} strokeWidth={2.2} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.sellerTitle}>I sold my car to Q Drives</Text>
+              <Text style={styles.sellerSub}>Track your vehicle on the auction floor · read-only</Text>
+            </View>
+          </View>
+          <ChevronRight size={14} color={colors.textChrome} strokeWidth={2.2} />
         </TouchableOpacity>
 
         {/* Legal — quiet, low opacity */}
@@ -321,4 +336,21 @@ const styles = StyleSheet.create({
     lineHeight: 15,
     letterSpacing: 0.2,
   },
+
+  // Seller (vehicle owner) — restrained pill row
+  sellerCard: {
+    flexDirection: 'row', alignItems: 'center',
+    marginHorizontal: 18, marginTop: 14,
+    padding: 14, borderRadius: radii.md,
+    backgroundColor: colors.bgCard,
+    borderWidth: 1, borderColor: colors.border,
+  },
+  sellerLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  sellerIcon: {
+    width: 34, height: 34, borderRadius: 10,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.bgDeep, borderWidth: 1, borderColor: colors.border,
+  },
+  sellerTitle: { color: colors.textPrimary, fontSize: 13, fontWeight: '800', letterSpacing: -0.1 },
+  sellerSub: { color: colors.textChrome, fontSize: 11, fontWeight: '500', marginTop: 2 },
 });

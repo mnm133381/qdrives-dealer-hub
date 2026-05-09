@@ -17,12 +17,23 @@
         "foregroundImage": "./assets/brand/qdrives-shield.png",
         "backgroundColor": "#08080A"
       },
-      "edgeToEdgeEnabled": true,
+      "edgeToEdgeEnabled": false,
+      "softwareKeyboardLayoutMode": "pan",
       "package": "in.qdrives.auction",
       "blockedPermissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ]
+    },
+    "androidNavigationBar": {
+      "barStyle": "light-content",
+      "backgroundColor": "#050505",
+      "visible": "sticky-immersive"
+    },
+    "androidStatusBar": {
+      "barStyle": "light-content",
+      "backgroundColor": "#050505",
+      "translucent": false
     },
     "web": {
       "bundler": "metro",

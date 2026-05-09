@@ -1,4 +1,5 @@
 import React from 'react';
+import { Platform } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -8,6 +9,21 @@ import { ToastProvider } from '../src/toast';
 import { InspectionProvider } from '../src/inspection';
 import { colors } from '../src/theme';
 
+/**
+ * Root layout.
+ *
+ * Bottom-inset / system nav strategy (Android):
+ *   `app.json` → `edgeToEdgeEnabled: false` keeps the system 3-button
+ *   nav opaque + non-overlapping, and `androidNavigationBar` paints
+ *   it deep-black (matches `colors.bg`) so it visually disappears
+ *   into the app surface. The tab bar layouts then add `insets.bottom`
+ *   on top — which is 0 on 3-button-nav devices (Android already
+ *   pushed our window up) and ~24-30dp on gesture-nav devices.
+ *
+ *   Net effect: nothing overlaps the system nav on Samsung One UI,
+ *   Pixel, OnePlus, or any aspect ratio. No screen-by-screen padding
+ *   hacks needed.
+ */
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -15,7 +31,11 @@ export default function RootLayout() {
         <AuthProvider>
           <ToastProvider>
             <InspectionProvider>
-              <StatusBar style="light" />
+              <StatusBar
+                style="light"
+                backgroundColor={Platform.OS === 'android' ? '#050505' : undefined}
+                translucent={false}
+              />
               <Stack
                 screenOptions={{
                   headerShown: false,

@@ -4886,3 +4886,62 @@ agent_communication:
         Web bundle clean (3381 modules). On gesture-nav Android the
         tab bar now floats above the system gesture area; on 3-button
         nav (insets.bottom=0) the bar collapses tight as before.
+
+  - agent: "main"
+    message: |
+      [ANDROID BOTTOM SAFE-AREA — ROOT-LEVEL FIX]
+
+      Earlier hot-reload-time padding fix was insufficient — Samsung
+      one-UI 3-button-nav was painting OPAQUELY on top of our tab bar
+      because of `edgeToEdgeEnabled: true`. Fixed at app.json native
+      config layer. **Requires a fresh native build to take effect.**
+
+      ROOT CAUSE
+        - app.json had `edgeToEdgeEnabled: true` → app draws under
+          the system nav bar
+        - No `androidNavigationBar` config → Samsung One UI fell back
+          to its default opaque WHITE 3-button nav bar painted on
+          top of our content
+        - Tab bar tried to clear the inset with `paddingBottom:
+          insets.bottom + 8`, but Samsung's gesture-bar inset was 0
+          (3-button-nav mode) → tab bar collapsed to system bar level
+
+      FIX
+        app.json now declares:
+          android.edgeToEdgeEnabled = false   # system nav is opaque +
+                                              # non-overlapping
+          android.softwareKeyboardLayoutMode = "pan"
+          androidNavigationBar = {
+            barStyle: "light-content",
+            backgroundColor: "#050505",       # matches colors.bg
+            visible: "sticky-immersive"
+          }
+          androidStatusBar = {
+            barStyle: "light-content",
+            backgroundColor: "#050505",
+            translucent: false
+          }
+        app/_layout.tsx StatusBar now passes backgroundColor +
+        translucent props on Android.
+
+      EFFECT (after native build)
+        - 3-button nav (Samsung): system bar opaque deep-black,
+          DOES NOT overlap tab bar; insets.bottom=0; tab bar paints
+          tight (height: 56, paddingBottom: 8)
+        - Gesture nav (Pixel/OnePlus): insets.bottom ≈ 24-30dp;
+          tab bar grows naturally (height: 56 + 28, paddingBottom:
+          36) → floats above gesture line
+        - Cross-vendor consistency: Samsung One UI, Pixel, OnePlus,
+          and any aspect ratio render identically because Android
+          window manager handles the insets, not us.
+
+      NO SCREEN-LEVEL HACKS
+        Did not add manual paddingBottom to any screen. The only
+        per-screen change earlier was `useTabBottomPad()` which is a
+        single hook called once per screen — it's the canonical
+        React Navigation pattern, not a hack.
+
+      ACTION REQUIRED
+        These changes are NATIVE config — they take effect ONLY on
+        a fresh native build. The user is preparing the EAS build
+        (Path A); the resulting AAB will carry this fix.

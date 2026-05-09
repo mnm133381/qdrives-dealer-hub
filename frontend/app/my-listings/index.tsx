@@ -9,7 +9,7 @@ import { useRouter, useFocusEffect, Redirect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import { ArrowLeft, FileText, Upload, ChevronRight, ShieldCheck, FileX, Eye, Pause, Play, XCircle, Archive, Lock, Edit3 } from 'lucide-react-native';
-import { colors, formatINR, radii } from '../../src/theme';
+import { colors, formatINR, maskRegNo, radii } from '../../src/theme';
 import { api, inspectionPdfUrl } from '../../src/api';
 import { useAuth } from '../../src/auth';
 import { useToast } from '../../src/toast';
@@ -212,7 +212,7 @@ export default function MyListings() {
                         <Text style={[styles.statusPillText, { color: badge.tint }]}>{badge.label}</Text>
                       </View>
                     </View>
-                    <Text style={styles.cardSub} numberOfLines={1}>{car.registration_number} · {(car.km_driven || 0).toLocaleString('en-IN')} km</Text>
+                    <Text style={styles.cardSub} numberOfLines={1}>{maskRegNo(car.registration_number)} · {(car.km_driven || 0).toLocaleString('en-IN')} km</Text>
                     <Text style={styles.cardPrice}>{formatINR(a.current_bid || a.starting_bid)}</Text>
                     {lockedByOperator && (
                       <View style={styles.lockedRow}>

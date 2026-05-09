@@ -115,7 +115,7 @@ export default function Login() {
           <Text style={styles.heroSub}>
             {isAdmin
               ? 'Inventory · Auction control · Approvals · Settlements'
-              : 'Live auctions · Verified inventory · 48-hr settlement'}
+              : 'Live auctions · Verified inventory · Inspection-grade lots'}
           </Text>
         </View>
       </ImageBackground>

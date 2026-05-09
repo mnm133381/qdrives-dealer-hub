@@ -6,7 +6,7 @@ import * as Haptics from 'expo-haptics';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Bell, Activity, TrendingUp, ShieldCheck, ChevronRight, Search, BadgeCheck, Lock, Zap, Filter, Inbox } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { colors, formatINR, radii } from '../../src/theme';
+import { colors, formatINR, maskRegNo, radii } from '../../src/theme';
 import { useAuth } from '../../src/auth';
 import { PendingApprovalCard } from '../../src/components/PendingApprovalCard';
 import { api } from '../../src/api';
@@ -99,7 +99,7 @@ export default function Home() {
   })();
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
+    <View style={[styles.root, { paddingTop: insets.top + 8 }]}>
       {/* Header */}
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
@@ -362,7 +362,7 @@ function FeaturedCard({ auction }: { auction: any }) {
       <View style={[styles.featBottom, { pointerEvents: 'none' }]}>
         <View style={styles.featMetaRow}>
           <View style={styles.featRegPlate}>
-            <Text style={styles.featRegText}>{auction.car?.registration_number}</Text>
+            <Text style={styles.featRegText}>{maskRegNo(auction.car?.registration_number)}</Text>
           </View>
           <View style={[
             styles.featReservePill,

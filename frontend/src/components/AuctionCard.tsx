@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image, Pressable } from 'react-native';
-import { colors, formatINR, radii, spacing } from '../theme';
+import { colors, formatINR, maskRegNo, radii, spacing } from '../theme';
 import { CountdownTimer } from './CountdownTimer';
 import { LivePulse } from './LivePulse';
 import { Heart, Gauge, Calendar, Fuel, Eye, Flame, ShieldCheck, BadgeCheck } from 'lucide-react-native';
@@ -75,7 +75,7 @@ export function AuctionCard({ auction, onPress, onWatch, watching, testID }: Pro
 
         {/* Reg plate at bottom-right */}
         <View style={styles.regPlate}>
-          <Text style={styles.regText}>{car.registration_number || 'REG —'}</Text>
+          <Text style={styles.regText}>{maskRegNo(car.registration_number) || 'REG —'}</Text>
         </View>
 
         {/* Title overlay */}

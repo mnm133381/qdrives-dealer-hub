@@ -12,10 +12,10 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { ZoomGallery } from '../../src/components/ZoomGallery';
 import {
   ArrowLeft, Heart, Share2, Trophy, ShieldCheck, AlertTriangle, Activity,
-  Calendar, Gauge, Fuel, Settings2, Users, ChevronRight, Eye, Lock, Sparkles,
+  Calendar, Gauge, Fuel, Settings2, Users, ChevronRight, Eye, Lock,
   X, ImageIcon,
 } from 'lucide-react-native';
-import { colors, formatINR, formatINRFull, radii } from '../../src/theme';
+import { colors, formatINR, formatINRFull, maskRegNo, radii } from '../../src/theme';
 import { api, wsUrl } from '../../src/api';
 import { useAuth } from '../../src/auth';
 import { CountdownTimer } from '../../src/components/CountdownTimer';
@@ -216,7 +216,7 @@ export default function AuctionScreen() {
 
   if (!auction) {
     return (
-      <View style={[styles.root, { paddingTop: insets.top, alignItems: 'center', justifyContent: 'center' }]}>
+      <View style={[styles.root, { paddingTop: insets.top + 6, alignItems: 'center', justifyContent: 'center' }]}>
         <ActivityIndicator color={colors.red} />
         <Text style={{ color: colors.textMuted, marginTop: 14, fontSize: 12, fontWeight: '700', letterSpacing: 1.5 }}>LOADING AUCTION</Text>
       </View>
@@ -234,7 +234,7 @@ export default function AuctionScreen() {
   const isOwn = dealer && dealer.id === auction.seller_id;
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
+    <View style={[styles.root, { paddingTop: insets.top + 6 }]}>
       {/* Outbid flash overlay */}
       <Animated.View style={[styles.outbidFlash, flashStyle, { pointerEvents: 'none' }]}>
         <View style={styles.outbidContent}>
@@ -291,7 +291,7 @@ export default function AuctionScreen() {
             <Text style={styles.heroTitle}>{car.year} {car.make} {car.model}</Text>
             <Text style={styles.heroVariant}>{car.variant} · {car.color}</Text>
             <View style={styles.regPlate}>
-              <Text style={styles.regText}>{car.registration_number}</Text>
+              <Text style={styles.regText}>{maskRegNo(car.registration_number)}</Text>
             </View>
           </View>
         </View>
@@ -371,43 +371,36 @@ export default function AuctionScreen() {
           <Spec icon={<ShieldCheck size={14} color={colors.success} />} label="RC" value={car.rc_verified ? 'Verified' : 'Pending'} />
         </View>
 
-        {/* Score cards */}
+        {/* Score cards — note: MARGIN EST. removed pending real backend
+            valuation logic (acquisition + reconditioning + fees + resale).
+            Will reintroduce once the calc lives in /api/admin/inventory. */}
         <View style={styles.scoreRow}>
           <ScoreCard label="INSPECTION" value={`${(car.inspection_score || 0).toFixed(1)}/10`} accent={colors.success} />
           <ScoreCard label="LIQUIDITY" value="HIGH" accent={colors.warning} />
-          <ScoreCard label="MARGIN EST." value="+8.2%" accent={colors.success} />
         </View>
 
-        {/* Trust strip */}
+        {/* Trust strip — escrow / settlement copy removed per ops policy
+            (avoid promising commercial guarantees we don't enforce in
+            v1). Keep RC verification + inspection PDF surface. */}
         <View style={styles.trustStrip}>
-          <View style={styles.trustItem}>
-            <Lock size={13} color={colors.silver} />
-            <Text style={styles.trustItemText}>Escrow protected</Text>
-          </View>
-          <View style={styles.trustDivider} />
           <View style={styles.trustItem}>
             <ShieldCheck size={13} color={colors.success} />
             <Text style={styles.trustItemText}>RC verified</Text>
           </View>
-          <View style={styles.trustDivider} />
-          <View style={styles.trustItem}>
-            {auction.inspection_pdf ? (
-              <>
+          {auction.inspection_pdf && (
+            <>
+              <View style={styles.trustDivider} />
+              <View style={styles.trustItem}>
                 <ShieldCheck size={13} color={colors.success} />
                 <Text style={[styles.trustItemText, { color: colors.success }]}>PDF report</Text>
-              </>
-            ) : (
-              <>
-                <Sparkles size={13} color={colors.warning} />
-                <Text style={styles.trustItemText}>48-hr settlement</Text>
-              </>
-            )}
-          </View>
+              </View>
+            </>
+          )}
         </View>
 
-        {/* Inspection report (summary + PDF) */}
+        {/* Inspection summary (highlights + PDF) */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Inspection report</Text>
+          <Text style={styles.sectionTitle}>Inspection Summary</Text>
           <View style={styles.detailCard}>
             <DetailRow label="Condition grade" value={car.condition_grade || 'A'} valueColor={colors.success} />
             <DetailRow label="Tyre condition" value={car.tyre_condition || 'Good'} />

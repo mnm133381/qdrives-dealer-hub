@@ -97,3 +97,25 @@ export const formatINR = (n: number | null | undefined) => {
 };
 
 export const formatINRFull = (n: number) => `₹${Number(n).toLocaleString('en-IN')}`;
+
+/**
+ * Privacy mask for vehicle registration numbers.
+ *
+ * Dealers (and any non-owner role) MUST NOT see the full plate of
+ * another seller's vehicle. We expose only the first 4 characters
+ * (state code + RTO) and replace the remainder with asterisks.
+ *
+ *   MH02XYA002  →  MH02******
+ *   TS09AB1234  →  TS09******
+ *
+ * Use sparingly — operators and the vehicle owner (seller) still see
+ * the full registration number; only call this in dealer-facing
+ * surfaces.
+ */
+export const maskRegNo = (reg?: string | null): string => {
+  if (!reg) return '—';
+  const s = String(reg).replace(/\s+/g, '').toUpperCase();
+  if (s.length <= 4) return s;
+  return s.slice(0, 4) + '*'.repeat(Math.max(6, s.length - 4));
+};
+

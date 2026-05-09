@@ -39,7 +39,7 @@ export default function InspectionForm() {
       toast.show(`Complete all ${stats.total} sections to finish`, 'info');
       return;
     }
-    toast.show('Inspection report attached to your listing', 'success');
+      toast.show('Inspection summary attached to your listing', 'success');
     router.back();
   };
 

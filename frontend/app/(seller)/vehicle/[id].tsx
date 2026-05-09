@@ -90,7 +90,7 @@ export default function SellerVehicleDetail() {
   const reservePct = Math.round((a.reserve_progress || 0) * 100);
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
+    <View style={[styles.root, { paddingTop: insets.top + 8 }]}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <ArrowLeft size={18} color={colors.textChrome} />

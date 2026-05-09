@@ -147,7 +147,7 @@ export function InspectionPdfCard({ inspection }: Props) {
             ? <ActivityIndicator color="#fff" />
             : <Eye size={16} color="#fff" strokeWidth={2.4} />}
           <Text style={styles.actionPrimaryText} numberOfLines={1} ellipsizeMode="tail">
-            View Inspection Report
+            View Inspection Summary
           </Text>
         </TouchableOpacity>
         <TouchableOpacity

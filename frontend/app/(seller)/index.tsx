@@ -81,7 +81,7 @@ export default function SellerHome() {
   }
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
+    <View style={[styles.root, { paddingTop: insets.top + 8 }]}>
       <View style={styles.header}>
         <View style={styles.headRow}>
           <LogoMark size={26} />

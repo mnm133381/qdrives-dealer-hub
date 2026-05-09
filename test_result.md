@@ -4787,3 +4787,46 @@ agent_communication:
 
       No supervisor exceptions during the run. Full report:
       /app/backend_test_broadcasts.py.
+
+  - agent: "main"
+    message: |
+      [DEALER PRIVACY + SELLER OTP REDESIGN + ANDROID SAFE-AREA — frontend only]
+
+      Frontend-only batch (zero backend changes). No new endpoints; no
+      backend regression expected. Skipping testing-agent run.
+
+      1) NUMBER-PLATE PRIVACY (dealer surfaces only)
+         Added maskRegNo() in src/theme.ts — exposes only the first 4
+         chars (state+RTO), masks the rest. Applied in:
+           - app/(tabs)/index.tsx           (featured card overlay)
+           - app/lot/[id].tsx               (hero overlay reg plate)
+           - app/my-listings/index.tsx      (own listings row)
+           - src/components/AuctionCard.tsx (card chip)
+         Operator and seller views keep the full plate (correct).
+
+      2) REMOVED DEALER COPY
+         - "Escrow protected" + "48-hr settlement" trust items removed
+           from lot/[id].tsx.
+         - Splash subtitle "48-hr settlement" replaced in (auth)/login.tsx.
+
+      3) RENAME
+         - "Inspection report" → "Inspection Summary" everywhere.
+
+      4) MARGIN EST. AUDIT
+         Found a HARDCODED static "+8.2%" ScoreCard. No backend
+         computation existed (no acquisition_price / expected_resale /
+         repair_cost / platform_fee fields in cars/auctions schema).
+         REMOVED the ScoreCard pending real /api/admin/inventory
+         valuation logic.
+
+      5) ANDROID SAFE-AREA
+         Added +N buffer above insets.top in:
+           - app/(tabs)/index.tsx           (+8)
+           - app/lot/[id].tsx               (+6)
+           - app/(seller)/index.tsx         (+8)
+           - app/(seller)/vehicle/[id].tsx  (+8)
+
+      6) SELLER OTP SCREEN
+         (seller)/login.tsx rewritten — compact 6-box pin entry with
+         hidden TextInput driver, sms-otp autofill on Android, auto-
+         submit on 6th digit, "Change number · Resend OTP" inline foot.

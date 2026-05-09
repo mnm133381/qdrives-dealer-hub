@@ -2,7 +2,7 @@
   "expo": {
     "name": "Q Drives",
     "slug": "qdrives-dealer-hub",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/brand/qdrives-app-icon.png",
     "scheme": "qdrives",
@@ -19,20 +19,17 @@
       },
       "edgeToEdgeEnabled": false,
       "softwareKeyboardLayoutMode": "pan",
-      "package": "in.qdrives.auction",
-      "blockedPermissions": [
-        "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO"
-      ]
+      "package": "app.emergent.qdrivesdealerhub32bd13b5",
+      "versionCode": 2
     },
     "androidNavigationBar": {
       "barStyle": "light-content",
-      "backgroundColor": "#050505",
+      "backgroundColor": "#08080A",
       "visible": "sticky-immersive"
     },
     "androidStatusBar": {
       "barStyle": "light-content",
-      "backgroundColor": "#050505",
+      "backgroundColor": "#08080A",
       "translucent": false
     },
     "web": {

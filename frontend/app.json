@@ -18,7 +18,11 @@
         "backgroundColor": "#08080A"
       },
       "edgeToEdgeEnabled": true,
-      "package": "in.qdrives.dealer"
+      "package": "in.qdrives.auction",
+      "blockedPermissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "bundler": "metro",

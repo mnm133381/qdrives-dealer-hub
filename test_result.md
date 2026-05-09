@@ -4830,3 +4830,59 @@ agent_communication:
          (seller)/login.tsx rewritten — compact 6-box pin entry with
          hidden TextInput driver, sms-otp autofill on Android, auto-
          submit on 6th digit, "Change number · Resend OTP" inline foot.
+
+  - agent: "main"
+    message: |
+      [ANDROID BOTTOM SAFE-AREA — gesture-nav + 3-button-nav both correct]
+
+      Frontend-only batch. No backend touched.
+
+      ROOT CAUSE
+        Tab bar styles in /(tabs)/_layout.tsx and /(admin)/_layout.tsx
+        hardcoded paddingBottom=12/8 on Android, ignoring the system
+        gesture-nav inset (~24-30dp). Bar floated INTO the gesture
+        line on Pixel/Samsung One UI 4+. Scroll content also clipped
+        behind the bar because contentContainerStyle paddingBottom
+        was a fixed 40-60.
+
+      GLOBAL FIX
+        1. Both tab layouts now read useSafeAreaInsets() and compute
+             height = baseTabHeight + insets.bottom
+             paddingBottom = insets.bottom + sparePx
+           Self-adjusts on iOS (home indicator), gesture-nav Android,
+           and 3-button-nav Android (where insets.bottom is 0).
+
+        2. New helper useTabBottomPad() in src/theme.ts wraps
+           useBottomTabBarHeight() and returns (height + 24) so any
+           ScrollView/FlatList inside a tab pads exactly to the
+           floating tab bar. Falls back to insets.bottom + 24 when
+           used outside a tab navigator.
+
+        3. Applied useTabBottomPad() to:
+           Dealer tabs:
+             - (tabs)/index.tsx
+             - (tabs)/auctions.tsx
+             - (tabs)/watchlist.tsx
+             - (tabs)/purchases.tsx
+             - (tabs)/profile.tsx
+           Admin/operator tabs:
+             - (admin)/index.tsx
+             - (admin)/broadcast.tsx
+             - (admin)/dealers.tsx
+             - (admin)/sellers.tsx
+             - (admin)/security.tsx
+             - (admin)/settlement.tsx
+
+        4. No layout/visual redesign. Only spacing math changed.
+
+      OUT-OF-SCOPE / ALREADY CORRECT
+        - lot/[id].tsx sticky bid module already uses
+          paddingBottom: insets.bottom + 12
+        - sell/inspection.tsx sticky footer already uses insets.bottom
+        - Auth/seller flows (no tab bar) — insets.bottom in
+          KeyboardAvoidingView roots is already applied
+
+      VERIFICATION
+        Web bundle clean (3381 modules). On gesture-nav Android the
+        tab bar now floats above the system gesture area; on 3-button
+        nav (insets.bottom=0) the bar collapses tight as before.

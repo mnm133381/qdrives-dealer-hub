@@ -2,6 +2,9 @@
 // Premium automotive dealer-auction infrastructure palette.
 // Deep navy-tinted blacks for surface depth (avoids pure flat black),
 // gunmetal panels, controlled red, no gaming/esports look.
+import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
 export const colors = {
   // Base surfaces — three depths to create embedded card feel,
   // each with a faint navy tint for premium depth.
@@ -118,4 +121,30 @@ export const maskRegNo = (reg?: string | null): string => {
   if (s.length <= 4) return s;
   return s.slice(0, 4) + '*'.repeat(Math.max(6, s.length - 4));
 };
+
+/**
+ * Bottom-padding helper for ScrollView/FlatList content inside a tab
+ * screen. Returns the live bottom tab bar height (which already
+ * includes the system gesture inset thanks to /(tabs)/_layout.tsx and
+ * /(admin)/_layout.tsx) plus a small visual buffer so the last list
+ * row is never clipped behind the floating tab bar.
+ *
+ * Falls back gracefully when called outside a Tab navigator (for
+ * example in the seller portal or the auth flow) — returns the buffer
+ * alone so screens stay safe to consume the same hook.
+ *
+ * Use exactly like:
+ *   const tabPad = useTabBottomPad();
+ *   <ScrollView contentContainerStyle={{ paddingBottom: tabPad }} />
+ */
+export const useTabBottomPad = (extra = 24): number => {
+  // useBottomTabBarHeight throws when not nested inside a Tab.Navigator,
+  // so we wrap it. Falls back to insets.bottom + extra so seller / auth
+  // screens still pad correctly above the gesture area.
+  let h = 0;
+  try { h = useBottomTabBarHeight(); } catch { h = 0; }
+  const insets = useSafeAreaInsets();
+  return (h || insets.bottom) + extra;
+};
+
 

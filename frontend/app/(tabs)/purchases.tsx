@@ -5,7 +5,7 @@ import {
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ShoppingBag, Trophy, Clock, ChevronRight, AlertCircle } from 'lucide-react-native';
-import { colors, radii, formatINR, formatINRFull } from '../../src/theme';
+import { colors, radii, formatINR, formatINRFull, useTabBottomPad } from '../../src/theme';
 import { api } from '../../src/api';
 
 type Auction = any;
@@ -13,6 +13,7 @@ type Auction = any;
 export default function Purchases() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const tabPad = useTabBottomPad();
   const [tab, setTab] = useState<'won' | 'active'>('active');
   const [data, setData] = useState<{ won: Auction[]; active: Auction[] }>({ won: [], active: [] });
   const [settlements, setSettlements] = useState<any[]>([]);
@@ -69,7 +70,7 @@ export default function Purchases() {
       </View>
 
       <ScrollView
-        contentContainerStyle={{ padding: 20, paddingBottom: 60 }}
+        contentContainerStyle={{ padding: 20, paddingBottom: tabPad }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.red} />}
       >
         {!loaded ? (

@@ -1,7 +1,8 @@
 import React from 'react';
-import { View, ActivityIndicator, StyleSheet, Platform } from 'react-native';
+import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { Tabs, Redirect } from 'expo-router';
 import { LayoutDashboard, Package, PlusCircle, Users, ShieldAlert, ScrollText, Truck } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../../src/theme';
 import { useAuth } from '../../src/auth';
 
@@ -14,9 +15,12 @@ import { useAuth } from '../../src/auth';
  *
  * Multi-tier role gating: any of super_admin / admin / operations_admin /
  * inspection_admin can land here. Dealers are bounced to /(tabs).
+ *
+ * Bottom-inset handling — see /(tabs)/_layout.tsx for the rationale.
  */
 export default function AdminLayout() {
   const { dealer, loading } = useAuth();
+  const insets = useSafeAreaInsets();
 
   if (loading) {
     return (
@@ -38,9 +42,12 @@ export default function AdminLayout() {
           backgroundColor: colors.bgElevated,
           borderTopColor: 'rgba(185,28,28,0.25)',
           borderTopWidth: 1,
-          height: Platform.OS === 'ios' ? 82 : 64,
+          // Operator console tab bar is denser (smaller font, smaller
+          // icons). 52dp base + insets.bottom keeps it tight on legacy
+          // 3-button-nav devices and clears gesture nav cleanly.
+          height: 52 + insets.bottom,
           paddingTop: 6,
-          paddingBottom: Platform.OS === 'ios' ? 26 : 8,
+          paddingBottom: insets.bottom + 6,
         },
         tabBarActiveTintColor: colors.red,
         tabBarInactiveTintColor: colors.textMuted,

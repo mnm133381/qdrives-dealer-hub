@@ -3,13 +3,14 @@ import { View, Text, StyleSheet, ScrollView, RefreshControl } from 'react-native
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Heart } from 'lucide-react-native';
-import { colors } from '../../src/theme';
+import { colors, useTabBottomPad } from '../../src/theme';
 import { api } from '../../src/api';
 import { AuctionCard } from '../../src/components/AuctionCard';
 
 export default function Watchlist() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const tabPad = useTabBottomPad();
   const [items, setItems] = useState<any[]>([]);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -35,7 +36,7 @@ export default function Watchlist() {
         <Text style={styles.sub}>{items.length} {items.length === 1 ? 'auction' : 'auctions'} you're tracking</Text>
       </View>
       <ScrollView
-        contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
+        contentContainerStyle={{ padding: 20, paddingBottom: tabPad }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.red} />}
       >
         {items.length === 0 ? (

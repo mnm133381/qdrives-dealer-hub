@@ -22,7 +22,7 @@ import {
   Search, BadgeCheck, Ban, ShieldCheck, Phone, MapPin, AlertTriangle,
   UserPlus, X, Building2, User, Star, Banknote, FileText, ChevronRight, Hash,
 } from 'lucide-react-native';
-import { colors, radii, formatINR } from '../../src/theme';
+import { colors, radii, formatINR, useTabBottomPad } from '../../src/theme';
 import { api } from '../../src/api';
 import { useToast } from '../../src/toast';
 import { AdminHeader } from '../../src/components/AdminHeader';
@@ -30,6 +30,7 @@ import { AdminHeader } from '../../src/components/AdminHeader';
 type Tab = 'pending' | 'invitations' | 'onboarding' | 'active' | 'suspended' | 'revoked';
 
 export default function AdminDealers() {
+  const tabPad = useTabBottomPad();
   const toast = useToast();
   const router = useRouter();
   const params = useLocalSearchParams<{ status?: string }>();
@@ -136,7 +137,7 @@ export default function AdminDealers() {
       </ScrollView>
 
       <ScrollView
-        contentContainerStyle={styles.body}
+        contentContainerStyle={[styles.body, { paddingBottom: tabPad }]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.red} />}
       >
         {loading && allowList.length === 0 ? (

@@ -25,7 +25,7 @@ import {
   Check, X, Search, Clock, ChevronRight, Radio, Zap, Trophy,
   CheckCircle2, AlertCircle, Sparkles, Edit3,
 } from 'lucide-react-native';
-import { colors, radii } from '../../src/theme';
+import { colors, radii, useTabBottomPad } from '../../src/theme';
 import { api } from '../../src/api';
 import { useToast } from '../../src/toast';
 import { AdminHeader } from '../../src/components/AdminHeader';
@@ -105,6 +105,7 @@ function templateIcon(type: string, size = 14) {
 // =====================================================================
 export default function AdminBroadcasts() {
   const toast = useToast();
+  const tabPad = useTabBottomPad();
 
   // Catalog data
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -266,7 +267,7 @@ export default function AdminBroadcasts() {
         <View style={styles.bootLoader}><ActivityIndicator color={colors.red} /></View>
       ) : (
         <ScrollView
-          contentContainerStyle={styles.body}
+          contentContainerStyle={[styles.body, { paddingBottom: tabPad }]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >

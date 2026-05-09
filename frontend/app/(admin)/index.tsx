@@ -34,7 +34,7 @@ import {
   Activity, TrendingUp, Inbox, CheckCircle2, Truck, FileWarning, UserPlus,
   Zap, Siren,
 } from 'lucide-react-native';
-import { colors, formatINR } from '../../src/theme';
+import { colors, formatINR, useTabBottomPad } from '../../src/theme';
 import { formatCountdown, statusBadge } from '../../src/lifecycle';
 import { api } from '../../src/api';
 import { AdminHeader } from '../../src/components/AdminHeader';
@@ -42,6 +42,7 @@ import { ReasonModal } from '../../src/components/ReasonModal';
 import { useToast } from '../../src/toast';
 
 export default function AdminOpsDashboard() {
+  const tabPad = useTabBottomPad();
   const router = useRouter();
   const toast = useToast();
   const [grid, setGrid] = useState<any[]>([]);
@@ -184,7 +185,7 @@ export default function AdminOpsDashboard() {
       />
 
       <ScrollView
-        contentContainerStyle={styles.body}
+        contentContainerStyle={[styles.body, { paddingBottom: tabPad }]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.red} />}
       >
         {/* ATTENTION RAIL — only renders when interventions exist. Single-row,

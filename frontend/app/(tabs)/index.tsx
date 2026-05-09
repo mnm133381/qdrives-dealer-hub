@@ -6,7 +6,7 @@ import * as Haptics from 'expo-haptics';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Bell, Activity, TrendingUp, ShieldCheck, ChevronRight, Search, BadgeCheck, Lock, Zap, Filter, Inbox } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { colors, formatINR, maskRegNo, radii } from '../../src/theme';
+import { colors, formatINR, maskRegNo, radii, useTabBottomPad } from '../../src/theme';
 import { useAuth } from '../../src/auth';
 import { PendingApprovalCard } from '../../src/components/PendingApprovalCard';
 import { api } from '../../src/api';
@@ -28,6 +28,7 @@ const QUICK_FILTERS = [
 export default function Home() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const tabPad = useTabBottomPad();
   const { dealer } = useAuth();
   const [refreshing, setRefreshing] = useState(false);
   const [stats, setStats] = useState<any>(null);
@@ -122,7 +123,7 @@ export default function Home() {
       </View>
 
       <ScrollView
-        contentContainerStyle={{ paddingBottom: 40 }}
+        contentContainerStyle={{ paddingBottom: tabPad }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.red} />}
       >
         {/* Live activity ticker */}

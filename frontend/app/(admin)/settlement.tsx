@@ -24,7 +24,7 @@ import {
   Banknote, ShieldCheck, MapPin, ClipboardCheck, Wallet, RotateCcw,
   AlertOctagon, CheckCircle2, ChevronRight, Truck, Pause,
 } from 'lucide-react-native';
-import { colors, radii, formatINR } from '../../src/theme';
+import { colors, radii, formatINR, useTabBottomPad } from '../../src/theme';
 import { api } from '../../src/api';
 import { AdminHeader } from '../../src/components/AdminHeader';
 import { useToast } from '../../src/toast';
@@ -92,6 +92,7 @@ const STATE_TINT: Record<string, string> = {
 };
 
 export default function SettlementCenter() {
+  const tabPad = useTabBottomPad();
   const router = useRouter();
   const toast = useToast();
   const [items, setItems] = useState<any[]>([]);
@@ -141,7 +142,7 @@ export default function SettlementCenter() {
       <AdminHeader kicker="Settlement" title="Command Center" sub="Operator-controlled · 16-state · audit-attached" />
 
       <ScrollView
-        contentContainerStyle={styles.body}
+        contentContainerStyle={[styles.body, { paddingBottom: tabPad }]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.red} />}
       >
         {/* KPI strip */}

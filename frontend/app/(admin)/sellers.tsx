@@ -16,7 +16,7 @@ import {
   Users, UserPlus, Send, Ban, Link2, ChevronRight, Clock, X, Activity,
   CheckCircle2, ShieldCheck,
 } from 'lucide-react-native';
-import { colors, radii } from '../../src/theme';
+import { colors, radii, useTabBottomPad } from '../../src/theme';
 import { api } from '../../src/api';
 import { AdminHeader } from '../../src/components/AdminHeader';
 import { useToast } from '../../src/toast';
@@ -32,6 +32,7 @@ const STATUS_TINT: Record<string, string> = {
 const STATUSES = ['all', 'pending', 'access_sent', 'viewed', 'active', 'revoked'];
 
 export default function AdminSellers() {
+  const tabPad = useTabBottomPad();
   const toast = useToast();
   const [items, setItems] = useState<any[]>([]);
   const [filter, setFilter] = useState('all');
@@ -86,7 +87,7 @@ export default function AdminSellers() {
       </View>
 
       <ScrollView
-        contentContainerStyle={{ padding: 16, paddingBottom: 80 }}
+        contentContainerStyle={{ padding: 16, paddingBottom: tabPad }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.red} />}
       >
         {loading ? (

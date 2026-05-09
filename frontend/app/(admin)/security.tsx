@@ -21,7 +21,7 @@ import {
   Search, ShieldAlert, ShieldCheck, Ban, UserPlus, UserMinus, Gavel,
   AlertOctagon, Clock, Filter, Megaphone, BadgeAlert, Activity,
 } from 'lucide-react-native';
-import { colors, radii } from '../../src/theme';
+import { colors, radii, useTabBottomPad } from '../../src/theme';
 import { api } from '../../src/api';
 import { AdminHeader } from '../../src/components/AdminHeader';
 
@@ -47,6 +47,7 @@ const ACTION_META: Record<string, { label: string; tint: string; icon: any }> = 
 };
 
 export default function AdminSecurity() {
+  const tabPad = useTabBottomPad();
   const [tab, setTab] = useState<Tab>('audit');
   const [windowFilter, setWindowFilter] = useState<Window>('24');
   const [actionFilter, setActionFilter] = useState<string | null>(null);
@@ -129,7 +130,7 @@ export default function AdminSecurity() {
       )}
 
       <ScrollView
-        contentContainerStyle={styles.body}
+        contentContainerStyle={[styles.body, { paddingBottom: tabPad }]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.red} />}
       >
         {tab === 'audit' ? (

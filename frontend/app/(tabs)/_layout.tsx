@@ -1,7 +1,8 @@
 import React from 'react';
-import { View, Text, ActivityIndicator, StyleSheet, Platform } from 'react-native';
+import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
 import { Tabs, Redirect } from 'expo-router';
 import { Home, Gavel, Heart, User, ShoppingBag } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../../src/theme';
 import { useAuth } from '../../src/auth';
 
@@ -10,9 +11,17 @@ import { useAuth } from '../../src/auth';
  *
  * Admins are redirected to the dedicated `/(admin)` shell. Dealers see a
  * cinematic auction-first marketplace with no seller-leaning surfaces.
+ *
+ * Bottom-inset handling:
+ *   The tab bar height/padding grow with `insets.bottom` so that on
+ *   gesture-nav Android (Pixel, Samsung One UI 4+) and iPhones with a
+ *   home indicator, the tab bar floats above the system gesture area.
+ *   On 3-button-nav Android `insets.bottom` is 0 → bar collapses to a
+ *   tight 56dp profile, preserving vertical space.
  */
 export default function TabsLayout() {
   const { dealer, loading } = useAuth();
+  const insets = useSafeAreaInsets();
 
   if (loading) {
     return (
@@ -34,9 +43,11 @@ export default function TabsLayout() {
           backgroundColor: colors.bg,
           borderTopColor: colors.border,
           borderTopWidth: 1,
-          height: Platform.OS === 'ios' ? 88 : 70,
+          // 56 = base content (icon + label + paddingTop). The system
+          // inset is added on top so the gesture bar never overlaps.
+          height: 56 + insets.bottom,
           paddingTop: 8,
-          paddingBottom: Platform.OS === 'ios' ? 28 : 12,
+          paddingBottom: insets.bottom + 8,
         },
         tabBarActiveTintColor: colors.red,
         tabBarInactiveTintColor: colors.textMuted,

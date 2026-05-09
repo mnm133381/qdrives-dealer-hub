@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity } from 'rea
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BadgeCheck, ShieldCheck, TrendingUp, Award, LogOut, Settings, ChevronRight, Star, Bell, FileText } from 'lucide-react-native';
-import { colors, radii, formatINR } from '../../src/theme';
+import { colors, radii, formatINR, useTabBottomPad } from '../../src/theme';
 import { useAuth } from '../../src/auth';
 import { TrustCard } from '../../src/components/TrustCard';
 import { PendingApprovalCard } from '../../src/components/PendingApprovalCard';
@@ -14,6 +14,7 @@ import { Platform } from 'react-native';
 export default function Profile() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const tabPad = useTabBottomPad();
   const { dealer, signOut } = useAuth();
   const toast = useToast();
   const [stats, setStats] = useState<any>(null);
@@ -42,7 +43,7 @@ export default function Profile() {
   const isAdmin = ['admin', 'super_admin', 'operations_admin', 'inspection_admin'].includes(dealer.role as any);
   return (
     <View style={[styles.root, { paddingTop: insets.top + 10 }]}>
-      <ScrollView contentContainerStyle={{ paddingBottom: 60 }}>
+      <ScrollView contentContainerStyle={{ paddingBottom: tabPad }}>
         <View style={styles.cover}>
           <View style={styles.coverGradient} />
           <View style={styles.profileRow}>

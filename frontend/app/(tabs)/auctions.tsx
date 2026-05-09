@@ -2,7 +2,7 @@ import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
 import { useRouter, useFocusEffect, Link } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { colors, radii } from '../../src/theme';
+import { colors, radii, useTabBottomPad } from '../../src/theme';
 import { api } from '../../src/api';
 import { AuctionCard } from '../../src/components/AuctionCard';
 
@@ -15,6 +15,7 @@ const TABS = [
 export default function AuctionsTab() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const tabPad = useTabBottomPad();
   const [tab, setTab] = useState<'live' | 'upcoming' | 'ended'>('live');
   const [auctions, setAuctions] = useState<any[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -73,7 +74,7 @@ export default function AuctionsTab() {
       </View>
 
       <ScrollView
-        contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
+        contentContainerStyle={{ padding: 20, paddingBottom: tabPad }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.red} />}
       >
         {auctions.length === 0 ? (

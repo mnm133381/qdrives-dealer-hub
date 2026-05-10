@@ -246,6 +246,23 @@ export default function AdminOpsDashboard() {
           </TouchableOpacity>
         </View>
 
+        {/* RELIABILITY · operator-only console for auction integrity + WS health */}
+        <TouchableOpacity onPress={() => router.push('/(admin)/reliability' as any)}
+          activeOpacity={0.85} style={styles.broadcastTile}
+          testID="ops-quick-reliability">
+          <View style={styles.broadcastIcon}>
+            <Activity size={15} color={colors.silver} strokeWidth={2.4} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.broadcastKicker}>RELIABILITY · INTEGRITY</Text>
+            <Text style={styles.broadcastTitle}>Auction & WebSocket health</Text>
+            <Text style={styles.broadcastHint} numberOfLines={1}>
+              live connections · bid propagation · race conflicts · close-race monitor
+            </Text>
+          </View>
+          <ChevronRight size={14} color={colors.silver} />
+        </TouchableOpacity>
+
         {/* LIQUIDITY TOOLS — broadcast composer (manual marketplace nudges) */}
         <TouchableOpacity onPress={() => router.push('/(admin)/broadcast' as any)}
           activeOpacity={0.85} style={styles.broadcastTile}

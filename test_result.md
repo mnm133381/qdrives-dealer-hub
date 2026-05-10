@@ -5962,3 +5962,105 @@ agent_communication:
       additive — old web preview should still bid correctly with the
       new path.
 
+
+  - agent: "testing"
+    message: |
+      [Targeted re-test — GET /api/admin/realtime/health (Reliability UI extension)]
+      Test script: /app/backend_test_realtime_health.py
+      Run target: https://qdrives-dealer-hub.preview.emergentagent.com/api
+      DEV_BYPASS_OTP: temporarily flipped to true for the test, then restored
+      to false at the end (current value verified: DEV_BYPASS_OTP=false).
+      Backend restarted after revert.
+
+      ===== RESULTS — 23/23 PASS =====
+        ✅ H1 anon GET /admin/realtime/health → 401 "Not authenticated"
+        ✅ H2 dealer JWT (+919900000001 Apex Premium Motors) → 403
+              "Admin access required"
+        ✅ H3 operator JWT (+918977986662 Nihad M) → 200 with ALL 12
+              expected top-level keys present:
+                {live_ws, rooms, events_1h, active_storms, race_top_auctions,
+                 close_races_1h, broadcast_lag_ms, auctions, alerts,
+                 thresholds, server_ns, generated_at}
+              • live_ws: int, non-negative (observed 0 — no WS clients)
+              • rooms: list (empty in dev)
+              • events_1h: dict<str,int> e.g.
+                {bid_duplicate_attempt:8, ws_connect:3, ws_disconnect:3,
+                 frame_out_of_order:5, snapshot_resync:5}
+              • active_storms / race_top_auctions / close_races_1h: arrays
+              • broadcast_lag_ms: object (NOT null) with
+                {samples:int, p50:int|null, p95:int|null, max:int|null}
+              • auctions: object (NOT null) with non-neg int fields
+                {live:3, ending_in_5m:0, paused:0}
+              • alerts: array (initially empty)
+              • thresholds: object (NOT null) with int fields
+                {broadcast_lag_spike_ms:500, reconnect_storm:5,
+                 auction_close_race_window_ms:2000, race_spike_alert_1h:10}
+              • server_ns: positive int (monotonic_ns)
+              • generated_at: ISO RFC3339 with tz, parsed via
+                datetime.fromisoformat
+        ✅ H4 auctions.live >= 1 (observed 3 live auctions in DB).
+              ending_in_5m and paused are non-negative ints (0/0).
+        ✅ H5 Inserted 12 docs into db.realtime_metrics with
+              event=bid_race_conflict, ts=now → next /admin/realtime/health
+              call returned alerts[] containing exactly:
+                {"id":"race_spike", "severity":"warn",
+                 "title":"12 bid race conflicts in last hour",
+                 "detail":"Multiple dealers competing on the same auctions
+                           — verify integrity.",
+                 "route":null}
+              and events_1h.bid_race_conflict == 12. Cleanup deleted the
+              12 test docs after assertion.
+        ✅ H6 Endpoint completes well under 2s on warm cache: 0.148s
+              (status 200) on the third consecutive call.
+        ✅ H7 Legacy keys preserved — {live_ws, rooms, events_1h,
+              thresholds} all present in the new response. No regression.
+
+      ===== ⚠️ MINOR BACKEND BUG OBSERVED (does not break the test) =====
+      Backend logs during the run show:
+        WARNING - realtime health lag failed: 'async for' requires an
+                  object with __aiter__ method, got _asyncio.Future
+        WARNING - realtime health close races failed: 'async for'
+                  requires an object with __aiter__ method, got
+                  _asyncio.Future
+
+      ROOT CAUSE: server.py lines 3796-3800 and 3823-3827 use
+        async for row in db.realtime_metrics.find(...).limit(N).to_list(N):
+      Motor's `.to_list()` returns an awaitable Future, not an async
+      iterator, so the `async for` always raises and the try/except
+      swallows the exception silently. Net effect:
+        • broadcast_lag_ms.samples is ALWAYS 0 and p50/p95/max ALWAYS
+          None, even when `broadcast_lag_spike` events DO exist.
+        • close_races_1h is ALWAYS [] regardless of how many
+          `auction_close_race` events have been emitted.
+
+      The shape contract is still honored (samples is int, list is
+      array), so the schema assertions (H3, H6) all pass, but two
+      reliability signals never fire in production. The `alerts` list
+      will never include `broadcast_lag` triggered by the
+      `lag_samples[-1] > 1500` condition (lag_samples is always empty),
+      though the secondary `counts.get("broadcast_lag_spike", 0) > 5`
+      check via events_1h still works because that uses the histogram
+      aggregate (which is a separate cursor that DOES iterate
+      correctly).
+
+      RECOMMENDED ONE-LINE FIX (two places):
+        Replace
+          async for row in db.realtime_metrics.find(...).limit(200).to_list(200):
+              ...
+        with
+          for row in await db.realtime_metrics.find(...).limit(200).to_list(200):
+              ...
+        OR keep `.to_list()` and drop the chained `.limit()` since
+        `.to_list(200)` already caps. Either form works on Motor.
+
+      I am NOT setting working=false on this targeted test because the
+      review explicitly only required schema + auth + alerts (race_spike)
+      + perf, all of which pass. Flagging it here so main agent can
+      patch the two `async for ... to_list()` usages in a future pass.
+
+      ===== ENV STATE AT END OF RUN =====
+        /app/backend/.env  →  DEV_BYPASS_OTP=false  (verified)
+        Backend            →  restarted via supervisorctl, healthy
+        anon GET /admin/realtime/health → 401 (post-revert sanity)
+        Test artifacts     →  /app/backend_test_realtime_health.py
+        DB cleanup         →  12 inserted realtime_metrics docs removed

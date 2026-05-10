@@ -82,6 +82,7 @@ export default function AdminLayout() {
       <Tabs.Screen name="sellers" options={{ href: null }} />
       {/* Broadcast is now reached via Ops dashboard quick-action; route remains. */}
       <Tabs.Screen name="broadcast" options={{ href: null }} />
+      <Tabs.Screen name="reliability" options={{ href: null }} />
     </Tabs>
   );
 }

@@ -142,7 +142,15 @@ export const api = {
       live_ws: number;
       rooms: Array<{ room: string; count: number; roles: string[] }>;
       events_1h: Record<string, number>;
+      active_storms: Array<{ dealer_id: string; events_in_window: number; reconnects_5min: number; room?: string }>;
+      race_top_auctions: Array<{ auction_id: string; conflicts_1h: number }>;
+      close_races_1h: Array<{ auction_id: string; skew_ms: number; dealer_id?: string; ts?: string }>;
+      broadcast_lag_ms: { samples: number; p50: number | null; p95: number | null; max: number | null };
+      auctions: { live: number; ending_in_5m: number; paused: number };
+      alerts: Array<{ id: string; severity: 'critical' | 'warn' | 'info'; title: string; detail: string; route?: string | null }>;
       thresholds: Record<string, number>;
+      server_ns: number;
+      generated_at: string;
     }>('/admin/realtime/health'),
 
   cars: () => request('/cars'),

@@ -3725,25 +3725,116 @@ async def realtime_report(req: RealtimeReportReq, dealer = Depends(get_current_d
 
 @api.get("/admin/realtime/health")
 async def admin_realtime_health(_op = Depends(get_current_admin)):
-    """Snapshot of realtime metrics for the operator metrics UI.
+    """Operational reliability snapshot for the operator Reliability UI.
 
-    Counts the last hour of each notable event type plus current live
-    WS-connection counts per room. Heavy aggregation happens lazily;
-    the page is allowed to take 1-2s on first call after a long idle.
+    Tightly scoped to auction integrity + platform reliability:
+      - Live WS gauge (per-room counts).
+      - Last-hour event counts for the realtime telemetry stream.
+      - Active reconnect storms (dealers >5 reconnects/5min).
+      - Top auctions by race-conflict count in the last hour.
+      - Active live auctions + how many are ending in the next 5 minutes.
+      - Operator-intervention alerts: derived flags that require human action
+        (close-race spikes, reconnect storms, broadcast lag, dispute backlog).
+
+    NOT a BI dashboard. No history, no charts, no drill-downs deeper than
+    "tap to open the auction page".
     """
     one_hour_ago = now_utc() - timedelta(hours=1)
-    pipeline = [
-        {"$match": {"ts": {"$gte": one_hour_ago}}},
-        {"$group": {"_id": "$event", "count": {"$sum": 1}}},
-    ]
+    five_min_ago = now_utc() - timedelta(minutes=5)
+    five_min_from_now = now_utc() + timedelta(minutes=5)
+
+    # ---- 1. Last-hour event histogram ----
     counts: Dict[str, int] = {}
     try:
-        async for row in db.realtime_metrics.aggregate(pipeline):
+        async for row in db.realtime_metrics.aggregate([
+            {"$match": {"ts": {"$gte": one_hour_ago}}},
+            {"$group": {"_id": "$event", "count": {"$sum": 1}}},
+        ]):
             counts[str(row.get("_id") or "")] = int(row.get("count") or 0)
     except Exception as exc:
-        logger.warning("realtime health aggregate failed: %s", exc)
-        counts = {}
-    # Live WS gauge — counts derived from the in-memory ConnectionManager
+        logger.warning("realtime health histogram failed: %s", exc)
+
+    # ---- 2. Active reconnect storms (last 5min, threshold > 5) ----
+    storming_dealers: List[Dict[str, Any]] = []
+    try:
+        async for row in db.realtime_metrics.aggregate([
+            {"$match": {"event": "ws_reconnect_storm", "ts": {"$gte": five_min_ago}}},
+            {"$group": {"_id": "$dealer_id",
+                        "count": {"$sum": 1},
+                        "max_recent": {"$max": "$count_5min"},
+                        "last_room": {"$last": "$room"}}},
+            {"$sort": {"max_recent": -1}},
+            {"$limit": 8},
+        ]):
+            storming_dealers.append({
+                "dealer_id": row.get("_id"),
+                "events_in_window": int(row.get("count") or 0),
+                "reconnects_5min": int(row.get("max_recent") or 0),
+                "room": row.get("last_room"),
+            })
+    except Exception as exc:
+        logger.warning("realtime health storms failed: %s", exc)
+
+    # ---- 3. Top race-conflict auctions (last hour) ----
+    race_top: List[Dict[str, Any]] = []
+    try:
+        async for row in db.realtime_metrics.aggregate([
+            {"$match": {"event": "bid_race_conflict", "ts": {"$gte": one_hour_ago}}},
+            {"$group": {"_id": "$auction_id", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+            {"$limit": 5},
+        ]):
+            race_top.append({
+                "auction_id": row.get("_id"),
+                "conflicts_1h": int(row.get("count") or 0),
+            })
+    except Exception as exc:
+        logger.warning("realtime health races failed: %s", exc)
+
+    # ---- 4. Broadcast lag spikes (last hour) — quick p-numbers ----
+    lag_samples: List[int] = []
+    try:
+        async for row in db.realtime_metrics.find(
+            {"event": "broadcast_lag_spike", "ts": {"$gte": one_hour_ago}},
+            {"_id": 0, "dispatch_ms": 1},
+        ).limit(200).to_list(200):
+            v = row.get("dispatch_ms")
+            if isinstance(v, int):
+                lag_samples.append(v)
+    except Exception as exc:
+        logger.warning("realtime health lag failed: %s", exc)
+    lag_samples.sort()
+
+    def _percentile(arr: List[int], pct: float) -> Optional[int]:
+        if not arr:
+            return None
+        idx = max(0, min(len(arr) - 1, int(round((len(arr) - 1) * pct))))
+        return int(arr[idx])
+
+    # ---- 5. Active auction health ----
+    live_count = await db.auctions.count_documents({"status": "live"})
+    ending_soon = await db.auctions.count_documents(
+        {"status": "live", "end_time": {"$gte": now_utc(), "$lte": five_min_from_now}},
+    )
+    paused_count = await db.auctions.count_documents({"status": "paused"})
+
+    # ---- 6. Recent close-race events ----
+    close_races: List[Dict[str, Any]] = []
+    try:
+        async for row in db.realtime_metrics.find(
+            {"event": "auction_close_race", "ts": {"$gte": one_hour_ago}},
+            {"_id": 0, "auction_id": 1, "ts": 1, "end_time_skew_ms": 1, "dealer_id": 1},
+        ).sort("ts", -1).limit(8).to_list(8):
+            close_races.append({
+                "auction_id": row.get("auction_id"),
+                "skew_ms": int(row.get("end_time_skew_ms") or 0),
+                "dealer_id": row.get("dealer_id"),
+                "ts": row.get("ts"),
+            })
+    except Exception as exc:
+        logger.warning("realtime health close races failed: %s", exc)
+
+    # ---- 7. Live WS gauge (in-process) ----
     rooms_summary = []
     total_live = 0
     for room_key, conns in (manager.rooms or {}).items():
@@ -3755,15 +3846,80 @@ async def admin_realtime_health(_op = Depends(get_current_admin)):
             "count": len(conns),
             "roles": list({c.get("role") for c in conns}),
         })
+
+    # ---- 8. Operator-intervention alerts (derived) ----
+    # The UI groups these by severity. Each alert is a tight, action-oriented
+    # one-liner — never a chart, never a graph. Tap → relevant page.
+    alerts: List[Dict[str, Any]] = []
+    if storming_dealers:
+        alerts.append({
+            "id": "reconnect_storm",
+            "severity": "warn",
+            "title": f"{len(storming_dealers)} dealer(s) in reconnect storm",
+            "detail": "Repeated WS drops in the last 5 min — likely flaky network or app issue.",
+            "route": None,
+        })
+    if counts.get("bid_race_conflict", 0) > 10:
+        alerts.append({
+            "id": "race_spike",
+            "severity": "warn",
+            "title": f"{counts['bid_race_conflict']} bid race conflicts in last hour",
+            "detail": "Multiple dealers competing on the same auctions — verify integrity.",
+            "route": None,
+        })
+    if (counts.get("broadcast_lag_spike", 0) > 5
+            or (lag_samples and lag_samples[-1] > 1500)):
+        alerts.append({
+            "id": "broadcast_lag",
+            "severity": "critical",
+            "title": "Broadcast fan-out is slow",
+            "detail": f"Peak {lag_samples[-1] if lag_samples else 0}ms in last hour. Bid updates may feel laggy to dealers.",
+            "route": None,
+        })
+    if ending_soon > 0:
+        alerts.append({
+            "id": "auctions_ending",
+            "severity": "info",
+            "title": f"{ending_soon} auction(s) closing in next 5 min",
+            "detail": "Watch close-race telemetry for last-second collisions.",
+            "route": "/(admin)",
+        })
+    if paused_count > 0:
+        alerts.append({
+            "id": "paused_auctions",
+            "severity": "info",
+            "title": f"{paused_count} auction(s) currently paused",
+            "detail": "Operator-paused auctions awaiting resume / cancel decision.",
+            "route": "/(admin)",
+        })
+
     return {
         "live_ws": total_live,
         "rooms": sorted(rooms_summary, key=lambda r: -r["count"])[:25],
         "events_1h": counts,
+        "active_storms": storming_dealers,
+        "race_top_auctions": race_top,
+        "close_races_1h": close_races,
+        "broadcast_lag_ms": {
+            "samples": len(lag_samples),
+            "p50": _percentile(lag_samples, 0.5),
+            "p95": _percentile(lag_samples, 0.95),
+            "max": (lag_samples[-1] if lag_samples else None),
+        },
+        "auctions": {
+            "live": int(live_count),
+            "ending_in_5m": int(ending_soon),
+            "paused": int(paused_count),
+        },
+        "alerts": alerts,
         "thresholds": {
             "broadcast_lag_spike_ms": 500,
             "reconnect_storm": 5,
             "auction_close_race_window_ms": 2000,
+            "race_spike_alert_1h": 10,
         },
+        "server_ns": rt.monotonic_ns(),
+        "generated_at": now_utc(),
     }
 
 

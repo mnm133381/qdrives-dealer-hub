@@ -22,6 +22,8 @@ import {
 import { colors, radii } from '../../src/theme';
 import { api } from '../../src/api';
 import { LogoLockupHorizontal } from '../../src/components/Logo';
+import phoneAuth, { PhoneAuthError } from '../../src/firebase/phoneAuth';
+import { setPendingOtpHandle } from '../../src/firebase/handleStore';
 
 type AccessError = {
   title: string;
@@ -52,11 +54,17 @@ export default function Login() {
     const e164 = cleaned.startsWith('+') ? cleaned : `+91${cleaned}`;
     setLoading(true);
     try {
+      // (1) Backend role gate — operator allow-list / dealer-vs-operator
+      // confusion / rate limit. This must succeed BEFORE we burn an SMS.
       if (isAdmin) {
         await api.operatorSendOtp(e164);
       } else {
         await api.dealerSendOtp(e164);
       }
+      // (2) Dispatch the actual SMS via Firebase Phone Auth and stash
+      // the confirmation handle so /verify can finalise the code.
+      const handle = await phoneAuth.sendOtp(e164);
+      setPendingOtpHandle(e164, handle);
       router.push({
         pathname: '/(auth)/verify',
         params: { phone: e164, role: isAdmin ? 'admin' : 'dealer' },
@@ -75,6 +83,8 @@ export default function Login() {
           body: 'This number is registered for operator access. Switch to the operator portal.',
           hint: 'Tap "Choose access" above.',
         });
+      } else if (e instanceof PhoneAuthError) {
+        Alert.alert('Could not send OTP', e.message);
       } else {
         Alert.alert('Failed to send OTP', msg || 'Try again.');
       }

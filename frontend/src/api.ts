@@ -76,14 +76,24 @@ async function request<T = any>(path: string, options: RequestInit = {}, _retrie
 export const api = {
   // ---- Auth (strict role-isolated allow-list endpoints) ----
   // No generic auth route exists. Each role has its own dedicated channel.
+  // OTP transport: Firebase Phone Auth dispatches the SMS from the
+  // client SDK; we post the resulting Firebase ID token to verify-otp
+  // and the backend verifies it via firebase-admin. The legacy `otp`
+  // string param is retained only for the (off-by-default) DEV bypass.
   dealerSendOtp: (phone: string) =>
     request('/auth/dealer/send-otp', { method: 'POST', body: JSON.stringify({ phone }) }),
-  dealerVerifyOtp: (phone: string, otp: string) =>
-    request('/auth/dealer/verify-otp', { method: 'POST', body: JSON.stringify({ phone, otp }) }),
+  dealerVerifyOtp: (phone: string, firebase_id_token: string) =>
+    request('/auth/dealer/verify-otp', {
+      method: 'POST',
+      body: JSON.stringify({ phone, firebase_id_token }),
+    }),
   operatorSendOtp: (phone: string) =>
     request('/auth/operator/send-otp', { method: 'POST', body: JSON.stringify({ phone }) }),
-  operatorVerifyOtp: (phone: string, otp: string) =>
-    request('/auth/operator/verify-otp', { method: 'POST', body: JSON.stringify({ phone, otp }) }),
+  operatorVerifyOtp: (phone: string, firebase_id_token: string) =>
+    request('/auth/operator/verify-otp', {
+      method: 'POST',
+      body: JSON.stringify({ phone, firebase_id_token }),
+    }),
 
   me: () => request('/auth/me'),
   submitKyc: (payload: any) =>
@@ -311,13 +321,16 @@ export const api = {
     request<any>(`/admin/settlements/${id}/proof`),
 
   // ---- Seller portal (read-only owner tracking) ----
+  // Same Firebase-Phone-Auth flow as dealer/operator. The seller
+  // verify endpoint additionally checks the phone is on the
+  // operator-curated sellers allow-list before issuing a JWT.
   sellerSendOtp: (phone: string) =>
-    request<{ ok: boolean; mocked_otp_hint?: string }>('/auth/seller/send-otp', {
+    request<{ ok: boolean; provider?: string }>('/auth/seller/send-otp', {
       method: 'POST', body: JSON.stringify({ phone }),
     }),
-  sellerVerifyOtp: (phone: string, otp: string) =>
+  sellerVerifyOtp: (phone: string, firebase_id_token: string) =>
     request<{ token: string; seller: any }>('/auth/seller/verify-otp', {
-      method: 'POST', body: JSON.stringify({ phone, otp }),
+      method: 'POST', body: JSON.stringify({ phone, firebase_id_token }),
     }),
   sellerMe: () => request<any>('/seller/me'),
   sellerVehicles: () => request<any[]>('/seller/vehicles'),

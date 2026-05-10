@@ -26,6 +26,14 @@ from pydantic import BaseModel, Field
 from push import send_to_dealer, send_to_dealers, is_valid_expo_token
 import storage_service
 import media as media_svc
+from auth_firebase import (
+    FirebaseAuthError,
+    verify_id_token_phone,
+    check_send_rate,
+    check_send_cooldown,
+    check_verify_rate,
+    dev_bypass_enabled,
+)
 
 # ---------- Setup ----------
 mongo_url = os.environ['MONGO_URL']
@@ -35,7 +43,9 @@ inspections_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="inspections")
 
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGO = "HS256"
-MOCK_OTP = "123456"
+# NOTE: Mocked OTP path was removed in favour of Firebase Phone Auth.
+# A `DEV_BYPASS_OTP=true` env flag (off by default) is honoured ONLY for
+# staging/CI smoke tests; do not enable in production.
 ADMIN_PHONES = {p.strip() for p in os.environ.get("ADMIN_PHONES", "").split(",") if p.strip()}
 
 
@@ -278,7 +288,11 @@ class SendOtpReq(BaseModel):
 
 class VerifyOtpReq(BaseModel):
     phone: str
-    otp: str
+    # Firebase ID token issued by the client SDK after the user enters
+    # the SMS code. The legacy `otp` field is retained as an OPTIONAL
+    # fallback ONLY for the DEV_BYPASS path; never accepted in prod.
+    firebase_id_token: Optional[str] = None
+    otp: Optional[str] = None
 
 class KycReq(BaseModel):
     full_name: str
@@ -469,6 +483,66 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+
+# ---------------------------------------------------------------------
+# Firebase phone-auth verifier helpers
+# ---------------------------------------------------------------------
+def _client_ip(request: Optional[Request]) -> str:
+    if not request:
+        return ""
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else ""
+
+
+def _resolve_otp_phone(req: VerifyOtpReq, request: Optional[Request]) -> str:
+    """Verify a Firebase ID token (or honour DEV_BYPASS_OTP if enabled) and
+    return the canonical phone number. Raises HTTPException on any failure.
+
+    Single source of truth shared by dealer / operator / seller verify endpoints
+    so the audit trail and rate-limit semantics stay consistent.
+    """
+    phone = (req.phone or "").strip()
+    if len(phone) < 8:
+        raise HTTPException(status_code=400, detail="Invalid phone number")
+    ip = _client_ip(request)
+
+    # Per-phone + per-IP verify rate limit (anti-brute-force)
+    ok, msg = check_verify_rate(phone, ip=ip)
+    if not ok:
+        raise HTTPException(status_code=429, detail=msg)
+
+    # Dev escape hatch — staging only.
+    if not req.firebase_id_token and dev_bypass_enabled() and (req.otp or "").strip() == "123456":
+        logger.warning("DEV_BYPASS_OTP active for %s (NOT FOR PRODUCTION)", phone)
+        return phone
+
+    if not req.firebase_id_token:
+        raise HTTPException(status_code=400, detail="OTP_TOKEN_REQUIRED")
+
+    try:
+        verified_phone = verify_id_token_phone(req.firebase_id_token, expected_phone=phone)
+    except FirebaseAuthError as exc:
+        # Map Firebase error codes to user-friendly HTTP statuses
+        code_map = {
+            "expired": (400, "OTP_EXPIRED"),
+            "revoked": (401, "OTP_REVOKED"),
+            "invalid": (400, "OTP_INVALID"),
+            "missing_token": (400, "OTP_TOKEN_REQUIRED"),
+            "no_phone": (400, "OTP_NO_PHONE"),
+            "phone_mismatch": (400, "OTP_PHONE_MISMATCH"),
+            "wrong_provider": (400, "OTP_WRONG_PROVIDER"),
+            "wrong_project": (401, "OTP_WRONG_PROJECT"),
+            "firebase_unavailable": (503, "OTP_BACKEND_UNAVAILABLE"),
+            "verify_failed": (400, "OTP_VERIFY_FAILED"),
+        }
+        status_code, detail = code_map.get(exc.code, (400, exc.code or "OTP_VERIFY_FAILED"))
+        raise HTTPException(status_code=status_code, detail=detail)
+    return verified_phone
+
+
+
 # ---------- Auth Endpoints ----------
 # Closed-network architecture:
 #   • Dealers authenticate ONLY via /auth/dealer/* (approved_dealers allow-list)
@@ -484,7 +558,7 @@ manager = ConnectionManager()
 # preset collection are auto-promoted to `status='approved'` on first
 # verification (preserving dealership name, trust_score, max_bid_limit).
 @api.post("/auth/dealer/send-otp")
-async def dealer_send_otp(req: SendOtpReq):
+async def dealer_send_otp(req: SendOtpReq, request: Request):
     phone = req.phone.strip()
     if len(phone) < 10:
         raise HTTPException(status_code=400, detail="Invalid phone number")
@@ -494,19 +568,27 @@ async def dealer_send_otp(req: SendOtpReq):
     if await db.operators.find_one({"phone": phone}):
         asyncio.create_task(audit(db, "dealer_send_otp_blocked_operator", None, None, {"phone": phone}))
         raise HTTPException(status_code=403, detail="USE_OPERATOR_LOGIN")
-    # Open onboarding — OTP delivered for any valid Indian phone.
-    return {"success": True, "message": "OTP sent", "dev_otp": MOCK_OTP}
+    # Rate-limit: max 5 sends/hour/phone + short retry cooldown. The
+    # actual SMS is dispatched by the Firebase client SDK; we only gate
+    # role + abuse here.
+    ip = _client_ip(request)
+    ok, msg = check_send_rate(phone, ip=ip)
+    if not ok:
+        raise HTTPException(status_code=429, detail=msg)
+    ok, msg = check_send_cooldown(phone)
+    if not ok:
+        raise HTTPException(status_code=429, detail=msg)
+    return {"success": True, "message": "OTP gate cleared", "provider": "firebase"}
 
 
 @api.post("/auth/dealer/verify-otp")
-async def dealer_verify_otp(req: VerifyOtpReq):
-    phone = req.phone.strip()
+async def dealer_verify_otp(req: VerifyOtpReq, request: Request):
+    phone_in = req.phone.strip()
     # Operator phones still blocked from dealer flow at verify too.
-    if await db.operators.find_one({"phone": phone}):
-        asyncio.create_task(audit(db, "dealer_verify_blocked_operator", None, None, {"phone": phone}))
+    if await db.operators.find_one({"phone": phone_in}):
+        asyncio.create_task(audit(db, "dealer_verify_blocked_operator", None, None, {"phone": phone_in}))
         raise HTTPException(status_code=403, detail="USE_OPERATOR_LOGIN")
-    if req.otp != MOCK_OTP:
-        raise HTTPException(status_code=400, detail="Invalid OTP. Use 123456 for dev.")
+    phone = _resolve_otp_phone(req, request)
 
     dealer = await db.dealers.find_one({"phone": phone}, {"_id": 0})
     is_new = False
@@ -610,23 +692,34 @@ async def dealer_verify_otp(req: VerifyOtpReq):
 
 # ---- Operator auth (operators allow-list only) ----
 @api.post("/auth/operator/send-otp")
-async def operator_send_otp(req: SendOtpReq):
+async def operator_send_otp(req: SendOtpReq, request: Request):
     phone = req.phone.strip()
     if not await db.operators.find_one({"phone": phone}):
         asyncio.create_task(audit(db, "operator_access_denied", None, None, {"phone": phone}))
         raise HTTPException(status_code=403, detail="OPERATOR_ACCESS_DENIED")
-    return {"success": True, "message": "OTP sent", "dev_otp": MOCK_OTP}
+    ip = _client_ip(request)
+    ok, msg = check_send_rate(phone, ip=ip)
+    if not ok:
+        raise HTTPException(status_code=429, detail=msg)
+    ok, msg = check_send_cooldown(phone)
+    if not ok:
+        raise HTTPException(status_code=429, detail=msg)
+    return {"success": True, "message": "OTP gate cleared", "provider": "firebase"}
 
 
 @api.post("/auth/operator/verify-otp")
-async def operator_verify_otp(req: VerifyOtpReq):
-    phone = req.phone.strip()
-    op = await db.operators.find_one({"phone": phone}, {"_id": 0})
+async def operator_verify_otp(req: VerifyOtpReq, request: Request):
+    phone_in = req.phone.strip()
+    op = await db.operators.find_one({"phone": phone_in}, {"_id": 0})
     if not op:
-        asyncio.create_task(audit(db, "operator_access_denied", None, None, {"phone": phone, "stage": "verify"}))
+        asyncio.create_task(audit(db, "operator_access_denied", None, None, {"phone": phone_in, "stage": "verify"}))
         raise HTTPException(status_code=403, detail="OPERATOR_ACCESS_DENIED")
-    if req.otp != MOCK_OTP:
-        raise HTTPException(status_code=400, detail="Invalid OTP. Use 123456 for dev.")
+    phone = _resolve_otp_phone(req, request)
+    # Re-check operator allow-list using the *Firebase-verified* phone — defends
+    # against any client-supplied phone vs token-claim mismatch.
+    if phone != phone_in:
+        # _resolve_otp_phone already enforces equality, but be explicit.
+        raise HTTPException(status_code=400, detail="OTP_PHONE_MISMATCH")
 
     dealer = await db.dealers.find_one({"phone": phone}, {"_id": 0})
     is_new = False
@@ -4391,7 +4484,7 @@ async def admin_settlement_get_proof(
 # =====================================================================
 # Sellers — operator-controlled vehicle owner tracking
 # =====================================================================
-SELLER_OTP_FIXED = "123456"  # MOCKED — Twilio integration is a follow-up
+# Seller OTP is now driven by Firebase Phone Auth (same as dealers/operators).
 
 
 def _create_seller_jwt(seller_id: str) -> str:
@@ -4436,19 +4529,29 @@ class SellerSendOtpReq(BaseModel):
 
 class SellerVerifyOtpReq(BaseModel):
     phone: str
-    otp: str
+    firebase_id_token: Optional[str] = None
+    otp: Optional[str] = None
 
 
 # ---- Seller-side public auth ----------------------------------------
 @api.post("/auth/seller/send-otp")
-async def seller_send_otp(req: SellerSendOtpReq):
+async def seller_send_otp(req: SellerSendOtpReq, request: Request):
     seller = await sellers_svc.find_seller_by_phone(db, req.phone)
-    # Always 200 to avoid leaking which phones are sellers
+    # Always 200 to avoid leaking which phones are sellers.
+    # Apply same abuse-protection envelope used for dealers/operators.
+    phone = (req.phone or "").strip()
+    ip = _client_ip(request)
+    ok, msg = check_send_rate(phone, ip=ip)
+    if not ok:
+        raise HTTPException(status_code=429, detail=msg)
+    ok, msg = check_send_cooldown(phone)
+    if not ok:
+        raise HTTPException(status_code=429, detail=msg)
     if seller:
         try:
             await sellers_svc._audit(
                 db, seller_id=seller["id"], action="otp_sent",
-                actor_id=seller["id"], actor_role="system", meta={"channel": "mock"},
+                actor_id=seller["id"], actor_role="system", meta={"channel": "firebase"},
             )
             if seller.get("status") == "pending":
                 await db.sellers.update_one(
@@ -4457,19 +4560,26 @@ async def seller_send_otp(req: SellerSendOtpReq):
                 )
         except Exception as exc:
             logger.warning("seller otp_sent audit failed: %s", exc)
-    return {"ok": True, "mocked_otp_hint": "123456"}
+    return {"ok": True, "provider": "firebase"}
 
 
 @api.post("/auth/seller/verify-otp")
-async def seller_verify_otp(req: SellerVerifyOtpReq):
+async def seller_verify_otp(req: SellerVerifyOtpReq, request: Request):
     seller = await sellers_svc.find_seller_by_phone(db, req.phone)
     if not seller:
         raise HTTPException(status_code=404, detail="No seller access on file. Contact Q Drives operations.")
     if seller.get("status") == "revoked":
         raise HTTPException(status_code=403, detail="Your access has been revoked.")
-    if (req.otp or "").strip() != SELLER_OTP_FIXED:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
-    await sellers_svc.mark_seller_login(db, seller_id=seller["id"], otp_method="otp")
+    # Adapt seller payload to the shared verifier shape and validate
+    # the Firebase ID token (or DEV_BYPASS path). _resolve_otp_phone will
+    # raise the appropriate HTTPException on any mismatch / expiry.
+    bridged = VerifyOtpReq(
+        phone=req.phone,
+        firebase_id_token=req.firebase_id_token,
+        otp=req.otp,
+    )
+    _resolve_otp_phone(bridged, request)
+    await sellers_svc.mark_seller_login(db, seller_id=seller["id"], otp_method="firebase")
     return {
         "token": _create_seller_jwt(seller["id"]),
         "seller": await sellers_svc.get_seller_profile(db, seller_id=seller["id"]),

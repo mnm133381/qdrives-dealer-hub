@@ -1,10 +1,17 @@
 /**
  * Verify OTP screen — strictly role-isolated.
  *
- * Calls /auth/dealer/verify-otp or /auth/operator/verify-otp based on the
- * `role` query param threaded through from /(auth)/login. There is NO
- * auto-downgrade: if the operator path is denied, we surface a premium
- * "Operator access denied" error and the user stays on this screen.
+ * Flow:
+ *   1. /(auth)/login dispatched the SMS via Firebase phone auth and
+ *      stashed the confirmation handle in the in-memory handleStore.
+ *   2. User types the 6-digit code (or it auto-fills on Android).
+ *   3. We call phoneAuth.confirmOtp(handle, code) → Firebase ID token.
+ *   4. POST { phone, firebase_id_token } → /auth/<role>/verify-otp.
+ *      Backend verifies the token via firebase-admin, looks up the
+ *      dealer/operator, and returns our existing JWT pair.
+ *
+ * If no handle is found (deep-link navigation, hot reload, etc) we
+ * re-dispatch the SMS by calling phoneAuth.sendOtp() on first focus.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -16,6 +23,8 @@ import * as Haptics from 'expo-haptics';
 import { colors, radii } from '../../src/theme';
 import { api } from '../../src/api';
 import { useAuth } from '../../src/auth';
+import phoneAuth, { PhoneAuthError, PhoneOtpHandle } from '../../src/firebase/phoneAuth';
+import { takePendingOtpHandle, setPendingOtpHandle, clearPendingOtpHandle } from '../../src/firebase/handleStore';
 
 const OTP_LEN = 6;
 
@@ -68,11 +77,27 @@ export default function VerifyOtp() {
     setLoading(true);
     setAccessError(null);
     try {
+      // (1) Confirm the SMS code via Firebase → Firebase ID token.
+      let handle = takePendingOtpHandle(String(phone));
+      if (!handle) {
+        // Edge case: hot reload / deep link landed on /verify with no
+        // pending handle. Re-dispatch the SMS so confirmOtp has
+        // something to bind to. The user will see a fresh code shortly.
+        handle = await phoneAuth.sendOtp(String(phone));
+        setPendingOtpHandle(String(phone), handle);
+      }
+      const idToken = await phoneAuth.confirmOtp(handle, code);
+      // (2) Exchange the Firebase ID token for our app JWT.
       const data: any = isAdmin
-        ? await api.operatorVerifyOtp(String(phone), code)
-        : await api.dealerVerifyOtp(String(phone), code);
+        ? await api.operatorVerifyOtp(String(phone), idToken)
+        : await api.dealerVerifyOtp(String(phone), idToken);
+      clearPendingOtpHandle(String(phone));
 
       try { await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {}
+      // Sign the user out of Firebase right away — the app session is
+      // now driven entirely by our backend JWT and we don't want
+      // Firebase auth state lingering on device.
+      try { await phoneAuth.signOut(); } catch {}
       await signIn(data.token, data.dealer, data.refresh_token);
 
       // Strict role isolation — operator endpoint always returns an admin
@@ -90,6 +115,7 @@ export default function VerifyOtp() {
     } catch (e: any) {
       try { await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error); } catch {}
       const msg = String(e?.message || '');
+      const code = e instanceof PhoneAuthError ? e.code : '';
       if (msg.includes('DEALER_ACCESS_NOT_APPROVED') || msg.includes('DEALER_ACCOUNT_SUSPENDED')) {
         setAccessError({
           title: msg.includes('SUSPENDED') ? 'Account suspended.' : 'Access restricted.',
@@ -104,8 +130,17 @@ export default function VerifyOtp() {
           body: 'This number is not authorised for Q Drives operations.',
           hint: 'Operator access is restricted and audited.',
         });
+      } else if (code === 'auth/invalid-verification-code' || msg.includes('OTP_INVALID')) {
+        Alert.alert('Incorrect OTP', 'The code you entered is wrong. Please try again.');
+        setDigits(Array(OTP_LEN).fill(''));
+        inputs.current[0]?.focus();
+      } else if (code === 'auth/code-expired' || code === 'auth/session-expired' || msg.includes('OTP_EXPIRED')) {
+        Alert.alert('OTP expired', 'That code has expired. Tap Resend to get a fresh one.');
+        setDigits(Array(OTP_LEN).fill(''));
+      } else if (code === 'auth/too-many-requests' || msg.includes('429') || msg.toLowerCase().includes('too many')) {
+        Alert.alert('Too many attempts', 'Please wait before trying again.');
       } else {
-        Alert.alert('Verification failed', msg || 'Invalid OTP. Use 123456 for dev.');
+        Alert.alert('Verification failed', msg || 'Please try again.');
         setDigits(Array(OTP_LEN).fill(''));
         inputs.current[0]?.focus();
       }
@@ -116,15 +151,19 @@ export default function VerifyOtp() {
 
   const resend = async () => {
     try {
+      // Re-run the role gate so suspended/revoked accounts can't farm SMS.
       if (isAdmin) {
         await api.operatorSendOtp(String(phone));
       } else {
         await api.dealerSendOtp(String(phone));
       }
+      // Re-dispatch SMS via Firebase and refresh the handle.
+      const handle = await phoneAuth.sendOtp(String(phone));
+      setPendingOtpHandle(String(phone), handle);
       setResendIn(30);
       Alert.alert('OTP resent', 'A new code is on its way.');
     } catch (e: any) {
-      Alert.alert('Failed', e.message);
+      Alert.alert('Failed', e instanceof PhoneAuthError ? e.message : (e?.message || 'Could not resend.'));
     }
   };
 
@@ -147,7 +186,6 @@ export default function VerifyOtp() {
 
       <Text style={styles.title}>Verify number</Text>
       <Text style={styles.sub}>We sent a 6-digit code to {phone}</Text>
-      <Text style={styles.devHint}>Dev mode: use code <Text style={styles.devCode}>123456</Text></Text>
 
       <View style={styles.otpRow} testID="otp-input-row">
         {digits.map((d, i) => (
@@ -199,6 +237,12 @@ export default function VerifyOtp() {
           {resendIn > 0 ? `Resend code in ${resendIn}s` : 'Resend code'}
         </Text>
       </TouchableOpacity>
+
+      {/* Invisible reCAPTCHA host — only meaningful on Web (RN-Web turns
+          this <View> into a <div id="qdrives-recaptcha"> which the
+          firebase JS SDK's RecaptchaVerifier mounts into). On native
+          this is a 0-sized View and incurs no overhead. */}
+      <View nativeID="qdrives-recaptcha" style={styles.recaptchaHost} />
     </KeyboardAvoidingView>
   );
 }
@@ -257,4 +301,5 @@ const styles = StyleSheet.create({
 
   resend: { alignSelf: 'center', marginTop: 22 },
   resendText: { color: colors.textChrome, fontSize: 13, fontWeight: '600' },
+  recaptchaHost: { width: 1, height: 1, opacity: 0, position: 'absolute', bottom: 0, right: 0 },
 });

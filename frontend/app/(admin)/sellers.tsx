@@ -227,7 +227,7 @@ function SellerDetailModal({ seller, onClose, onAction }: any) {
   };
   const send = async () => {
     setBusy(true);
-    try { await api.adminSellerSendAccess(seller.id); await onAction(); toast.show('Access sent (mock OTP: 123456)', 'success'); }
+    try { await api.adminSellerSendAccess(seller.id); await onAction(); toast.show('Access OTP dispatched (Firebase Phone Auth)', 'success'); }
     catch (e: any) { toast.show(e.message || 'Failed', 'error'); }
     finally { setBusy(false); }
   };

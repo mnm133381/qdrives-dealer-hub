@@ -20,7 +20,8 @@
       "edgeToEdgeEnabled": true,
       "softwareKeyboardLayoutMode": "pan",
       "package": "app.emergent.qdrivesdealerhub32bd13b5",
-      "versionCode": 6
+      "googleServicesFile": "./google-services.json",
+      "versionCode": 7
     },
     "androidNavigationBar": {
       "barStyle": "light-content",
@@ -38,6 +39,14 @@
     },
     "plugins": [
       "expo-router",
+      "@react-native-firebase/app",
+      "@react-native-firebase/auth",
+      [
+        "expo-build-properties",
+        {
+          "ios": { "useFrameworks": "static" }
+        }
+      ],
       [
         "expo-splash-screen",
         {

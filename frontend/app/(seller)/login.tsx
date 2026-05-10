@@ -25,6 +25,7 @@ import { api } from '../../src/api';
 import { storage } from '../../src/storage';
 import { TOKEN_KEY } from '../../src/api';
 import { useToast } from '../../src/toast';
+import phoneAuth, { PhoneAuthError, PhoneOtpHandle } from '../../src/firebase/phoneAuth';
 
 export default function SellerLogin() {
   const router = useRouter();
@@ -36,6 +37,10 @@ export default function SellerLogin() {
   const [busy, setBusy] = useState(false);
   // Hidden input that drives the visual 6-box pin row.
   const otpInputRef = useRef<TextInput>(null);
+  // Firebase Phone Auth confirmation handle for the current SMS
+  // dispatch. We keep it in a ref so it survives re-renders without
+  // re-triggering the SMS each time the user types.
+  const confirmationRef = useRef<PhoneOtpHandle | null>(null);
 
   useEffect(() => {
     if (step === 'otp') {
@@ -45,16 +50,27 @@ export default function SellerLogin() {
     }
   }, [step]);
 
+  const dispatchOtp = async (e164: string) => {
+    // (1) Backend gate: marks the seller as `access_sent`, applies
+    // rate limits. Always 200 to avoid leaking which numbers are
+    // sellers — the backend silently no-ops for unknown phones.
+    await api.sellerSendOtp(e164);
+    // (2) Real SMS via Firebase.
+    const handle = await phoneAuth.sendOtp(e164);
+    confirmationRef.current = handle;
+  };
+
   const sendOtp = async () => {
     const digits = phone.replace(/\D/g, '');
     if (digits.length !== 10) { toast.show('Enter 10-digit mobile', 'error'); return; }
     setBusy(true);
     try {
-      await api.sellerSendOtp(`+91${digits}`);
+      await dispatchOtp(`+91${digits}`);
       setStep('otp');
-      toast.show('OTP sent. (mock: 123456)', 'success');
+      toast.show('OTP sent', 'success');
     } catch (e: any) {
-      toast.show(e.message || 'Failed to send OTP', 'error');
+      const message = e instanceof PhoneAuthError ? e.message : (e?.message || 'Failed to send OTP');
+      toast.show(message, 'error');
     } finally { setBusy(false); }
   };
 
@@ -62,11 +78,30 @@ export default function SellerLogin() {
     if ((otp || '').length !== 6) { toast.show('Enter 6-digit OTP', 'error'); return; }
     setBusy(true);
     try {
-      const r = await api.sellerVerifyOtp(`+91${phone.replace(/\D/g, '')}`, otp);
+      const e164 = `+91${phone.replace(/\D/g, '')}`;
+      // (1) Confirm SMS code → Firebase ID token. If the handle is gone
+      // (e.g. cold reload), request a fresh dispatch first.
+      if (!confirmationRef.current) {
+        await dispatchOtp(e164);
+      }
+      const idToken = await phoneAuth.confirmOtp(confirmationRef.current!, otp);
+      // (2) Exchange ID token for our seller_access JWT.
+      const r = await api.sellerVerifyOtp(e164, idToken);
+      try { await phoneAuth.signOut(); } catch {}
       await storage.setItem(TOKEN_KEY, r.token);
       router.replace('/(seller)' as any);
     } catch (e: any) {
-      toast.show(e.message || 'Verification failed', 'error');
+      const code = e instanceof PhoneAuthError ? e.code : '';
+      let message = e?.message || 'Verification failed';
+      if (code === 'auth/invalid-verification-code' || message.includes('OTP_INVALID')) {
+        message = 'Incorrect OTP. Please try again.';
+        setOtp('');
+        setTimeout(() => otpInputRef.current?.focus(), 80);
+      } else if (code === 'auth/code-expired' || message.includes('OTP_EXPIRED')) {
+        message = 'OTP expired. Tap Resend OTP for a fresh one.';
+        setOtp('');
+      }
+      toast.show(message, 'error');
     } finally { setBusy(false); }
   };
 
@@ -186,6 +221,9 @@ export default function SellerLogin() {
           Access is operator-controlled. If you don’t have an account on file, contact Q Drives operations.
         </Text>
       </View>
+
+      {/* Invisible reCAPTCHA host (rendered as a 1px div on web by RN-Web). */}
+      <View nativeID="qdrives-recaptcha" style={styles.recaptchaHost} />
     </KeyboardAvoidingView>
   );
 }
@@ -237,4 +275,5 @@ const styles = StyleSheet.create({
 
   foot: { marginTop: 22, padding: 14, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bgCard },
   footText: { color: colors.textMuted, fontSize: 11, lineHeight: 16, fontWeight: '500' },
+  recaptchaHost: { width: 1, height: 1, opacity: 0, position: 'absolute', bottom: 0, right: 0 },
 });

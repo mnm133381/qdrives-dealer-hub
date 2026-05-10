@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "4782680239",
+    "project_id": "autobid-platform",
+    "storage_bucket": "autobid-platform.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:4782680239:android:a5ecff343ed8f8c3350c5a",
+        "android_client_info": {
+          "package_name": "app.emergent.qdrivesdealerhub32bd13b5"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "4782680239-e3o3jt05981lcogcfm8lha5k04fpdm4k.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDxcQHdrMgK0x9P5jtd2PHk2V4P9d368Lc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "4782680239-e3o3jt05981lcogcfm8lha5k04fpdm4k.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

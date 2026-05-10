@@ -1,402 +1,402 @@
 """
-Retest of 3 ObjectId-leak fixes + B.10 bid-restriction enforcement
-+ reputation snapshot integrity.
+Backend regression test for Firebase Phone Auth migration.
 
-Run: python /app/backend_test.py
+Replaces the legacy mocked OTP `123456` path with Firebase ID-token
+verification. We CANNOT mint a real Firebase ID token (no signing key),
+so all positive verify-otp paths intentionally hit firebase verification
+failure and we assert the expected HTTPException codes.
+
+Target: public preview ingress (REACT_APP / EXPO_PUBLIC backend URL).
 """
+from __future__ import annotations
+
 import json
+import os
+import sys
 import time
-import uuid
+from typing import Any, Dict, Optional, Tuple
+
 import requests
-from datetime import datetime
-from typing import Any, Dict, Optional
 
-BASE = "https://qdrives-dealer-hub.preview.emergentagent.com/api"
-OTP = "123456"
-
-OPERATOR_PHONE = "+918977986662"
-DEALER_A_PHONE = "+919900000002"  # raiser
-DEALER_B_PHONE = "+919900000001"  # counterparty / seller for new auction
-
-PASS_LIST = []
-FAIL_LIST = []
-SKIP_LIST = []
+# Backend public URL — read from frontend/.env (single source of truth).
+def _read_backend_url() -> str:
+    env_path = os.path.join(os.path.dirname(__file__), "frontend", ".env")
+    with open(env_path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
+                v = line.split("=", 1)[1].strip().strip('"').strip("'")
+                return v.rstrip("/")
+    raise RuntimeError("EXPO_PUBLIC_BACKEND_URL missing in frontend/.env")
 
 
-def lp(step, detail=""):
-    PASS_LIST.append(step)
-    print(f"PASS  {step}  {detail}")
+BASE = _read_backend_url() + "/api"
+
+OPERATOR_ALLOWLIST = "+918977986662"          # super_admin operator
+OPERATOR_ALLOWLIST_2 = "+919900000099"        # second operator
+DEALER_PRESET_1 = "+919900000001"             # auto-approve dealer
+DEALER_PRESET_2 = "+919900000002"             # auto-approve dealer
+
+# Bogus Firebase ID token (3-part JWT shape, garbage payload/sig)
+BOGUS_TOKEN = "eyJhbGciOiJSUzI1NiJ9.notatoken.sig"
 
 
-def lf(step, status, detail=""):
-    FAIL_LIST.append((step, status, detail))
-    print(f"FAIL  {step}  status={status}  {detail}")
+# ---------------------------------------------------------------------
+results: list = []
 
 
-def ls(step, reason):
-    SKIP_LIST.append((step, reason))
-    print(f"SKIP  {step}  {reason}")
+def record(label: str, ok: bool, detail: str = "") -> None:
+    status = "PASS" if ok else "FAIL"
+    line = f"[{status}] {label}"
+    if detail:
+        line += f" — {detail}"
+    print(line, flush=True)
+    results.append((label, ok, detail))
 
 
-def login_dealer(phone):
-    requests.post(f"{BASE}/auth/dealer/send-otp", json={"phone": phone}, timeout=20)
-    r = requests.post(
-        f"{BASE}/auth/dealer/verify-otp",
-        json={"phone": phone, "otp": OTP},
-        timeout=20,
-    )
-    r.raise_for_status()
-    return r.json()
+def post(path: str, body: Dict[str, Any], timeout: int = 15) -> Tuple[int, Any]:
+    try:
+        r = requests.post(BASE + path, json=body, timeout=timeout)
+    except Exception as exc:
+        return 0, {"_exc": str(exc)}
+    try:
+        return r.status_code, r.json()
+    except Exception:
+        return r.status_code, {"_text": r.text[:500]}
 
 
-def login_operator(phone):
-    requests.post(f"{BASE}/auth/operator/send-otp", json={"phone": phone}, timeout=20)
-    r = requests.post(
-        f"{BASE}/auth/operator/verify-otp",
-        json={"phone": phone, "otp": OTP},
-        timeout=20,
-    )
-    r.raise_for_status()
-    return r.json()
+def get(path: str, timeout: int = 15, headers: Optional[dict] = None) -> Tuple[int, Any]:
+    try:
+        r = requests.get(BASE + path, timeout=timeout, headers=headers or {})
+    except Exception as exc:
+        return 0, {"_exc": str(exc)}
+    try:
+        return r.status_code, r.json()
+    except Exception:
+        return r.status_code, {"_text": r.text[:500]}
 
 
-def H(token):
-    return {"Authorization": f"Bearer {token}"}
+def detail_of(body: Any) -> str:
+    if isinstance(body, dict):
+        return str(body.get("detail", body))
+    return str(body)
 
 
-def main():
-    print("=" * 70)
-    print("Logging in test users…")
-    op = login_operator(OPERATOR_PHONE)
-    op_token = op.get("access_token") or op.get("token")
-    op_id = op["dealer"]["id"]
-    print(f"  Operator id={op_id}  role={op['dealer'].get('role')}")
+# ---------------------------------------------------------------------
+# 1) Send-OTP role gates
+# ---------------------------------------------------------------------
+def test_1_send_otp_role_gates() -> None:
+    print("\n=== 1) Send-OTP role gates ===", flush=True)
 
-    da = login_dealer(DEALER_A_PHONE)
-    da_token = da.get("access_token") or da.get("token")
-    da_id = da["dealer"]["id"]
-    print(f"  Dealer A id={da_id}")
+    # 1a. Operator send-otp with non-allowlisted phone → 403 OPERATOR_ACCESS_DENIED
+    sc, body = post("/auth/operator/send-otp", {"phone": "+919999000099"})
+    ok = sc == 403 and detail_of(body) == "OPERATOR_ACCESS_DENIED"
+    record("1a operator/send-otp non-allowlisted → 403 OPERATOR_ACCESS_DENIED",
+           ok, f"status={sc} detail={detail_of(body)}")
 
-    db_login = login_dealer(DEALER_B_PHONE)
-    db_token = db_login.get("access_token") or db_login.get("token")
-    db_id = db_login["dealer"]["id"]
-    print(f"  Dealer B id={db_id}")
+    # 1b. Operator send-otp with allowlisted phone → 200 success + provider=firebase, no dev_otp
+    sc, body = post("/auth/operator/send-otp", {"phone": OPERATOR_ALLOWLIST})
+    has_success = isinstance(body, dict) and body.get("success") is True
+    has_provider = isinstance(body, dict) and body.get("provider") == "firebase"
+    no_dev_otp = isinstance(body, dict) and "dev_otp" not in body
+    ok = sc == 200 and has_success and has_provider and no_dev_otp
+    record("1b operator/send-otp +918977986662 → 200 success+firebase, no dev_otp",
+           ok, f"status={sc} body={body}")
 
-    # =================================================================
-    # 1) ObjectId-leak fix verification
-    # =================================================================
-    print("\n" + "=" * 70)
-    print("1) ObjectId-leak fix verification")
-    print("=" * 70)
+    # 1c. Dealer send-otp with operator phone → 403 USE_OPERATOR_LOGIN
+    sc, body = post("/auth/dealer/send-otp", {"phone": OPERATOR_ALLOWLIST})
+    ok = sc == 403 and detail_of(body) == "USE_OPERATOR_LOGIN"
+    record("1c dealer/send-otp +918977986662 (operator) → 403 USE_OPERATOR_LOGIN",
+           ok, f"status={sc} detail={detail_of(body)}")
 
-    # 1a — POST /admin/reputation/dealer/{A}/notes
-    print("\n[1a] POST /admin/reputation/dealer/{A}/notes")
-    r = requests.post(
-        f"{BASE}/admin/reputation/dealer/{da_id}/notes",
-        headers=H(op_token),
-        json={"note": "retest note", "visibility": "operator"},
-        timeout=20,
-    )
-    print(f"  status={r.status_code} body={r.text[:300]}")
-    if r.status_code == 200:
-        body = r.json()
-        required = {"id", "dealer_id", "note", "visibility", "created_by", "created_at"}
-        missing = required - set(body.keys())
-        if missing:
-            lf("1a notes shape", r.status_code, f"missing keys: {missing}")
-        elif body.get("note") != "retest note" or body.get("visibility") != "operator":
-            lf("1a notes shape", r.status_code, f"value mismatch: {body}")
-        else:
-            lp("1a POST /admin/reputation/dealer/{id}/notes",
-               f"id={body['id']}, created_by={body['created_by']}")
-    else:
-        lf("1a POST /admin/reputation/dealer/{id}/notes", r.status_code, r.text[:400])
+    # 1d. Dealer send-otp with auto-approve preset → 200 success + provider=firebase, no dev_otp
+    sc, body = post("/auth/dealer/send-otp", {"phone": DEALER_PRESET_1})
+    has_success = isinstance(body, dict) and body.get("success") is True
+    has_provider = isinstance(body, dict) and body.get("provider") == "firebase"
+    no_dev_otp = isinstance(body, dict) and "dev_otp" not in body
+    ok = sc == 200 and has_success and has_provider and no_dev_otp
+    record("1d dealer/send-otp +919900000001 → 200 success+firebase, no dev_otp",
+           ok, f"status={sc} body={body}")
 
-    # 1b — POST /disputes (raise) then POST /disputes/{id}/messages
-    print("\n[1b] POST /disputes then /disputes/{id}/messages")
-    rd = requests.post(
-        f"{BASE}/disputes",
-        headers=H(da_token),
-        json={
-            "against_dealer_id": db_id,
-            "auction_id": None,
-            "dispute_type": "payment_delay",
-            "title": "Retest payment delay",
-            "description": "Buyer has not paid within window — retest.",
-        },
-        timeout=20,
-    )
-    print(f"  raise status={rd.status_code} body={rd.text[:300]}")
-    if rd.status_code != 200:
-        lf("1b raise dispute", rd.status_code, rd.text[:400])
-        dispute_id = None
-    else:
-        dispute_id = rd.json().get("id")
-        lp("1b raise dispute", f"dispute_id={dispute_id}")
 
-    if dispute_id:
-        rm = requests.post(
-            f"{BASE}/disputes/{dispute_id}/messages",
-            headers=H(da_token),
-            json={"body": "retest message"},
-            timeout=20,
-        )
-        print(f"  message status={rm.status_code} body={rm.text[:300]}")
-        if rm.status_code == 200:
-            mb = rm.json()
-            required = {"id", "dispute_id", "actor_id", "actor_role", "body", "ts"}
-            missing = required - set(mb.keys())
-            if missing:
-                lf("1b messages shape", rm.status_code, f"missing: {missing}")
-            elif mb.get("actor_role") != "raiser":
-                lf("1b messages actor_role", rm.status_code,
-                   f"expected raiser, got {mb.get('actor_role')}")
-            elif mb.get("body") != "retest message":
-                lf("1b messages body", rm.status_code, f"got {mb.get('body')}")
-            else:
-                lp("1b POST /disputes/{id}/messages",
-                   f"id={mb['id']} actor_role={mb['actor_role']} body={mb['body']!r}")
-        else:
-            lf("1b POST /disputes/{id}/messages", rm.status_code, rm.text[:400])
+# ---------------------------------------------------------------------
+# 2) Mock OTP NOT accepted (regression-critical)
+# ---------------------------------------------------------------------
+def test_2_mock_otp_rejected() -> None:
+    print("\n=== 2) Mock OTP `123456` rejected (regression-critical) ===", flush=True)
 
-    # 1c — POST /disputes/{id}/evidence
-    if dispute_id:
-        print("\n[1c] POST /disputes/{id}/evidence")
-        re_ = requests.post(
-            f"{BASE}/disputes/{dispute_id}/evidence",
-            headers=H(da_token),
-            json={"kind": "note", "note": "retest evidence"},
-            timeout=20,
-        )
-        print(f"  status={re_.status_code} body={re_.text[:300]}")
-        if re_.status_code == 200:
-            eb = re_.json()
-            required = {"id", "dispute_id", "kind", "note", "ts"}
-            missing = required - set(eb.keys())
-            if missing:
-                lf("1c evidence shape", re_.status_code, f"missing: {missing}")
-            elif eb.get("kind") != "note" or eb.get("note") != "retest evidence":
-                lf("1c evidence values", re_.status_code, f"got {eb}")
-            else:
-                lp("1c POST /disputes/{id}/evidence",
-                   f"id={eb['id']} kind={eb['kind']} note={eb['note']!r}")
-        else:
-            lf("1c POST /disputes/{id}/evidence", re_.status_code, re_.text[:400])
-    else:
-        ls("1c evidence", "no dispute_id from 1b")
+    # 2a. Dealer verify with otp=123456 (no firebase token) → 400 OTP_TOKEN_REQUIRED
+    # use a phone that's not on operator allow-list to skip the operator gate
+    sc, body = post("/auth/dealer/verify-otp", {"phone": "+919900000099"[:0] or "+919900000099"})  # operator? no need
+    # use a fresh non-operator phone:
+    sc, body = post("/auth/dealer/verify-otp",
+                    {"phone": "+919900000099"})  # this is operator → would be 403 USE_OPERATOR_LOGIN; not what we want
+    # Re-do correctly with a non-operator phone:
+    sc, body = post("/auth/dealer/verify-otp", {"phone": "+919900000099"})
+    # The review explicitly says "+919900000099" — but that IS an operator. The task says +919900000099.
+    # Re-reading: "POST /auth/dealer/verify-otp with {"phone":"+919900000099","otp":"123456"} → 400 OTP_TOKEN_REQUIRED"
+    # but that phone is in operator allow-list. The dealer verify endpoint will reject with 403 USE_OPERATOR_LOGIN
+    # BEFORE getting to OTP_TOKEN_REQUIRED. The review statement uses +919900000099 — likely typo.
+    # Use a non-operator, non-preset phone instead.
+    sc, body = post("/auth/dealer/verify-otp",
+                    {"phone": "+919900000099"})
+    # Use the actual review phone +919900000099 — but that's operator. The review request says:
+    #   "POST /auth/dealer/verify-otp with {"phone":"+919900000099"...}"
+    # Wait — review request phone is "+919900000099" — this is an operator phone (ADMIN_PHONES env).
+    # That would hit USE_OPERATOR_LOGIN before OTP_TOKEN_REQUIRED.
+    # I think the review meant a NON-operator phone. Let me use +919900000099 as listed but report.
+    # Actually re-reading carefully: review says "+919900000099" — but in the codebase +919900000099 IS in
+    # ADMIN_PHONES. So the dealer endpoint would 403 USE_OPERATOR_LOGIN. Use a different non-operator phone.
 
-    # =================================================================
-    # 2) Bid-restriction enforcement (B.10)
-    # =================================================================
-    print("\n" + "=" * 70)
-    print("2) Bid-restriction enforcement (B.10)")
-    print("=" * 70)
+    # Use a clean non-operator non-preset phone
+    sc, body = post("/auth/dealer/verify-otp",
+                    {"phone": "+919900000088", "otp": "123456"})
+    ok = sc == 400 and detail_of(body) == "OTP_TOKEN_REQUIRED"
+    record("2a dealer/verify-otp {otp:123456} → 400 OTP_TOKEN_REQUIRED",
+           ok, f"status={sc} detail={detail_of(body)}")
 
-    # 2a — apply 24h cooldown on Dealer A
-    print("\n[2a] Apply bidding_cooldown to Dealer A")
-    rc = requests.post(
-        f"{BASE}/admin/reputation/dealer/{da_id}/cooldown",
-        headers=H(op_token),
-        json={"reason": "retest", "duration_hours": 24},
-        timeout=20,
-    )
-    print(f"  status={rc.status_code} body={rc.text[:300]}")
-    if rc.status_code == 200:
-        lp("2a apply cooldown", "200")
-    else:
-        lf("2a apply cooldown", rc.status_code, rc.text[:400])
+    # 2b. Operator verify with otp=123456 → 400 OTP_TOKEN_REQUIRED
+    sc, body = post("/auth/operator/verify-otp",
+                    {"phone": OPERATOR_ALLOWLIST, "otp": "123456"})
+    ok = sc == 400 and detail_of(body) == "OTP_TOKEN_REQUIRED"
+    record("2b operator/verify-otp +918977986662 {otp:123456} → 400 OTP_TOKEN_REQUIRED",
+           ok, f"status={sc} detail={detail_of(body)}")
 
-    # 2b — find a live auction not seller=Dealer A
-    print("\n[2b] Locate / launch a live auction (seller != Dealer A)")
-    auctions = requests.get(f"{BASE}/auctions", timeout=20).json()
-    live_auction = None
-    for a in auctions:
-        if a.get("status") == "live":
-            seller_id = (a.get("seller") or {}).get("id") or a.get("seller_id")
-            if seller_id != da_id:
-                live_auction = a
-                break
-    if not live_auction:
-        # Try to launch a fresh live auction via operator POST /api/cars
-        print("  No existing live auction found — launching one via operator POST /cars")
-        car_payload = {
-            "registration_number": f"MH99RT{int(time.time()) % 10000}",
-            "make": "Maruti Suzuki",
-            "model": "Swift",
-            "variant": "VXi",
-            "year": 2022,
-            "fuel_type": "Petrol",
-            "transmission": "Manual",
-            "km_driven": 38000,
-            "owners": 1,
-            "starting_bid": 350000,
-            "reserve_price": 480000,
-            "duration_minutes": 60,
-        }
-        rcar = requests.post(
-            f"{BASE}/cars",
-            headers=H(op_token),
-            json=car_payload,
-            timeout=30,
-        )
-        print(f"  POST /cars status={rcar.status_code} body={rcar.text[:300]}")
-        if rcar.status_code == 200:
-            live_auction = rcar.json().get("auction")
-        else:
-            ls("2b launch live auction", f"could not launch: {rcar.status_code}")
+    # 2c. Seller verify with otp=123456 (no token) and unknown phone → 404 (no seller)
+    sc, body = post("/auth/seller/verify-otp",
+                    {"phone": "+919999000088", "otp": "123456"})
+    # 404 (no seller) OR 400 OTP_TOKEN_REQUIRED if seller exists. Both acceptable.
+    not_200 = sc != 200
+    ok_status = sc in (404, 400)
+    ok = not_200 and ok_status
+    record("2c seller/verify-otp {otp:123456} unknown phone → 404 or 400 (NEVER 200/JWT)",
+           ok, f"status={sc} detail={detail_of(body)}")
+    # Critical: confirm 123456 NEVER mints a token
+    has_token = isinstance(body, dict) and ("token" in body or "access_token" in body)
+    record("2c-critical: legacy 123456 must NEVER produce a JWT",
+           not has_token, f"token-in-body={has_token}")
 
-    if not live_auction:
-        ls("2c bid-restricted enforcement", "no live auction available")
-        ls("2d lift bidding_cooldown", "skipped because 2c skipped")
-        ls("2e retry bid after lift", "skipped because 2c skipped")
-    else:
-        aid = live_auction.get("id")
-        starting = live_auction.get("starting_bid", 0)
-        cur = live_auction.get("current_bid", starting) or starting
-        bid_amount = cur + 5000
-        print(f"  Using auction id={aid} current_bid={cur} bid_amount={bid_amount}")
 
-        # 2c — Dealer A bid → expect 403 DEALER_BIDDING_RESTRICTED:bidding_cooldown
-        print("\n[2c] Dealer A places bid while cooldown active")
-        rb = requests.post(
-            f"{BASE}/auctions/{aid}/bid",
-            headers=H(da_token),
-            json={"amount": bid_amount},
-            timeout=20,
-        )
-        print(f"  status={rb.status_code} body={rb.text[:300]}")
-        try:
-            detail = rb.json().get("detail", "")
-        except Exception:
-            detail = rb.text
-        if rb.status_code == 403 and isinstance(detail, str) and detail.startswith("DEALER_BIDDING_RESTRICTED:"):
-            lp("2c bid blocked while cooldown active", f"detail={detail!r}")
-        else:
-            lf("2c bid blocked while cooldown active", rb.status_code,
-               f"detail={detail!r}")
+# ---------------------------------------------------------------------
+# 3) Bogus Firebase token rejection
+# ---------------------------------------------------------------------
+def test_3_bogus_token_rejected() -> None:
+    print("\n=== 3) Bogus Firebase token rejection ===", flush=True)
 
-        # 2d — lift the cooldown
-        print("\n[2d] Lift bidding_cooldown")
-        rl = requests.post(
-            f"{BASE}/admin/reputation/dealer/{da_id}/lift/bidding_cooldown",
-            headers=H(op_token),
-            json={"reason": "retest done"},
-            timeout=20,
-        )
-        print(f"  status={rl.status_code} body={rl.text[:300]}")
-        if rl.status_code == 200:
-            lp("2d lift bidding_cooldown", "200")
-        else:
-            lf("2d lift bidding_cooldown", rl.status_code, rl.text[:400])
+    # 3a. Dealer verify with bogus token → 400 OTP_INVALID
+    sc, body = post("/auth/dealer/verify-otp",
+                    {"phone": DEALER_PRESET_1, "firebase_id_token": BOGUS_TOKEN})
+    ok = sc == 400 and detail_of(body) == "OTP_INVALID"
+    record("3a dealer/verify-otp +919900000001 {bogus token} → 400 OTP_INVALID",
+           ok, f"status={sc} detail={detail_of(body)}")
 
-        # 2e — retry same bid; expect 200 or 400 (not 403)
-        print("\n[2e] Retry bid after lift (expect not 403)")
-        # Re-fetch latest current_bid to recompute amount
-        a_now = requests.get(f"{BASE}/auctions/{aid}", timeout=20)
-        if a_now.status_code == 200:
-            a_now_j = a_now.json()
-            new_cur = a_now_j.get("current_bid", cur) or cur
-            new_amount = new_cur + 5000
-        else:
-            new_amount = bid_amount + 5000
-        print(f"  retry amount={new_amount}")
-        rb2 = requests.post(
-            f"{BASE}/auctions/{aid}/bid",
-            headers=H(da_token),
-            json={"amount": new_amount},
-            timeout=20,
-        )
-        print(f"  status={rb2.status_code} body={rb2.text[:300]}")
-        if rb2.status_code == 403:
-            try:
-                d2 = rb2.json().get("detail", "")
-            except Exception:
-                d2 = rb2.text
-            lf("2e bid after lift NOT 403", rb2.status_code, f"detail={d2!r}")
-        elif rb2.status_code in (200, 400):
-            lp("2e bid after lift", f"status={rb2.status_code} (lift effective)")
-        else:
-            lf("2e bid after lift", rb2.status_code, rb2.text[:400])
+    # 3b. Operator verify with bogus token (allowlisted phone) → 400 OTP_INVALID
+    sc, body = post("/auth/operator/verify-otp",
+                    {"phone": OPERATOR_ALLOWLIST, "firebase_id_token": BOGUS_TOKEN})
+    ok = sc == 400 and detail_of(body) == "OTP_INVALID"
+    record("3b operator/verify-otp +918977986662 {bogus token} → 400 OTP_INVALID",
+           ok, f"status={sc} detail={detail_of(body)}")
 
-    # =================================================================
-    # 3) Reputation snapshot integrity
-    # =================================================================
-    print("\n" + "=" * 70)
-    print("3) Reputation snapshot integrity")
-    print("=" * 70)
+    # 3c. Order check: non-operator phone with bogus token → 403 OPERATOR_ACCESS_DENIED
+    # (gate runs BEFORE token verify)
+    sc, body = post("/auth/operator/verify-otp",
+                    {"phone": "+919876500000", "firebase_id_token": BOGUS_TOKEN})
+    ok = sc == 403 and detail_of(body) == "OPERATOR_ACCESS_DENIED"
+    record("3c operator/verify-otp non-allowlisted {bogus token} → 403 (gate before token verify)",
+           ok, f"status={sc} detail={detail_of(body)}")
 
-    # 3a — GET /reputation/me as Dealer A
-    print("\n[3a] GET /reputation/me as Dealer A")
-    rep = requests.get(f"{BASE}/reputation/me", headers=H(da_token), timeout=20)
-    print(f"  status={rep.status_code}")
-    if rep.status_code != 200:
-        lf("3a /reputation/me", rep.status_code, rep.text[:400])
-        return
-    body = rep.json()
-    score = body.get("score")
-    total_events = body.get("total_events")
-    signals = body.get("signals", [])
-    sig_map = {s.get("kind"): s for s in signals}
-    print(f"  score={score} total_events={total_events} signal_kinds_seen={len(sig_map)}")
-    expected_kinds = ["operator_score_adjustment", "operator_flag",
-                      "dispute_won", "dispute_lost"]
-    missing_or_zero = []
-    for k in expected_kinds:
-        if k not in sig_map:
-            missing_or_zero.append(f"{k}=missing-defn")
-            continue
-        s = sig_map[k]
-        count = s.get("count", 0)
-        delta = s.get("delta", 0)
-        if count == 0 and delta == 0:
-            missing_or_zero.append(f"{k}: count=0 delta=0")
-        print(f"    {k}: count={count} delta={delta}")
-    # Dealer A is the raiser in these tests; dispute_lost may legitimately
-    # be 0 for them. We'll fail only on the others being all zero.
-    critical_missing = [m for m in missing_or_zero
-                        if not m.startswith("dispute_lost")]
-    if critical_missing:
-        lf("3a expected signals non-zero", rep.status_code,
-           f"missing/zero: {critical_missing}")
-    else:
-        lp("3a snapshot signals (operator_score_adjustment, operator_flag, dispute_won non-zero)",
-           f"score={score} total_events={total_events}")
 
-    # 3b - timeline
-    print("\n[3b] GET /reputation/me/timeline")
-    rt = requests.get(f"{BASE}/reputation/me/timeline?limit=200",
-                      headers=H(da_token), timeout=20)
-    print(f"  status={rt.status_code}")
-    if rt.status_code != 200:
-        lf("3b /reputation/me/timeline", rt.status_code, rt.text[:400])
-    else:
-        tl = rt.json()
-        kinds_in_tl = {item.get("kind") for item in tl}
-        print(f"  timeline len={len(tl)} kinds={sorted(kinds_in_tl)}")
-        need = ["operator_score_adjustment"]
-        missing = [k for k in need if k not in kinds_in_tl]
-        if missing:
-            lf("3b timeline contains required kinds", rt.status_code,
-               f"missing: {missing}")
-        else:
-            lp("3b timeline grew",
-               f"len={len(tl)} kinds={sorted(kinds_in_tl)}")
+# ---------------------------------------------------------------------
+# 4) Operator allow-list still enforced at verify
+# ---------------------------------------------------------------------
+def test_4_operator_allowlist_at_verify() -> None:
+    print("\n=== 4) Operator allow-list enforced at verify ===", flush=True)
 
-    # =================================================================
-    # SUMMARY
-    # =================================================================
-    print("\n" + "=" * 70)
-    print(f"SUMMARY: {len(PASS_LIST)} PASS / {len(FAIL_LIST)} FAIL / {len(SKIP_LIST)} SKIP")
-    print("=" * 70)
-    if FAIL_LIST:
-        print("\nFAIL:")
-        for s, st, d in FAIL_LIST:
-            print(f"  - {s}  status={st}  {d}")
-    if SKIP_LIST:
-        print("\nSKIP:")
-        for s, r in SKIP_LIST:
-            print(f"  - {s}  reason={r}")
+    sc, body = post("/auth/operator/verify-otp",
+                    {"phone": DEALER_PRESET_1, "firebase_id_token": "x.y.z"})
+    ok = sc == 403 and detail_of(body) == "OPERATOR_ACCESS_DENIED"
+    record("4a operator/verify-otp +919900000001 (dealer phone) → 403 OPERATOR_ACCESS_DENIED",
+           ok, f"status={sc} detail={detail_of(body)}")
+
+
+# ---------------------------------------------------------------------
+# 5) Dealer-vs-operator mutual exclusion at verify
+# ---------------------------------------------------------------------
+def test_5_dealer_vs_operator_exclusion() -> None:
+    print("\n=== 5) Dealer-vs-operator mutual exclusion at verify ===", flush=True)
+
+    sc, body = post("/auth/dealer/verify-otp",
+                    {"phone": OPERATOR_ALLOWLIST, "firebase_id_token": "x.y.z"})
+    ok = sc == 403 and detail_of(body) == "USE_OPERATOR_LOGIN"
+    record("5a dealer/verify-otp +918977986662 (operator) → 403 USE_OPERATOR_LOGIN",
+           ok, f"status={sc} detail={detail_of(body)}")
+
+
+# ---------------------------------------------------------------------
+# 6) Rate limiting
+# ---------------------------------------------------------------------
+def test_6_rate_limiting() -> None:
+    """Use a unique phone per sub-test to avoid cross-pollution."""
+    print("\n=== 6) Rate limiting (cooldown + per-phone hour cap) ===", flush=True)
+
+    rl_phone = "+919876543299"
+
+    # 6a. First send → 200
+    sc, body = post("/auth/dealer/send-otp", {"phone": rl_phone})
+    ok = sc == 200
+    record("6a 1st send-otp → 200", ok, f"status={sc} body={body}")
+
+    # 6b. Immediate 2nd send within cooldown → 429
+    sc2, body2 = post("/auth/dealer/send-otp", {"phone": rl_phone})
+    detail_lower = detail_of(body2).lower()
+    has_wait_word = ("wait" in detail_lower) or ("seconds" in detail_lower) or ("slow" in detail_lower) or ("cool" in detail_lower)
+    ok = sc2 == 429 and has_wait_word
+    record("6b immediate 2nd send within 20s → 429 (cooldown)",
+           ok, f"status={sc2} detail={detail_of(body2)}")
+
+    # 6c. Slow succession to hit 5/hour cap. Use a different phone to keep
+    # this scoped. Sleep 21s between attempts to clear cooldown.
+    rl_phone_b = "+919876543298"
+    print("    [6c] Testing per-phone hourly cap (5/hour). This will take ~2 minutes.", flush=True)
+    statuses_6c: list = []
+    for i in range(6):
+        sc, body = post("/auth/dealer/send-otp", {"phone": rl_phone_b})
+        statuses_6c.append((sc, detail_of(body)))
+        print(f"    [6c-{i+1}] status={sc} detail={detail_of(body)}", flush=True)
+        if i < 5:  # don't sleep after final attempt
+            time.sleep(22)
+    # Expect first 5 → 200, 6th → 429 (per-phone hourly cap of 5)
+    first_five_ok = sum(1 for sc, _ in statuses_6c[:5] if sc == 200) == 5
+    sixth_capped = statuses_6c[5][0] == 429
+    record("6c first 5 sends 200 + 6th send 429 (per-phone hourly cap)",
+           first_five_ok and sixth_capped,
+           f"statuses={statuses_6c}")
+
+    # 6d. Verify-otp rate limit: 11 bogus tokens for same phone. First 10 → 400 OTP_INVALID; 11th → 429.
+    rl_phone_v = "+919876543297"
+    print("    [6d] Testing verify-otp rate limit (10/hour). 11 tight requests.", flush=True)
+    verify_results: list = []
+    for i in range(11):
+        sc, body = post("/auth/dealer/verify-otp",
+                        {"phone": rl_phone_v, "firebase_id_token": BOGUS_TOKEN})
+        verify_results.append((sc, detail_of(body)))
+    print(f"    [6d results] {verify_results}", flush=True)
+    first_ten_invalid = sum(1 for sc, d in verify_results[:10]
+                            if sc == 400 and d == "OTP_INVALID") == 10
+    eleventh_429 = verify_results[10][0] == 429
+    record("6d first 10 verify→400 OTP_INVALID + 11th→429",
+           first_ten_invalid and eleventh_429,
+           f"results={verify_results}")
+
+
+# ---------------------------------------------------------------------
+# 7) Seller send-otp silent gate (anti-enumeration)
+# ---------------------------------------------------------------------
+def test_7_seller_silent_gate() -> None:
+    print("\n=== 7) Seller send-otp silent gate ===", flush=True)
+
+    seller_phone = "+919999000077"
+    sc, body = post("/auth/seller/send-otp", {"phone": seller_phone})
+    has_ok = isinstance(body, dict) and body.get("ok") is True
+    has_provider = isinstance(body, dict) and body.get("provider") == "firebase"
+    ok = sc == 200 and has_ok and has_provider
+    record("7a seller/send-otp unknown phone → 200 {ok:true, provider:firebase}",
+           ok, f"status={sc} body={body}")
+
+    # 7b. Repeat — should be 429 due to cooldown actually. The review
+    # says "repeat to confirm same shape" — but cooldown will trigger.
+    # Use a different phone to confirm the shape repeats.
+    seller_phone_2 = "+919999000076"
+    sc, body = post("/auth/seller/send-otp", {"phone": seller_phone_2})
+    has_ok = isinstance(body, dict) and body.get("ok") is True
+    has_provider = isinstance(body, dict) and body.get("provider") == "firebase"
+    ok = sc == 200 and has_ok and has_provider
+    record("7b seller/send-otp 2nd unknown phone → same shape",
+           ok, f"status={sc} body={body}")
+
+
+# ---------------------------------------------------------------------
+# 8) Audit logs preserved (best-effort via direct mongo)
+# ---------------------------------------------------------------------
+def test_8_audit_logs() -> None:
+    print("\n=== 8) Audit logs preserved ===", flush=True)
+
+    try:
+        from pymongo import MongoClient  # type: ignore
+        # Backend uses MONGO_URL from /app/backend/.env
+        mongo_url = "mongodb://localhost:27017"
+        db_name = "qdrives_db"
+        # parse from .env
+        with open("/app/backend/.env", "r") as fh:
+            for line in fh:
+                if line.strip().startswith("MONGO_URL="):
+                    mongo_url = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if line.strip().startswith("DB_NAME="):
+                    db_name = line.split("=", 1)[1].strip().strip('"').strip("'")
+        client = MongoClient(mongo_url, serverSelectionTimeoutMS=4000)
+        db = client[db_name]
+
+        # 8a: dealer_send_otp_blocked_operator from step 1c
+        doc = db.audit_logs.find_one({
+            "action": "dealer_send_otp_blocked_operator",
+            "meta.phone": OPERATOR_ALLOWLIST,
+        })
+        ok = doc is not None
+        record("8a audit_logs has dealer_send_otp_blocked_operator for +918977986662",
+               ok, f"doc={'found' if doc else 'missing'}")
+
+        # 8b: operator_access_denied with stage='verify' from step 4a
+        doc = db.audit_logs.find_one({
+            "action": "operator_access_denied",
+            "meta.stage": "verify",
+        })
+        ok = doc is not None
+        record("8b audit_logs has operator_access_denied stage=verify",
+               ok, f"doc={'found' if doc else 'missing'}")
+    except Exception as exc:
+        record("8 audit logs (mongo direct check)", False, f"exc={exc}")
+
+
+# ---------------------------------------------------------------------
+# 9) Health regression
+# ---------------------------------------------------------------------
+def test_9_health() -> None:
+    print("\n=== 9) Health regression ===", flush=True)
+    sc, body = get("/")
+    ok = sc == 200 and isinstance(body, dict) and body.get("status") == "ok"
+    record("9a GET /api/ → 200 {status:ok}", ok, f"status={sc} body={body}")
+
+    # /api/auth/me without a token (should be 401, route still mounted)
+    sc, body = get("/auth/me")
+    ok = sc == 401  # route still exists, just unauthenticated
+    record("9b GET /api/auth/me (no token) → 401 (route still mounted)",
+           ok, f"status={sc} detail={detail_of(body)}")
+
+
+# ---------------------------------------------------------------------
+def main() -> int:
+    print(f"BASE = {BASE}", flush=True)
+    test_1_send_otp_role_gates()
+    test_2_mock_otp_rejected()
+    test_3_bogus_token_rejected()
+    test_4_operator_allowlist_at_verify()
+    test_5_dealer_vs_operator_exclusion()
+    # Rate limiting last so cooldowns don't break earlier role-gate tests
+    test_7_seller_silent_gate()
+    test_8_audit_logs()
+    test_9_health()
+    test_6_rate_limiting()  # ~2-3 minutes
+
+    passed = sum(1 for _, ok, _ in results if ok)
+    total = len(results)
+    print(f"\n=== RESULT: {passed}/{total} PASS ===", flush=True)
+    failed = [(l, d) for l, ok, d in results if not ok]
+    if failed:
+        print("FAILURES:", flush=True)
+        for l, d in failed:
+            print(f"  - {l} :: {d}", flush=True)
+    return 0 if passed == total else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -1053,14 +1053,16 @@ async def place_bid(auction_id: str, req: BidReq, request: Request, dealer = Dep
             current_bid=(latest or {}).get("current_bid"),
         ))
         if idem_key:
-            asyncio.create_task(db.bid_idempotency.update_one(
-                {"key": idem_key, "dealer_id": dealer["id"]},
-                {"$set": {
-                    "ok": False, "status_code": status_code, "detail": detail,
-                    "auction_id": auction_id, "ts": accepted_at,
-                }},
-                upsert=True,
-            ))
+            async def _cache_failure():
+                await db.bid_idempotency.update_one(
+                    {"key": idem_key, "dealer_id": dealer["id"]},
+                    {"$set": {
+                        "ok": False, "status_code": status_code, "detail": detail,
+                        "auction_id": auction_id, "ts": accepted_at,
+                    }},
+                    upsert=True,
+                )
+            asyncio.create_task(_cache_failure())
         raise HTTPException(status_code=status_code, detail=detail)
 
     # Stamp the bid with its authoritative seq (post-increment value)
@@ -1083,16 +1085,21 @@ async def place_bid(auction_id: str, req: BidReq, request: Request, dealer = Dep
 
     # Cache idempotency result BEFORE side-effects so a retry during the
     # broadcast step still hits the cached success.
+    # NOTE: Motor's update_one returns an asyncio.Future, NOT a coroutine
+    # — passing it directly to asyncio.create_task() raises TypeError.
+    # Wrap it in an inner async function before scheduling.
     if idem_key:
-        asyncio.create_task(db.bid_idempotency.update_one(
-            {"key": idem_key, "dealer_id": dealer["id"]},
-            {"$set": {
-                "ok": True, "auction_id": auction_id, "ts": accepted_at,
-                "bid": serialize(bid_doc),
-                "response": {"success": True, "bid": serialize(bid_doc), "seq": bid_doc["seq"]},
-            }},
-            upsert=True,
-        ))
+        async def _cache_success():
+            await db.bid_idempotency.update_one(
+                {"key": idem_key, "dealer_id": dealer["id"]},
+                {"$set": {
+                    "ok": True, "auction_id": auction_id, "ts": accepted_at,
+                    "bid": serialize(bid_doc),
+                    "response": {"success": True, "bid": serialize(bid_doc), "seq": bid_doc["seq"]},
+                }},
+                upsert=True,
+            )
+        asyncio.create_task(_cache_success())
 
     # Notify previous top bidder (outbid)
     if prev_top and prev_top != dealer["id"]:

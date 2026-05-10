@@ -17,6 +17,23 @@ import {
 } from 'lucide-react-native';
 import { colors, formatINR, formatINRFull, maskRegNo, radii } from '../../src/theme';
 import { api, wsUrl } from '../../src/api';
+import { openAuctionWs } from '../../src/ws';
+// Tiny RFC4122-ish UUID. Avoids pulling crypto polyfills on web.
+function uuidv4(): string {
+  // Use crypto.randomUUID when available (modern web + RN >= 0.74); fall
+  // back to a Math.random-based variant. Idempotency keys don't need
+  // cryptographic strength — they only need to be unique per bid intent.
+  try {
+    // @ts-ignore - browser global
+    const c: any = (typeof globalThis !== 'undefined' ? globalThis : {}).crypto;
+    if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  } catch {}
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
+    const r = (Math.random() * 16) | 0;
+    const v = ch === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
 import { useAuth } from '../../src/auth';
 import { CountdownTimer } from '../../src/components/CountdownTimer';
 import { LivePulse } from '../../src/components/LivePulse';
@@ -112,86 +129,99 @@ export default function AuctionScreen() {
     setZoomOpen(true);
   };
 
-  // WebSocket — authenticated handshake (token attached as query param).
+  // Resilient WebSocket — single managed connection with auto-reconnect,
+  // heartbeat, snapshot reconciliation and seq-aware buffering.
+  // Wire-format compatible with the legacy server: new fields (`seq`,
+  // `server_ns`) are additive and old broadcast frames still render.
   useEffect(() => {
     if (!id) return;
-    let cancelled = false;
-    let ws: WebSocket | null = null;
-    (async () => {
-      try {
-        const url = await wsUrl(id as string);
-        if (cancelled) return;
-        ws = new WebSocket(url);
-        wsRef.current = ws;
-        ws.onopen = () => {};
-        ws.onmessage = (ev) => {
-          try {
-            const msg = JSON.parse(ev.data);
-            if (msg.type === 'session_killed') {
-              // Server kicked us — token_version drift. Bounce to login.
-              try { ws?.close(); } catch {}
-              return;
-            }
-            handleWsMessage(msg);
-          } catch {}
-        };
-      } catch {}
-    })();
-    return () => {
-      cancelled = true;
-      try { ws?.close(); } catch {}
-    };
+    const detach = openAuctionWs(id as string, {
+      onSnapshot: ({ auction }) => {
+        // Server is the source of truth — replace, never merge.
+        setAuction(auction);
+      },
+      onNewBid: (msg) => {
+        setAuction((prev: any) => prev ? {
+          ...prev,
+          current_bid: msg.current_bid,
+          top_bidder_id: msg.top_bidder_id,
+          top_bidder_name: msg.top_bidder_name,
+          total_bids: msg.total_bids,
+          bid_seq: msg.seq, // additive — surfaces seq for any debug overlay
+        } : prev);
+        setBids((prev) => [msg.bid, ...prev].slice(0, 20));
+        // pulse animation
+        bidPulse.value = withSequence(
+          withTiming(1.06, { duration: 180 }),
+          withTiming(1, { duration: 220 })
+        );
+        if (dealer && msg.top_bidder_id !== dealer.id) {
+          const outbidByOther = bids[0]?.dealer_id === dealer.id;
+          if (outbidByOther) {
+            outbidFlash.value = withSequence(
+              withTiming(1, { duration: 200 }),
+              withDelay(1400, withTiming(0, { duration: 400 }))
+            );
+            setFeedToast('You have been outbid!');
+            try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); } catch {}
+            setTimeout(() => setFeedToast(null), 2200);
+          }
+        }
+      },
+      onSessionKilled: () => {
+        // Auth bumped server-side — bounce to login. Auth provider's
+        // 401 hook handles the actual sign-out; here we just stop UI.
+      },
+      onConnectionState: (_state) => {
+        // Reserved for a future "Reconnecting…" badge in the header.
+      },
+    });
+    return () => { detach(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  const handleWsMessage = (msg: any) => {
-        if (msg.type === 'snapshot') {
-          setAuction(msg.auction);
-        } else if (msg.type === 'new_bid') {
-          setAuction((prev: any) => prev ? {
-            ...prev,
-            current_bid: msg.current_bid,
-            top_bidder_id: msg.top_bidder_id,
-            top_bidder_name: msg.top_bidder_name,
-            total_bids: msg.total_bids,
-          } : prev);
-          setBids((prev) => [msg.bid, ...prev].slice(0, 20));
-          // pulse animation
-          bidPulse.value = withSequence(
-            withTiming(1.06, { duration: 180 }),
-            withTiming(1, { duration: 220 })
-          );
-          // toast for outbid if I'm not the new top bidder
-          if (dealer && msg.top_bidder_id !== dealer.id) {
-            const outbidByOther = bids[0]?.dealer_id === dealer.id;
-            if (outbidByOther) {
-              outbidFlash.value = withSequence(withTiming(1, { duration: 200 }), withDelay(1400, withTiming(0, { duration: 400 })));
-              setFeedToast('You have been outbid!');
-              try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); } catch {}
-              setTimeout(() => setFeedToast(null), 2200);
-            }
-          }
-        }
-  };
-
   const placeBid = async (amount: number) => {
-    try {
-      try { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy); } catch {}
-      await api.bid(id as string, amount);
-      toast.show(`Bid placed at ${formatINR(amount)}`, 'success');
-    } catch (e: any) {
-      try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error); } catch {}
-      const msg = String(e?.message || '');
-      if (msg.includes('BID_EXCEEDS_DEALER_LIMIT')) {
-        toast.show('Bid exceeds approved dealer limit.', 'error');
-      } else if (msg.includes('DEALER_PENDING_APPROVAL')) {
-        toast.show('Bidding activates after Q Drives approves your account.', 'error');
-      } else if (msg.includes('DEALER_ACCOUNT_SUSPENDED')) {
-        toast.show('Account suspended. Contact Q Drives support.', 'error');
-      } else if (msg.includes('DEALER_ACCOUNT_REVOKED')) {
-        toast.show('Account access has been revoked.', 'error');
-      } else {
-        toast.show(msg || 'Bid failed', 'error');
+    // Idempotency key — generated once per bid intent. The same key is
+    // used across all retries so the server collapses duplicates. A
+    // page reload generates a fresh key (the user is making a new
+    // intent at that point).
+    const key = uuidv4();
+    const RETRYABLE_HTTP = /\b(5\d\d|429)\b/;
+    const NETWORK_HINT = /Network|fetch|timeout|aborted/i;
+    const MAX_ATTEMPTS = 3;
+    let attempt = 0;
+    try { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy); } catch {}
+    while (true) {
+      attempt += 1;
+      try {
+        await api.bid(id as string, amount, key);
+        toast.show(`Bid placed at ${formatINR(amount)}`, 'success');
+        return;
+      } catch (e: any) {
+        const msg = String(e?.message || '');
+        const transient = RETRYABLE_HTTP.test(msg) || NETWORK_HINT.test(msg);
+        if (transient && attempt < MAX_ATTEMPTS) {
+          // Backoff: 200ms, 600ms (jittered). Same idempotency key
+          // ensures the server treats retries as one bid.
+          const delay = 200 * Math.pow(3, attempt - 1) + Math.floor(Math.random() * 100);
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+        try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error); } catch {}
+        if (msg.includes('BID_OUTBID')) {
+          toast.show('Outbid before your bid was accepted.', 'error');
+        } else if (msg.includes('BID_EXCEEDS_DEALER_LIMIT')) {
+          toast.show('Bid exceeds approved dealer limit.', 'error');
+        } else if (msg.includes('DEALER_PENDING_APPROVAL')) {
+          toast.show('Bidding activates after Q Drives approves your account.', 'error');
+        } else if (msg.includes('DEALER_ACCOUNT_SUSPENDED')) {
+          toast.show('Account suspended. Contact Q Drives support.', 'error');
+        } else if (msg.includes('DEALER_ACCOUNT_REVOKED')) {
+          toast.show('Account access has been revoked.', 'error');
+        } else {
+          toast.show(msg || 'Bid failed', 'error');
+        }
+        return;
       }
     }
   };

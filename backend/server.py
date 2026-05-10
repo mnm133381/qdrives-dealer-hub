@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from push import send_to_dealer, send_to_dealers, is_valid_expo_token
 import storage_service
 import media as media_svc
+import realtime as rt
 from auth_firebase import (
     FirebaseAuthError,
     verify_id_token_phone,
@@ -303,6 +304,12 @@ class KycReq(BaseModel):
 
 class BidReq(BaseModel):
     amount: int
+    # Optional client-generated UUID. When supplied, the bid is
+    # processed exactly once even across retries / reconnects. Old
+    # clients omit this field — they get the legacy non-idempotent
+    # path which is still safe (atomic CAS on the auction doc),
+    # just without the duplicate-suppression guarantee.
+    idempotency_key: Optional[str] = None
 
 class CarCreateReq(BaseModel):
     registration_number: str
@@ -929,70 +936,170 @@ async def get_auction(auction_id: str):
 
 
 @api.post("/auctions/{auction_id}/bid")
-async def place_bid(auction_id: str, req: BidReq, dealer = Depends(require_approved_dealer)):
+async def place_bid(auction_id: str, req: BidReq, request: Request, dealer = Depends(require_approved_dealer)):
     a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
     if not a:
         raise HTTPException(status_code=404, detail="Auction not found")
     enriched = await _enrich_auction(a)
     if enriched["status"] != "live":
         raise HTTPException(status_code=400, detail="Auction is not live")
-    current_bid = a.get("current_bid", 0) or a.get("starting_bid", 0)
+
+    # ------------------------------------------------------------------
+    # Idempotency: if the client supplied an idempotency_key and we've
+    # already processed it, return the cached result. Old clients that
+    # don't supply a key fall through to the atomic CAS path below —
+    # that path is safe (no double-spend) but lacks duplicate-suppression.
+    # ------------------------------------------------------------------
+    idem_key = (req.idempotency_key or "").strip() or None
+    if idem_key:
+        cached = await db.bid_idempotency.find_one(
+            {"key": idem_key, "dealer_id": dealer["id"]}, {"_id": 0},
+        )
+        if cached:
+            asyncio.create_task(rt.emit(
+                db, "bid_duplicate_attempt", now_utc=now_utc,
+                dealer_id=dealer["id"], auction_id=auction_id,
+                idempotency_key=idem_key,
+            ))
+            if cached.get("ok"):
+                return cached.get("response") or {"success": True, "bid": cached.get("bid")}
+            # Surface the original failure shape (status + detail) so
+            # the client retry sees identical semantics.
+            raise HTTPException(
+                status_code=int(cached.get("status_code") or 400),
+                detail=str(cached.get("detail") or "Bid rejected"),
+            )
+
+    # ------------------------------------------------------------------
+    # Pre-flight role / cap checks (cheap; same as before)
+    # ------------------------------------------------------------------
+    current_bid_seen = a.get("current_bid", 0) or a.get("starting_bid", 0)
     min_increment = 5000
-    if req.amount < current_bid + min_increment:
-        raise HTTPException(status_code=400, detail=f"Bid must be at least ₹{current_bid + min_increment:,}")
+    if req.amount < current_bid_seen + min_increment:
+        raise HTTPException(status_code=400, detail=f"Bid must be at least ₹{current_bid_seen + min_increment:,}")
     if dealer["id"] == a.get("seller_id"):
         raise HTTPException(status_code=400, detail="You cannot bid on your own auction")
-
-    # Suspended dealers cannot bid (defense in depth — they can't even login).
     if dealer.get("suspended"):
         raise HTTPException(status_code=403, detail="DEALER_ACCOUNT_SUSPENDED")
-
-    # Reputation engine — enforce active operator restrictions (suspension /
-    # bidding cooldown). Shadow-restriction does NOT block the call here;
-    # it is enforced at the marketplace_query level (bids accepted but the
-    # dealer is invisible to others).
     from services import reputation as _rep_check
     blocked, kind = await _rep_check.is_dealer_blocked_from_bidding(db, dealer["id"])
     if blocked:
-        raise HTTPException(
-            status_code=403,
-            detail=f"DEALER_BIDDING_RESTRICTED:{kind}",
-        )
-
-    # Hard max-bid-limit enforcement. If the operator has set a per-dealer
-    # ceiling, ANY attempt above it is rejected (no soft warnings).
+        raise HTTPException(status_code=403, detail=f"DEALER_BIDDING_RESTRICTED:{kind}")
     max_limit = dealer.get("max_bid_limit")
     if max_limit and req.amount > int(max_limit):
         raise HTTPException(status_code=403, detail="BID_EXCEEDS_DEALER_LIMIT")
 
-    bid = {
+    # ------------------------------------------------------------------
+    # ATOMIC bid acceptance via Mongo find_one_and_update.
+    # The compound filter is the source of truth — only one of two
+    # concurrent bids can succeed. The loser sees `updated is None` and
+    # we re-read the doc to give them a precise BID_OUTBID error.
+    # `bid_seq` is the per-auction monotonically-increasing integer
+    # used by the WS sequence-aware client buffer.
+    # ------------------------------------------------------------------
+    accepted_at = now_utc()
+    accepted_ns = rt.monotonic_ns()
+    prev_top = a.get("top_bidder_id")
+    bid_doc = {
         "id": str(uuid.uuid4()),
         "auction_id": auction_id,
         "dealer_id": dealer["id"],
         "dealer_name": dealer.get("dealership_name") or dealer.get("full_name") or "Dealer",
         "amount": req.amount,
         "cancelled": False,
-        "created_at": now_utc(),
+        "created_at": accepted_at,
+        # Server-stamped ordering fields. The (seq, accepted_ns) tuple
+        # is the canonical total order for this auction.
+        "accepted_ns": accepted_ns,
     }
-    await db.bids.insert_one(dict(bid))
 
-    prev_top = a.get("top_bidder_id")
-    await db.auctions.update_one(
-        {"id": auction_id},
-        {"$set": {
-            "current_bid": req.amount,
-            "top_bidder_id": dealer["id"],
-            "top_bidder_name": bid["dealer_name"],
-            "total_bids": (a.get("total_bids", 0) + 1),
-        }}
+    updated = await db.auctions.find_one_and_update(
+        {
+            "id": auction_id,
+            "status": "live",
+            # Reject if anyone else has bid >= our amount in the meantime.
+            "$or": [
+                {"current_bid": {"$lt": req.amount}},
+                {"current_bid": {"$exists": False}},
+            ],
+        },
+        {
+            "$set": {
+                "current_bid": req.amount,
+                "top_bidder_id": dealer["id"],
+                "top_bidder_name": bid_doc["dealer_name"],
+                "last_bid_at": accepted_at,
+            },
+            "$inc": {"total_bids": 1, "bid_seq": 1},
+        },
+        return_document=True,  # ReturnDocument.AFTER
+        projection={"_id": 0, "bid_seq": 1, "current_bid": 1, "total_bids": 1, "top_bidder_id": 1},
     )
+    if not updated:
+        # Race: another bid landed first OR auction transitioned out of live.
+        latest = await db.auctions.find_one({"id": auction_id}, {"_id": 0, "current_bid": 1, "status": 1, "top_bidder_id": 1})
+        if latest and latest.get("status") != "live":
+            detail = "Auction is no longer live"
+            status_code = 400
+        else:
+            detail = "BID_OUTBID"
+            status_code = 409
+        # Telemetry: bid_race_conflict (loser perspective)
+        asyncio.create_task(rt.emit(
+            db, "bid_race_conflict", now_utc=now_utc,
+            auction_id=auction_id, losing_dealer_id=dealer["id"],
+            winning_dealer_id=(latest or {}).get("top_bidder_id"),
+            attempted_amount=req.amount,
+            current_bid=(latest or {}).get("current_bid"),
+        ))
+        if idem_key:
+            asyncio.create_task(db.bid_idempotency.update_one(
+                {"key": idem_key, "dealer_id": dealer["id"]},
+                {"$set": {
+                    "ok": False, "status_code": status_code, "detail": detail,
+                    "auction_id": auction_id, "ts": accepted_at,
+                }},
+                upsert=True,
+            ))
+        raise HTTPException(status_code=status_code, detail=detail)
+
+    # Stamp the bid with its authoritative seq (post-increment value)
+    bid_doc["seq"] = int(updated.get("bid_seq") or 0)
+    await db.bids.insert_one(dict(bid_doc))
+
+    # Auction-close-race telemetry: did this bid land within the final 2s?
+    end_time = a.get("end_time")
+    if end_time:
+        try:
+            skew_ms = int((end_time - accepted_at).total_seconds() * 1000)
+            if 0 <= skew_ms <= 2000:
+                asyncio.create_task(rt.emit(
+                    db, "auction_close_race", now_utc=now_utc,
+                    auction_id=auction_id, dealer_id=dealer["id"],
+                    end_time_skew_ms=skew_ms, last_seq=bid_doc["seq"],
+                ))
+        except Exception:
+            pass
+
+    # Cache idempotency result BEFORE side-effects so a retry during the
+    # broadcast step still hits the cached success.
+    if idem_key:
+        asyncio.create_task(db.bid_idempotency.update_one(
+            {"key": idem_key, "dealer_id": dealer["id"]},
+            {"$set": {
+                "ok": True, "auction_id": auction_id, "ts": accepted_at,
+                "bid": serialize(bid_doc),
+                "response": {"success": True, "bid": serialize(bid_doc), "seq": bid_doc["seq"]},
+            }},
+            upsert=True,
+        ))
 
     # Notify previous top bidder (outbid)
     if prev_top and prev_top != dealer["id"]:
         car = await db.cars.find_one({"id": a["car_id"]}, {"_id": 0}) or {}
         car_label = f"{car.get('year', '')} {car.get('make', '')} {car.get('model', '')}".strip() or "your watched auction"
         push_title = "You've been outbid"
-        push_body = f"{bid['dealer_name']} bid ₹{req.amount:,} on {car_label}"
+        push_body = f"{bid_doc['dealer_name']} bid ₹{req.amount:,} on {car_label}"
         await db.notifications.insert_one({
             "id": str(uuid.uuid4()),
             "dealer_id": prev_top,
@@ -1009,15 +1116,28 @@ async def place_bid(auction_id: str, req: BidReq, dealer = Depends(require_appro
             data={"type": "outbid", "auction_id": auction_id},
         ))
 
-    # Broadcast to room
+    # Broadcast to room — payload is ADDITIVE: legacy clients keep
+    # working (they ignore unknown fields). New clients use `seq` for
+    # gap detection and `server_ns` for ordering merges across
+    # reconnect snapshot vs live tail.
+    bcast_started_ns = rt.monotonic_ns()
     await manager.broadcast(auction_id, {
         "type": "new_bid",
-        "bid": serialize(bid),
+        "bid": serialize(bid_doc),
         "current_bid": req.amount,
         "top_bidder_id": dealer["id"],
-        "top_bidder_name": bid["dealer_name"],
-        "total_bids": a.get("total_bids", 0) + 1,
+        "top_bidder_name": bid_doc["dealer_name"],
+        "total_bids": int(updated.get("total_bids") or 0),
+        "seq": bid_doc["seq"],
+        "server_ns": accepted_ns,
     })
+    bcast_ms = max(0, (rt.monotonic_ns() - bcast_started_ns) // 1_000_000)
+    if bcast_ms > 500:
+        asyncio.create_task(rt.emit(
+            db, "broadcast_lag_spike", now_utc=now_utc,
+            auction_id=auction_id, dispatch_ms=int(bcast_ms),
+            target_count=len(manager.rooms.get(f"auction:{auction_id}", []) or []),
+        ))
 
     # Silent funnel attribution — if this dealer received a recent
     # broadcast for this auction (or a recent network-wide broadcast),
@@ -1027,12 +1147,12 @@ async def place_bid(auction_id: str, req: BidReq, dealer = Depends(require_appro
         from routes import broadcast_tracking as _track
         asyncio.create_task(_track.attribute_bid_to_recent_broadcast(
             db, dealer_id=dealer["id"], auction_id=auction_id,
-            bid_id=bid["id"], now_utc=now_utc, logger=logger,
+            bid_id=bid_doc["id"], now_utc=now_utc, logger=logger,
         ))
     except Exception:
         pass
 
-    return {"success": True, "bid": serialize(bid)}
+    return {"success": True, "bid": serialize(bid_doc), "seq": bid_doc["seq"]}
 
 
 # ---------- Cars / Sell flow ----------
@@ -3536,11 +3656,127 @@ async def _ws_authenticate(token: str) -> Optional[Dict[str, Any]]:
     return dealer
 
 
+
+# ---------------------------------------------------------------------
+# Realtime — snapshot, anomaly report, operator health
+# ---------------------------------------------------------------------
+@api.get("/auctions/{auction_id}/snapshot")
+async def auction_snapshot(auction_id: str, dealer = Depends(get_current_dealer)):
+    """Authoritative snapshot used by clients on WS reconnect.
+
+    Returns the auction doc + the most recent N bids in (seq DESC) order
+    plus `seq` (the current authoritative bid_seq) and `server_ns`
+    (process-monotonic clock at snapshot time). The client MUST reset
+    its local last_seq to the returned `seq` and discard any
+    optimistic bid frames that disagree with the snapshot.
+    """
+    a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Auction not found")
+    enriched = await _enrich_auction(a)
+    bids = await db.bids.find(
+        {"auction_id": auction_id, "cancelled": {"$ne": True}},
+        {"_id": 0},
+    ).sort("created_at", -1).limit(50).to_list(50)
+    seq = int(a.get("bid_seq") or 0)
+    return {
+        "auction": jsonable_encoder(enriched),
+        "bids": [serialize(b) for b in bids],
+        "seq": seq,
+        "server_ns": rt.monotonic_ns(),
+    }
+
+
+class RealtimeReportReq(BaseModel):
+    # Lightweight client-side anomaly report. The only fields the server
+    # treats as authoritative are dealer_id (from JWT) and the auction_id.
+    # Numeric counters are clamped to defend against malicious payloads.
+    event: str
+    auction_id: Optional[str] = None
+    expected_seq: Optional[int] = None
+    got_seq: Optional[int] = None
+    detail: Optional[str] = None
+
+
+@api.post("/realtime/report")
+async def realtime_report(req: RealtimeReportReq, dealer = Depends(get_current_dealer)):
+    allowed = {"frame_out_of_order", "ws_reconnect", "snapshot_resync", "client_error"}
+    if req.event not in allowed:
+        raise HTTPException(status_code=400, detail="unknown_event")
+    # Cheap clamp — never store unbounded user-supplied numbers
+    def clamp(x):
+        try: return max(-(1 << 31), min(1 << 31, int(x))) if x is not None else None
+        except Exception: return None
+    asyncio.create_task(rt.emit(
+        db, req.event, now_utc=now_utc,
+        dealer_id=dealer["id"], auction_id=req.auction_id,
+        expected_seq=clamp(req.expected_seq), got_seq=clamp(req.got_seq),
+        detail=(req.detail or "")[:200],
+    ))
+    return {"ok": True}
+
+
+@api.get("/admin/realtime/health")
+async def admin_realtime_health(_op = Depends(get_current_admin)):
+    """Snapshot of realtime metrics for the operator metrics UI.
+
+    Counts the last hour of each notable event type plus current live
+    WS-connection counts per room. Heavy aggregation happens lazily;
+    the page is allowed to take 1-2s on first call after a long idle.
+    """
+    one_hour_ago = now_utc() - timedelta(hours=1)
+    pipeline = [
+        {"$match": {"ts": {"$gte": one_hour_ago}}},
+        {"$group": {"_id": "$event", "count": {"$sum": 1}}},
+    ]
+    counts: Dict[str, int] = {}
+    try:
+        async for row in db.realtime_metrics.aggregate(pipeline):
+            counts[str(row.get("_id") or "")] = int(row.get("count") or 0)
+    except Exception as exc:
+        logger.warning("realtime health aggregate failed: %s", exc)
+        counts = {}
+    # Live WS gauge — counts derived from the in-memory ConnectionManager
+    rooms_summary = []
+    total_live = 0
+    for room_key, conns in (manager.rooms or {}).items():
+        if not conns:
+            continue
+        total_live += len(conns)
+        rooms_summary.append({
+            "room": room_key,
+            "count": len(conns),
+            "roles": list({c.get("role") for c in conns}),
+        })
+    return {
+        "live_ws": total_live,
+        "rooms": sorted(rooms_summary, key=lambda r: -r["count"])[:25],
+        "events_1h": counts,
+        "thresholds": {
+            "broadcast_lag_spike_ms": 500,
+            "reconnect_storm": 5,
+            "auction_close_race_window_ms": 2000,
+        },
+    }
+
+
+
 @app.websocket("/api/ws/auction/{auction_id}")
 async def ws_auction(websocket: WebSocket, auction_id: str):
     """Authenticated dealer/operator WS for live auction streams.
     Token MUST be passed as a query parameter `?token=<jwt>` on connect.
-    Anonymous or invalid connections are rejected with code 4401."""
+    Anonymous or invalid connections are rejected with code 4401.
+
+    Hardening (additive — wire-format fully backward compatible):
+      • Heartbeat: server pings every 25s; missed pongs eventually
+        close the socket so the client knows to reconnect.
+      • Inbound {"type":"ping"} → server replies {"type":"pong"} so
+        clients can probe liveness without re-establishing the socket.
+      • Snapshot on connect now carries `seq` + `server_ns` so the
+        client's sequence-aware buffer can reset cleanly.
+      • Connect / disconnect / reconnect-storm telemetry written to
+        db.realtime_metrics (best-effort, never blocks).
+    """
     token = websocket.query_params.get("token", "")
     dealer = await _ws_authenticate(token)
     if not dealer:
@@ -3552,19 +3788,51 @@ async def ws_auction(websocket: WebSocket, auction_id: str):
     room_key = f"auction:{auction_id}"
     await manager.connect(room_key, websocket, dealer_id=dealer["id"], role=role, tv=tv)
 
+    connect_ns = rt.monotonic_ns()
+    storm_count = rt.record_reconnect(dealer["id"])
+    asyncio.create_task(rt.emit(
+        db, "ws_connect", now_utc=now_utc,
+        dealer_id=dealer["id"], role=role, room=room_key,
+        recent_reconnects=storm_count,
+    ))
+    if rt.is_reconnect_storm(storm_count):
+        asyncio.create_task(rt.emit(
+            db, "ws_reconnect_storm", now_utc=now_utc,
+            dealer_id=dealer["id"], room=room_key, count_5min=storm_count,
+        ))
+
+    disconnect_reason = "normal"
     try:
-        # On connect, send latest snapshot. Use jsonable_encoder to handle
-        # nested datetime values inside enriched auction (car/seller/etc).
+        # Snapshot on connect — additive seq / server_ns fields let
+        # new clients prime their sequence buffer; old clients ignore them.
         a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
         if a:
             ea = await _enrich_auction(a)
-            await websocket.send_json({"type": "snapshot", "auction": jsonable_encoder(ea)})
+            await websocket.send_json({
+                "type": "snapshot",
+                "auction": jsonable_encoder(ea),
+                "seq": int(a.get("bid_seq") or 0),
+                "server_ns": rt.monotonic_ns(),
+            })
+
         while True:
             try:
-                await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                raw = await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                # Inbound heartbeat / liveness probe handling.
+                # Ignore decode failures — opaque inbound traffic is fine,
+                # we don't enforce a schema on what clients can send.
+                try:
+                    msg = json.loads(raw) if raw else {}
+                except Exception:
+                    msg = {}
+                mtype = msg.get("type") if isinstance(msg, dict) else None
+                if mtype == "ping":
+                    try: await websocket.send_json({"type": "pong", "server_ns": rt.monotonic_ns()})
+                    except Exception: break
+                    continue
                 # Periodic re-validation: if the dealer's tv has bumped server-
                 # side (allow-list revoke / role change in another worker), kill
-                # this socket on the next keepalive.
+                # this socket on the next inbound message.
                 fresh = await db.dealers.find_one(
                     {"id": dealer["id"]}, {"_id": 0, "token_version": 1, "suspended": 1, "role": 1},
                 )
@@ -3574,18 +3842,30 @@ async def ws_auction(websocket: WebSocket, auction_id: str):
                     try: await websocket.send_json({"type": "session_killed", "reason": "tv_drift"})
                     except Exception: pass
                     await websocket.close(code=4401)
+                    disconnect_reason = "tv_drift"
                     break
             except asyncio.TimeoutError:
+                # Outbound heartbeat — proves the socket is alive and
+                # gives the client an idle-keepalive frame so ingress
+                # doesn't 100s-idle-kill the connection.
                 try:
-                    await websocket.send_json({"type": "ping"})
+                    await websocket.send_json({"type": "ping", "server_ns": rt.monotonic_ns()})
                 except Exception:
+                    disconnect_reason = "send_failed"
                     break
     except WebSocketDisconnect:
-        pass
+        disconnect_reason = "client_close"
     except Exception as e:
         logger.warning("WS error: %s", e)
+        disconnect_reason = "exception"
     finally:
         manager.disconnect(room_key, websocket)
+        duration_ms = max(0, (rt.monotonic_ns() - connect_ns) // 1_000_000)
+        asyncio.create_task(rt.emit(
+            db, "ws_disconnect", now_utc=now_utc,
+            dealer_id=dealer["id"], role=role, room=room_key,
+            reason=disconnect_reason, duration_ms=int(duration_ms),
+        ))
 
 
 @app.websocket("/api/ws/ops")
@@ -3593,7 +3873,10 @@ async def ws_ops(websocket: WebSocket):
     """Operator-only WebSocket channel — receives ops events (live grid
     updates, settlement transitions, dealer status changes) and is fully
     isolated from dealer subscribers. Dealer JWTs are rejected even if
-    valid, because dealers must NEVER see internal ops chatter."""
+    valid, because dealers must NEVER see internal ops chatter.
+
+    Hardening identical to /ws/auction (heartbeat, ping/pong, telemetry).
+    """
     token = websocket.query_params.get("token", "")
     dealer = await _ws_authenticate(token)
     if not dealer:
@@ -3605,11 +3888,34 @@ async def ws_ops(websocket: WebSocket):
         return
     tv = int(dealer.get("token_version") or 0)
     await manager.connect("ops", websocket, dealer_id=dealer["id"], role=role, tv=tv)
+
+    connect_ns = rt.monotonic_ns()
+    storm_count = rt.record_reconnect(dealer["id"])
+    asyncio.create_task(rt.emit(
+        db, "ws_connect", now_utc=now_utc,
+        dealer_id=dealer["id"], role=role, room="ops",
+        recent_reconnects=storm_count,
+    ))
+    if rt.is_reconnect_storm(storm_count):
+        asyncio.create_task(rt.emit(
+            db, "ws_reconnect_storm", now_utc=now_utc,
+            dealer_id=dealer["id"], room="ops", count_5min=storm_count,
+        ))
+
+    disconnect_reason = "normal"
     try:
-        await websocket.send_json({"type": "ops_connected", "role": role})
+        await websocket.send_json({"type": "ops_connected", "role": role, "server_ns": rt.monotonic_ns()})
         while True:
             try:
-                await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                raw = await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                try:
+                    msg = json.loads(raw) if raw else {}
+                except Exception:
+                    msg = {}
+                if isinstance(msg, dict) and msg.get("type") == "ping":
+                    try: await websocket.send_json({"type": "pong", "server_ns": rt.monotonic_ns()})
+                    except Exception: break
+                    continue
                 fresh = await db.dealers.find_one(
                     {"id": dealer["id"]}, {"_id": 0, "token_version": 1, "role": 1},
                 )
@@ -3620,18 +3926,27 @@ async def ws_ops(websocket: WebSocket):
                     try: await websocket.send_json({"type": "session_killed", "reason": "tv_drift"})
                     except Exception: pass
                     await websocket.close(code=4401)
+                    disconnect_reason = "tv_drift"
                     break
             except asyncio.TimeoutError:
                 try:
-                    await websocket.send_json({"type": "ping"})
+                    await websocket.send_json({"type": "ping", "server_ns": rt.monotonic_ns()})
                 except Exception:
+                    disconnect_reason = "send_failed"
                     break
     except WebSocketDisconnect:
-        pass
+        disconnect_reason = "client_close"
     except Exception as e:
         logger.warning("WS-ops error: %s", e)
+        disconnect_reason = "exception"
     finally:
         manager.disconnect("ops", websocket)
+        duration_ms = max(0, (rt.monotonic_ns() - connect_ns) // 1_000_000)
+        asyncio.create_task(rt.emit(
+            db, "ws_disconnect", now_utc=now_utc,
+            dealer_id=dealer["id"], role=role, room="ops",
+            reason=disconnect_reason, duration_ms=int(duration_ms),
+        ))
 
 
 @api.get("/")
@@ -4953,6 +5268,18 @@ async def on_startup():
     await db.approved_dealers.create_index("phone", unique=True)
     await db.operators.create_index("phone", unique=True)
     await db.audit_logs.create_index([("ts", -1)])
+    # Realtime / bid reliability indexes
+    # Compound unique index ensures retry of the same idempotency_key
+    # by the same dealer collapses to one row. TTL 24h keeps the
+    # collection bounded under sustained traffic.
+    try:
+        await db.bid_idempotency.create_index(
+            [("key", 1), ("dealer_id", 1)], unique=True,
+        )
+        await db.bid_idempotency.create_index("ts", expireAfterSeconds=60 * 60 * 24)
+        await db.bids.create_index([("auction_id", 1), ("seq", 1)])
+    except Exception as exc:
+        logger.warning("bid_idempotency index init: %s", exc)
     await seed_data()
     await seed_allow_lists()
     # background loops

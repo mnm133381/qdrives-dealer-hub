@@ -104,7 +104,46 @@ export const api = {
 
   auctions: (status?: string) => request(`/auctions${status ? `?status_filter=${status}` : ''}`),
   auction: (id: string) => request(`/auctions/${id}`),
-  bid: (auctionId: string, amount: number) => request(`/auctions/${auctionId}/bid`, { method: 'POST', body: JSON.stringify({ amount }) }),
+  // Place a bid. `idempotency_key` (optional, recommended) is a
+  // client-generated UUID — when supplied, retries from the bid retry
+  // queue are deduplicated server-side so a flaky network can't cause
+  // a double-bid. Old callers omitting the key still get the atomic
+  // CAS path (no double-spend) but lose retry-safety.
+  bid: (auctionId: string, amount: number, idempotency_key?: string) =>
+    request<{ success: boolean; bid: any; seq?: number }>(
+      `/auctions/${auctionId}/bid`,
+      {
+        method: 'POST',
+        body: JSON.stringify(idempotency_key ? { amount, idempotency_key } : { amount }),
+      },
+    ),
+  // Authoritative reconnect snapshot. Always preferred over locally
+  // accumulated state when there's any conflict.
+  auctionSnapshot: (auctionId: string) =>
+    request<{ auction: any; bids: any[]; seq: number; server_ns: number }>(
+      `/auctions/${auctionId}/snapshot`,
+    ),
+  // Lightweight client-side anomaly report (out-of-order frames,
+  // resyncs, etc.) — fire-and-forget, never blocks UI.
+  realtimeReport: (payload: {
+    event: string;
+    auction_id?: string;
+    expected_seq?: number;
+    got_seq?: number;
+    detail?: string;
+  }) =>
+    request<{ ok: boolean }>('/realtime/report', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  // Operator-only realtime health summary (live WS gauge + 1h event counts).
+  adminRealtimeHealth: () =>
+    request<{
+      live_ws: number;
+      rooms: Array<{ room: string; count: number; roles: string[] }>;
+      events_1h: Record<string, number>;
+      thresholds: Record<string, number>;
+    }>('/admin/realtime/health'),
 
   cars: () => request('/cars'),
   car: (id: string) => request(`/cars/${id}`),

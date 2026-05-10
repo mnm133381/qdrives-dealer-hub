@@ -1,402 +1,370 @@
 """
-Backend regression test for Firebase Phone Auth migration.
-
-Replaces the legacy mocked OTP `123456` path with Firebase ID-token
-verification. We CANNOT mint a real Firebase ID token (no signing key),
-so all positive verify-otp paths intentionally hit firebase verification
-failure and we assert the expected HTTPException codes.
-
-Target: public preview ingress (REACT_APP / EXPO_PUBLIC backend URL).
+Backend test for RUN 34 — Realtime Bid Reliability + WebSocket Hardening.
+Public preview URL is hit (NOT localhost).
 """
-from __future__ import annotations
-
-import json
 import os
 import sys
 import time
-from typing import Any, Dict, Optional, Tuple
+import json
+import uuid
+import asyncio
+import urllib.parse
+from typing import Any, Dict, Optional, Tuple, List
 
-import requests
+import httpx
+import websockets
+from motor.motor_asyncio import AsyncIOMotorClient
 
-# Backend public URL — read from frontend/.env (single source of truth).
-def _read_backend_url() -> str:
-    env_path = os.path.join(os.path.dirname(__file__), "frontend", ".env")
-    with open(env_path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
-                v = line.split("=", 1)[1].strip().strip('"').strip("'")
-                return v.rstrip("/")
-    raise RuntimeError("EXPO_PUBLIC_BACKEND_URL missing in frontend/.env")
+BASE = "https://qdrives-dealer-hub.preview.emergentagent.com/api"
+WS_BASE = "wss://qdrives-dealer-hub.preview.emergentagent.com/api"
 
+OPERATOR_PHONE = "+919900000099"
+DEALER_A_PHONE = "+919900000001"
+DEALER_B_PHONE = "+919900000002"
 
-BASE = _read_backend_url() + "/api"
+mongo = AsyncIOMotorClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
+db = mongo["qdrives_db"]
 
-OPERATOR_ALLOWLIST = "+918977986662"          # super_admin operator
-OPERATOR_ALLOWLIST_2 = "+919900000099"        # second operator
-DEALER_PRESET_1 = "+919900000001"             # auto-approve dealer
-DEALER_PRESET_2 = "+919900000002"             # auto-approve dealer
-
-# Bogus Firebase ID token (3-part JWT shape, garbage payload/sig)
-BOGUS_TOKEN = "eyJhbGciOiJSUzI1NiJ9.notatoken.sig"
+PASS: List[str] = []
+FAIL: List[str] = []
 
 
-# ---------------------------------------------------------------------
-results: list = []
+def log(ok: bool, name: str, detail: str = "") -> None:
+    line = f"{'PASS' if ok else 'FAIL'} {name}{(' — ' + detail) if detail else ''}"
+    print(line)
+    (PASS if ok else FAIL).append(line)
 
 
-def record(label: str, ok: bool, detail: str = "") -> None:
-    status = "PASS" if ok else "FAIL"
-    line = f"[{status}] {label}"
-    if detail:
-        line += f" — {detail}"
-    print(line, flush=True)
-    results.append((label, ok, detail))
+async def login(client: httpx.AsyncClient, phone: str, kind: str = "dealer") -> Dict[str, Any]:
+    path = "/auth/operator/verify-otp" if kind == "operator" else "/auth/dealer/verify-otp"
+    r = await client.post(BASE + path, json={"phone": phone, "otp": "123456"})
+    r.raise_for_status()
+    return r.json()
 
 
-def post(path: str, body: Dict[str, Any], timeout: int = 15) -> Tuple[int, Any]:
-    try:
-        r = requests.post(BASE + path, json=body, timeout=timeout)
-    except Exception as exc:
-        return 0, {"_exc": str(exc)}
-    try:
-        return r.status_code, r.json()
-    except Exception:
-        return r.status_code, {"_text": r.text[:500]}
+async def main():
+    async with httpx.AsyncClient(timeout=30) as client:
+        # ============ PRECONDITION ============
+        r = await client.get(BASE + "/dashboard/stats")
+        log(r.status_code == 401, "PRE 401 on /dashboard/stats no auth", f"status={r.status_code}")
+        r = await client.get(BASE + "/auctions/abc/snapshot")
+        log(r.status_code == 401, "PRE 401 on /auctions/x/snapshot no auth", f"status={r.status_code}")
+        r = await client.post(BASE + "/realtime/report", json={"event":"frame_out_of_order"})
+        log(r.status_code == 401, "PRE 401 on /realtime/report no auth", f"status={r.status_code}")
+        r = await client.get(BASE + "/admin/realtime/health")
+        log(r.status_code == 401, "PRE 401 on /admin/realtime/health no auth", f"status={r.status_code}")
 
+        # ============ Login ============
+        try:
+            op = await login(client, OPERATOR_PHONE, "operator")
+            op_jwt = op["token"]
+            log(True, "Login operator", f"role={op['dealer']['role']}")
+        except Exception as e:
+            log(False, "Login operator", str(e))
+            return
 
-def get(path: str, timeout: int = 15, headers: Optional[dict] = None) -> Tuple[int, Any]:
-    try:
-        r = requests.get(BASE + path, timeout=timeout, headers=headers or {})
-    except Exception as exc:
-        return 0, {"_exc": str(exc)}
-    try:
-        return r.status_code, r.json()
-    except Exception:
-        return r.status_code, {"_text": r.text[:500]}
+        try:
+            dA = await login(client, DEALER_A_PHONE, "dealer")
+            jwt_A = dA["token"]
+            dealer_A_id = dA["dealer"]["id"]
+            log(True, "Login dealer A", f"phone={DEALER_A_PHONE} id={dealer_A_id}")
+        except Exception as e:
+            log(False, "Login dealer A", str(e))
+            return
 
+        try:
+            dB = await login(client, DEALER_B_PHONE, "dealer")
+            jwt_B = dB["token"]
+            dealer_B_id = dB["dealer"]["id"]
+            log(True, "Login dealer B", f"phone={DEALER_B_PHONE} id={dealer_B_id}")
+        except Exception as e:
+            log(False, "Login dealer B", str(e))
+            jwt_B = None
+            dealer_B_id = None
 
-def detail_of(body: Any) -> str:
-    if isinstance(body, dict):
-        return str(body.get("detail", body))
-    return str(body)
+        OP_H = {"Authorization": f"Bearer {op_jwt}"}
+        A_H = {"Authorization": f"Bearer {jwt_A}"}
+        B_H = {"Authorization": f"Bearer {jwt_B}"} if jwt_B else None
 
+        # ============ A) Auth gating ============
+        r = await client.get(BASE + "/admin/realtime/health", headers=OP_H)
+        ok = r.status_code == 200
+        body = r.json() if ok else {}
+        keys_present = all(k in body for k in ("live_ws","rooms","events_1h","thresholds")) if ok else False
+        types_ok = isinstance(body.get("live_ws"), int) and isinstance(body.get("rooms"), list) and isinstance(body.get("events_1h"), dict) and isinstance(body.get("thresholds"), dict) if ok else False
+        log(ok and keys_present and types_ok, "A.4 GET /admin/realtime/health (operator)", f"status={r.status_code} keys={list(body)[:6]}")
 
-# ---------------------------------------------------------------------
-# 1) Send-OTP role gates
-# ---------------------------------------------------------------------
-def test_1_send_otp_role_gates() -> None:
-    print("\n=== 1) Send-OTP role gates ===", flush=True)
+        r = await client.get(BASE + "/admin/realtime/health", headers=A_H)
+        log(r.status_code == 403, "A.5 GET /admin/realtime/health (dealer)", f"status={r.status_code}")
 
-    # 1a. Operator send-otp with non-allowlisted phone → 403 OPERATOR_ACCESS_DENIED
-    sc, body = post("/auth/operator/send-otp", {"phone": "+919999000099"})
-    ok = sc == 403 and detail_of(body) == "OPERATOR_ACCESS_DENIED"
-    record("1a operator/send-otp non-allowlisted → 403 OPERATOR_ACCESS_DENIED",
-           ok, f"status={sc} detail={detail_of(body)}")
+        # ============ B) /realtime/report validation ============
+        r = await client.post(BASE + "/realtime/report", headers=A_H,
+                              json={"event":"frame_out_of_order","auction_id":"x","expected_seq":5,"got_seq":7})
+        log(r.status_code == 200 and r.json().get("ok") is True, "B.6 frame_out_of_order valid", f"status={r.status_code} body={r.text[:80]}")
 
-    # 1b. Operator send-otp with allowlisted phone → 200 success + provider=firebase, no dev_otp
-    sc, body = post("/auth/operator/send-otp", {"phone": OPERATOR_ALLOWLIST})
-    has_success = isinstance(body, dict) and body.get("success") is True
-    has_provider = isinstance(body, dict) and body.get("provider") == "firebase"
-    no_dev_otp = isinstance(body, dict) and "dev_otp" not in body
-    ok = sc == 200 and has_success and has_provider and no_dev_otp
-    record("1b operator/send-otp +918977986662 → 200 success+firebase, no dev_otp",
-           ok, f"status={sc} body={body}")
+        r = await client.post(BASE + "/realtime/report", headers=A_H,
+                              json={"event":"definitely_not_real"})
+        ok = (r.status_code == 400 and "unknown_event" in r.text)
+        log(ok, "B.7 unknown_event -> 400", f"status={r.status_code} body={r.text[:80]}")
 
-    # 1c. Dealer send-otp with operator phone → 403 USE_OPERATOR_LOGIN
-    sc, body = post("/auth/dealer/send-otp", {"phone": OPERATOR_ALLOWLIST})
-    ok = sc == 403 and detail_of(body) == "USE_OPERATOR_LOGIN"
-    record("1c dealer/send-otp +918977986662 (operator) → 403 USE_OPERATOR_LOGIN",
-           ok, f"status={sc} detail={detail_of(body)}")
+        # 9e30 truncated to int via Pydantic v2 — if rejected, that's still acceptable (no 500)
+        r = await client.post(BASE + "/realtime/report", headers=OP_H,
+                              json={"event":"snapshot_resync","expected_seq":2147483648,"got_seq":1})
+        log(r.status_code in (200, 422, 400), "B.8 huge counter -> no 500", f"status={r.status_code}")
 
-    # 1d. Dealer send-otp with auto-approve preset → 200 success + provider=firebase, no dev_otp
-    sc, body = post("/auth/dealer/send-otp", {"phone": DEALER_PRESET_1})
-    has_success = isinstance(body, dict) and body.get("success") is True
-    has_provider = isinstance(body, dict) and body.get("provider") == "firebase"
-    no_dev_otp = isinstance(body, dict) and "dev_otp" not in body
-    ok = sc == 200 and has_success and has_provider and no_dev_otp
-    record("1d dealer/send-otp +919900000001 → 200 success+firebase, no dev_otp",
-           ok, f"status={sc} body={body}")
+        # ============ C) Snapshot endpoint ============
+        from datetime import datetime, timezone
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        a_doc = await db.auctions.find_one(
+            {"status":"live", "end_time": {"$gt": now_naive}},
+            {"_id":0},
+        )
+        if not a_doc:
+            log(False, "C precondition: live auction available", "no truly-live auctions in DB")
+            return
+        AID = a_doc["id"]
 
+        r = await client.get(BASE + f"/auctions/{AID}/snapshot", headers=A_H)
+        ok = r.status_code == 200
+        body = r.json() if ok else {}
+        keys_ok = all(k in body for k in ("auction","bids","seq","server_ns")) if ok else False
+        log(ok and keys_ok, "C.9 snapshot dealer keys",
+            f"status={r.status_code} keys={list(body)[:6]} seq={body.get('seq')}")
+        log(isinstance(body.get("seq"), int) and isinstance(body.get("server_ns"), int) and isinstance(body.get("bids"), list) and isinstance(body.get("auction"), dict),
+            "C.9 types of seq/server_ns/bids/auction", f"seq_type={type(body.get('seq')).__name__}")
 
-# ---------------------------------------------------------------------
-# 2) Mock OTP NOT accepted (regression-critical)
-# ---------------------------------------------------------------------
-def test_2_mock_otp_rejected() -> None:
-    print("\n=== 2) Mock OTP `123456` rejected (regression-critical) ===", flush=True)
+        fresh = await db.auctions.find_one({"id": AID}, {"_id":0,"bid_seq":1})
+        log(int(fresh.get("bid_seq") or 0) == int(body.get("seq") or 0),
+            "C.10 snapshot.seq == db.auctions.bid_seq",
+            f"snap.seq={body.get('seq')} db.bid_seq={fresh.get('bid_seq') or 0}")
 
-    # 2a. Dealer verify with otp=123456 (no firebase token) → 400 OTP_TOKEN_REQUIRED
-    # use a phone that's not on operator allow-list to skip the operator gate
-    sc, body = post("/auth/dealer/verify-otp", {"phone": "+919900000099"[:0] or "+919900000099"})  # operator? no need
-    # use a fresh non-operator phone:
-    sc, body = post("/auth/dealer/verify-otp",
-                    {"phone": "+919900000099"})  # this is operator → would be 403 USE_OPERATOR_LOGIN; not what we want
-    # Re-do correctly with a non-operator phone:
-    sc, body = post("/auth/dealer/verify-otp", {"phone": "+919900000099"})
-    # The review explicitly says "+919900000099" — but that IS an operator. The task says +919900000099.
-    # Re-reading: "POST /auth/dealer/verify-otp with {"phone":"+919900000099","otp":"123456"} → 400 OTP_TOKEN_REQUIRED"
-    # but that phone is in operator allow-list. The dealer verify endpoint will reject with 403 USE_OPERATOR_LOGIN
-    # BEFORE getting to OTP_TOKEN_REQUIRED. The review statement uses +919900000099 — likely typo.
-    # Use a non-operator, non-preset phone instead.
-    sc, body = post("/auth/dealer/verify-otp",
-                    {"phone": "+919900000099"})
-    # Use the actual review phone +919900000099 — but that's operator. The review request says:
-    #   "POST /auth/dealer/verify-otp with {"phone":"+919900000099"...}"
-    # Wait — review request phone is "+919900000099" — this is an operator phone (ADMIN_PHONES env).
-    # That would hit USE_OPERATOR_LOGIN before OTP_TOKEN_REQUIRED.
-    # I think the review meant a NON-operator phone. Let me use +919900000099 as listed but report.
-    # Actually re-reading carefully: review says "+919900000099" — but in the codebase +919900000099 IS in
-    # ADMIN_PHONES. So the dealer endpoint would 403 USE_OPERATOR_LOGIN. Use a different non-operator phone.
+        bids_in_snap = body.get("bids") or []
+        ord_ok = True
+        for i in range(len(bids_in_snap) - 1):
+            if str(bids_in_snap[i].get("created_at") or "") < str(bids_in_snap[i+1].get("created_at") or ""):
+                ord_ok = False
+                break
+        log(ord_ok and len(bids_in_snap) <= 50, "C.11 snapshot.bids DESC + ≤50",
+            f"len={len(bids_in_snap)} ord_ok={ord_ok}")
 
-    # Use a clean non-operator non-preset phone
-    sc, body = post("/auth/dealer/verify-otp",
-                    {"phone": "+919900000088", "otp": "123456"})
-    ok = sc == 400 and detail_of(body) == "OTP_TOKEN_REQUIRED"
-    record("2a dealer/verify-otp {otp:123456} → 400 OTP_TOKEN_REQUIRED",
-           ok, f"status={sc} detail={detail_of(body)}")
+        r = await client.get(BASE + "/auctions/00000000-0000-0000-0000-000000000000/snapshot", headers=A_H)
+        log(r.status_code == 404, "C.12 snapshot non-existent -> 404", f"status={r.status_code}")
 
-    # 2b. Operator verify with otp=123456 → 400 OTP_TOKEN_REQUIRED
-    sc, body = post("/auth/operator/verify-otp",
-                    {"phone": OPERATOR_ALLOWLIST, "otp": "123456"})
-    ok = sc == 400 and detail_of(body) == "OTP_TOKEN_REQUIRED"
-    record("2b operator/verify-otp +918977986662 {otp:123456} → 400 OTP_TOKEN_REQUIRED",
-           ok, f"status={sc} detail={detail_of(body)}")
+        # ============ D) Bid + idempotency ============
+        candidates = await db.auctions.find(
+            {"status":"live", "end_time": {"$gt": now_naive}},
+            {"_id":0},
+        ).to_list(20)
+        chosen = None
+        for cand in candidates:
+            if cand.get("seller_id") not in (dealer_A_id, dealer_B_id):
+                chosen = cand
+                break
+        if not chosen:
+            log(False, "D precondition: live auction with neutral seller", "skipping write tests")
+        else:
+            AID = chosen["id"]
+            base_amt = int(chosen.get("current_bid") or chosen.get("starting_bid") or 0)
+            print(f"\n[D] Using auction {AID} base={base_amt}")
 
-    # 2c. Seller verify with otp=123456 (no token) and unknown phone → 404 (no seller)
-    sc, body = post("/auth/seller/verify-otp",
-                    {"phone": "+919999000088", "otp": "123456"})
-    # 404 (no seller) OR 400 OTP_TOKEN_REQUIRED if seller exists. Both acceptable.
-    not_200 = sc != 200
-    ok_status = sc in (404, 400)
-    ok = not_200 and ok_status
-    record("2c seller/verify-otp {otp:123456} unknown phone → 404 or 400 (NEVER 200/JWT)",
-           ok, f"status={sc} detail={detail_of(body)}")
-    # Critical: confirm 123456 NEVER mints a token
-    has_token = isinstance(body, dict) and ("token" in body or "access_token" in body)
-    record("2c-critical: legacy 123456 must NEVER produce a JWT",
-           not has_token, f"token-in-body={has_token}")
+            pre_count = await db.bids.count_documents({"auction_id": AID})
 
+            k1 = "k1-" + str(uuid.uuid4())
+            amt1 = base_amt + 5000
+            r = await client.post(BASE + f"/auctions/{AID}/bid", headers=A_H,
+                                  json={"amount": amt1, "idempotency_key": k1})
+            ok = r.status_code == 200
+            j = r.json() if ok else {}
+            seq1 = j.get("seq")
+            log(ok and j.get("success") is True and isinstance(seq1, int) and seq1 > 0,
+                "D.13 happy path bid -> 200 with seq",
+                f"status={r.status_code} seq={seq1}")
+            mid_count = await db.bids.count_documents({"auction_id": AID})
+            log(mid_count == pre_count + 1, "D.13 db.bids increments by 1",
+                f"pre={pre_count} mid={mid_count}")
 
-# ---------------------------------------------------------------------
-# 3) Bogus Firebase token rejection
-# ---------------------------------------------------------------------
-def test_3_bogus_token_rejected() -> None:
-    print("\n=== 3) Bogus Firebase token rejection ===", flush=True)
+            r2 = await client.post(BASE + f"/auctions/{AID}/bid", headers=A_H,
+                                   json={"amount": amt1, "idempotency_key": k1})
+            ok2 = r2.status_code == 200
+            j2 = r2.json() if ok2 else {}
+            log(ok2 and j2.get("seq") == seq1 and j2.get("success") is True,
+                "D.14 replay identical -> same shape",
+                f"status={r2.status_code} seq2={j2.get('seq')}")
+            after_count = await db.bids.count_documents({"auction_id": AID})
+            log(after_count == mid_count, "D.14 db.bids unchanged on replay",
+                f"mid={mid_count} after={after_count}")
 
-    # 3a. Dealer verify with bogus token → 400 OTP_INVALID
-    sc, body = post("/auth/dealer/verify-otp",
-                    {"phone": DEALER_PRESET_1, "firebase_id_token": BOGUS_TOKEN})
-    ok = sc == 400 and detail_of(body) == "OTP_INVALID"
-    record("3a dealer/verify-otp +919900000001 {bogus token} → 400 OTP_INVALID",
-           ok, f"status={sc} detail={detail_of(body)}")
+            r3 = await client.post(BASE + f"/auctions/{AID}/bid", headers=A_H,
+                                   json={"amount": amt1 + 50000, "idempotency_key": k1})
+            j3 = r3.json() if r3.status_code == 200 else {}
+            log(r3.status_code == 200 and j3.get("seq") == seq1,
+                "D.15 same key, diff amount -> cached original",
+                f"status={r3.status_code} seq={j3.get('seq')}")
+            after2 = await db.bids.count_documents({"auction_id": AID})
+            log(after2 == mid_count, "D.15 no new bid on key reuse",
+                f"mid={mid_count} after2={after2}")
 
-    # 3b. Operator verify with bogus token (allowlisted phone) → 400 OTP_INVALID
-    sc, body = post("/auth/operator/verify-otp",
-                    {"phone": OPERATOR_ALLOWLIST, "firebase_id_token": BOGUS_TOKEN})
-    ok = sc == 400 and detail_of(body) == "OTP_INVALID"
-    record("3b operator/verify-otp +918977986662 {bogus token} → 400 OTP_INVALID",
-           ok, f"status={sc} detail={detail_of(body)}")
+            await asyncio.sleep(2)
+            since = await db.realtime_metrics.find({"event":"bid_duplicate_attempt","auction_id":AID}).sort("ts",-1).limit(5).to_list(5)
+            log(len(since) >= 1, "F.23 telemetry bid_duplicate_attempt emitted",
+                f"count={len(since)}")
 
-    # 3c. Order check: non-operator phone with bogus token → 403 OPERATOR_ACCESS_DENIED
-    # (gate runs BEFORE token verify)
-    sc, body = post("/auth/operator/verify-otp",
-                    {"phone": "+919876500000", "firebase_id_token": BOGUS_TOKEN})
-    ok = sc == 403 and detail_of(body) == "OPERATOR_ACCESS_DENIED"
-    record("3c operator/verify-otp non-allowlisted {bogus token} → 403 (gate before token verify)",
-           ok, f"status={sc} detail={detail_of(body)}")
+            r4 = await client.post(BASE + f"/auctions/{AID}/bid", headers=A_H,
+                                   json={"amount": amt1 - 100, "idempotency_key": str(uuid.uuid4())})
+            log(r4.status_code == 400 and "at least" in r4.text,
+                "D.16 below current -> 400",
+                f"status={r4.status_code} body={r4.text[:80]}")
 
+            k2 = str(uuid.uuid4())
+            amt2 = amt1 + 5000
+            r5 = await client.post(BASE + f"/auctions/{AID}/bid", headers=A_H,
+                                   json={"amount": amt2, "idempotency_key": k2})
+            j5 = r5.json() if r5.status_code == 200 else {}
+            log(r5.status_code == 200 and j5.get("seq") == (seq1 or 0) + 1,
+                "D.17 above current -> seq +1",
+                f"status={r5.status_code} seq={j5.get('seq')} expected={(seq1 or 0)+1}")
 
-# ---------------------------------------------------------------------
-# 4) Operator allow-list still enforced at verify
-# ---------------------------------------------------------------------
-def test_4_operator_allowlist_at_verify() -> None:
-    print("\n=== 4) Operator allow-list enforced at verify ===", flush=True)
+            # 18. Concurrency
+            if jwt_B and dealer_B_id and chosen.get("seller_id") != dealer_B_id:
+                race_amt = amt2 + 5000
+                count_before = await db.bids.count_documents({"auction_id": AID})
+                async def fire(token, key):
+                    h = {"Authorization": f"Bearer {token}"}
+                    t0 = time.monotonic()
+                    rr = await client.post(BASE + f"/auctions/{AID}/bid", headers=h,
+                                           json={"amount": race_amt, "idempotency_key": key})
+                    return (t0, rr.status_code, rr.text)
+                k_a = str(uuid.uuid4())
+                k_b = str(uuid.uuid4())
+                resA, resB = await asyncio.gather(
+                    fire(jwt_A, k_a),
+                    fire(jwt_B, k_b),
+                )
+                t_delta_ms = abs(resA[0] - resB[0]) * 1000
+                statuses = sorted([resA[1], resB[1]])
+                bid_winner_status = "?"
+                bid_loser_detail = "?"
+                if resA[1] == 200:
+                    bid_winner_status = f"A({DEALER_A_PHONE})"
+                    bid_loser_detail = resB[2][:160]
+                elif resB[1] == 200:
+                    bid_winner_status = f"B({DEALER_B_PHONE})"
+                    bid_loser_detail = resA[2][:160]
+                log(statuses == [200, 409], "D.18 concurrent bids: exactly one wins, one 409",
+                    f"send_delta={t_delta_ms:.1f}ms statuses={statuses} winner={bid_winner_status} loser={bid_loser_detail}")
+                count_after = await db.bids.count_documents({"auction_id": AID})
+                log(count_after == count_before + 1, "D.19 only winner row landed",
+                    f"before={count_before} after={count_after}")
+                await asyncio.sleep(1.5)
+                race_metrics = await db.realtime_metrics.find({"event":"bid_race_conflict","auction_id":AID}).sort("ts",-1).limit(5).to_list(5)
+                log(len(race_metrics) >= 1, "F.23 telemetry bid_race_conflict emitted",
+                    f"count={len(race_metrics)}")
+            else:
+                log(True, "D.18 concurrent bids", "SKIPPED - dealer B unavailable or seller")
 
-    sc, body = post("/auth/operator/verify-otp",
-                    {"phone": DEALER_PRESET_1, "firebase_id_token": "x.y.z"})
-    ok = sc == 403 and detail_of(body) == "OPERATOR_ACCESS_DENIED"
-    record("4a operator/verify-otp +919900000001 (dealer phone) → 403 OPERATOR_ACCESS_DENIED",
-           ok, f"status={sc} detail={detail_of(body)}")
+            # 24. Backward compat
+            cur = await db.auctions.find_one({"id": AID}, {"_id":0,"current_bid":1,"bid_seq":1})
+            old_amt = int(cur.get("current_bid") or 0) + 5000
+            r6 = await client.post(BASE + f"/auctions/{AID}/bid", headers=A_H,
+                                   json={"amount": old_amt})
+            j6 = r6.json() if r6.status_code == 200 else {}
+            log(r6.status_code == 200 and j6.get("success") is True and isinstance(j6.get("seq"), int),
+                "G.24 no-idempotency-key bid still works",
+                f"status={r6.status_code} seq={j6.get('seq')}")
 
+        # ============ E) WS additivity ============
+        ws_url = WS_BASE + f"/ws/auction/{AID}?token={urllib.parse.quote(jwt_A)}"
+        snapshot_frame = None
+        new_bid_frame = None
+        pong_frame = None
+        try:
+            async with websockets.connect(ws_url, open_timeout=10, close_timeout=5) as ws:
+                msg = await asyncio.wait_for(ws.recv(), timeout=5)
+                snapshot_frame = json.loads(msg)
+                await ws.send(json.dumps({"type":"ping"}))
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < 3:
+                    try:
+                        m = await asyncio.wait_for(ws.recv(), timeout=2.5)
+                    except asyncio.TimeoutError:
+                        break
+                    parsed = json.loads(m)
+                    if parsed.get("type") == "pong":
+                        pong_frame = parsed
+                        break
+                cur2 = await db.auctions.find_one({"id": AID}, {"_id":0,"current_bid":1})
+                next_amt = int(cur2.get("current_bid") or 0) + 5000
 
-# ---------------------------------------------------------------------
-# 5) Dealer-vs-operator mutual exclusion at verify
-# ---------------------------------------------------------------------
-def test_5_dealer_vs_operator_exclusion() -> None:
-    print("\n=== 5) Dealer-vs-operator mutual exclusion at verify ===", flush=True)
+                async def collect():
+                    nonlocal new_bid_frame
+                    deadline = time.monotonic() + 8
+                    while time.monotonic() < deadline:
+                        try:
+                            m = await asyncio.wait_for(ws.recv(), timeout=4)
+                        except asyncio.TimeoutError:
+                            return
+                        try:
+                            p = json.loads(m)
+                        except Exception:
+                            continue
+                        if p.get("type") == "new_bid":
+                            new_bid_frame = p
+                            return
+                collect_task = asyncio.create_task(collect())
+                await asyncio.sleep(0.3)
+                rr = await client.post(BASE + f"/auctions/{AID}/bid", headers=A_H,
+                                       json={"amount": next_amt, "idempotency_key": str(uuid.uuid4())})
+                print(f"[E] bid REST status={rr.status_code}")
+                try:
+                    await asyncio.wait_for(collect_task, timeout=10)
+                except asyncio.TimeoutError:
+                    pass
+        except Exception as e:
+            log(False, "E.20-22 WS connect/exchange", f"exc={e!r}")
 
-    sc, body = post("/auth/dealer/verify-otp",
-                    {"phone": OPERATOR_ALLOWLIST, "firebase_id_token": "x.y.z"})
-    ok = sc == 403 and detail_of(body) == "USE_OPERATOR_LOGIN"
-    record("5a dealer/verify-otp +918977986662 (operator) → 403 USE_OPERATOR_LOGIN",
-           ok, f"status={sc} detail={detail_of(body)}")
+        if snapshot_frame:
+            ok = (snapshot_frame.get("type") == "snapshot"
+                  and "auction" in snapshot_frame
+                  and "seq" in snapshot_frame
+                  and "server_ns" in snapshot_frame)
+            log(ok, "E.20 WS snapshot frame includes seq+server_ns",
+                f"keys={list(snapshot_frame)} seq={snapshot_frame.get('seq')}")
+        else:
+            log(False, "E.20 WS snapshot frame", "no snapshot received")
 
+        if pong_frame:
+            log(isinstance(pong_frame.get("server_ns"), int),
+                "E.21 ping->pong with server_ns",
+                f"frame={pong_frame}")
+        else:
+            log(False, "E.21 ping->pong", "no pong received")
 
-# ---------------------------------------------------------------------
-# 6) Rate limiting
-# ---------------------------------------------------------------------
-def test_6_rate_limiting() -> None:
-    """Use a unique phone per sub-test to avoid cross-pollution."""
-    print("\n=== 6) Rate limiting (cooldown + per-phone hour cap) ===", flush=True)
+        if new_bid_frame:
+            legacy = all(k in new_bid_frame for k in ("current_bid","top_bidder_id","top_bidder_name","total_bids","bid"))
+            additive = all(k in new_bid_frame for k in ("seq","server_ns"))
+            log(legacy and additive,
+                "E.22 new_bid frame has BOTH legacy + additive fields",
+                f"legacy={legacy} additive={additive} keys={list(new_bid_frame)}")
+        else:
+            log(False, "E.22 new_bid broadcast", "no new_bid frame received")
 
-    rl_phone = "+919876543299"
+        # ============ G) Backward compat ============
+        r = await client.get(BASE + "/dashboard/stats", headers=A_H)
+        log(r.status_code == 200, "G.25a /dashboard/stats", f"status={r.status_code}")
+        r = await client.get(BASE + "/auctions", headers=A_H)
+        log(r.status_code == 200, "G.25b /auctions", f"status={r.status_code}")
+        r = await client.get(BASE + "/auth/me", headers=A_H)
+        log(r.status_code == 200, "G.25c /auth/me", f"status={r.status_code}")
 
-    # 6a. First send → 200
-    sc, body = post("/auth/dealer/send-otp", {"phone": rl_phone})
-    ok = sc == 200
-    record("6a 1st send-otp → 200", ok, f"status={sc} body={body}")
-
-    # 6b. Immediate 2nd send within cooldown → 429
-    sc2, body2 = post("/auth/dealer/send-otp", {"phone": rl_phone})
-    detail_lower = detail_of(body2).lower()
-    has_wait_word = ("wait" in detail_lower) or ("seconds" in detail_lower) or ("slow" in detail_lower) or ("cool" in detail_lower)
-    ok = sc2 == 429 and has_wait_word
-    record("6b immediate 2nd send within 20s → 429 (cooldown)",
-           ok, f"status={sc2} detail={detail_of(body2)}")
-
-    # 6c. Slow succession to hit 5/hour cap. Use a different phone to keep
-    # this scoped. Sleep 21s between attempts to clear cooldown.
-    rl_phone_b = "+919876543298"
-    print("    [6c] Testing per-phone hourly cap (5/hour). This will take ~2 minutes.", flush=True)
-    statuses_6c: list = []
-    for i in range(6):
-        sc, body = post("/auth/dealer/send-otp", {"phone": rl_phone_b})
-        statuses_6c.append((sc, detail_of(body)))
-        print(f"    [6c-{i+1}] status={sc} detail={detail_of(body)}", flush=True)
-        if i < 5:  # don't sleep after final attempt
-            time.sleep(22)
-    # Expect first 5 → 200, 6th → 429 (per-phone hourly cap of 5)
-    first_five_ok = sum(1 for sc, _ in statuses_6c[:5] if sc == 200) == 5
-    sixth_capped = statuses_6c[5][0] == 429
-    record("6c first 5 sends 200 + 6th send 429 (per-phone hourly cap)",
-           first_five_ok and sixth_capped,
-           f"statuses={statuses_6c}")
-
-    # 6d. Verify-otp rate limit: 11 bogus tokens for same phone. First 10 → 400 OTP_INVALID; 11th → 429.
-    rl_phone_v = "+919876543297"
-    print("    [6d] Testing verify-otp rate limit (10/hour). 11 tight requests.", flush=True)
-    verify_results: list = []
-    for i in range(11):
-        sc, body = post("/auth/dealer/verify-otp",
-                        {"phone": rl_phone_v, "firebase_id_token": BOGUS_TOKEN})
-        verify_results.append((sc, detail_of(body)))
-    print(f"    [6d results] {verify_results}", flush=True)
-    first_ten_invalid = sum(1 for sc, d in verify_results[:10]
-                            if sc == 400 and d == "OTP_INVALID") == 10
-    eleventh_429 = verify_results[10][0] == 429
-    record("6d first 10 verify→400 OTP_INVALID + 11th→429",
-           first_ten_invalid and eleventh_429,
-           f"results={verify_results}")
-
-
-# ---------------------------------------------------------------------
-# 7) Seller send-otp silent gate (anti-enumeration)
-# ---------------------------------------------------------------------
-def test_7_seller_silent_gate() -> None:
-    print("\n=== 7) Seller send-otp silent gate ===", flush=True)
-
-    seller_phone = "+919999000077"
-    sc, body = post("/auth/seller/send-otp", {"phone": seller_phone})
-    has_ok = isinstance(body, dict) and body.get("ok") is True
-    has_provider = isinstance(body, dict) and body.get("provider") == "firebase"
-    ok = sc == 200 and has_ok and has_provider
-    record("7a seller/send-otp unknown phone → 200 {ok:true, provider:firebase}",
-           ok, f"status={sc} body={body}")
-
-    # 7b. Repeat — should be 429 due to cooldown actually. The review
-    # says "repeat to confirm same shape" — but cooldown will trigger.
-    # Use a different phone to confirm the shape repeats.
-    seller_phone_2 = "+919999000076"
-    sc, body = post("/auth/seller/send-otp", {"phone": seller_phone_2})
-    has_ok = isinstance(body, dict) and body.get("ok") is True
-    has_provider = isinstance(body, dict) and body.get("provider") == "firebase"
-    ok = sc == 200 and has_ok and has_provider
-    record("7b seller/send-otp 2nd unknown phone → same shape",
-           ok, f"status={sc} body={body}")
-
-
-# ---------------------------------------------------------------------
-# 8) Audit logs preserved (best-effort via direct mongo)
-# ---------------------------------------------------------------------
-def test_8_audit_logs() -> None:
-    print("\n=== 8) Audit logs preserved ===", flush=True)
-
-    try:
-        from pymongo import MongoClient  # type: ignore
-        # Backend uses MONGO_URL from /app/backend/.env
-        mongo_url = "mongodb://localhost:27017"
-        db_name = "qdrives_db"
-        # parse from .env
-        with open("/app/backend/.env", "r") as fh:
-            for line in fh:
-                if line.strip().startswith("MONGO_URL="):
-                    mongo_url = line.split("=", 1)[1].strip().strip('"').strip("'")
-                if line.strip().startswith("DB_NAME="):
-                    db_name = line.split("=", 1)[1].strip().strip('"').strip("'")
-        client = MongoClient(mongo_url, serverSelectionTimeoutMS=4000)
-        db = client[db_name]
-
-        # 8a: dealer_send_otp_blocked_operator from step 1c
-        doc = db.audit_logs.find_one({
-            "action": "dealer_send_otp_blocked_operator",
-            "meta.phone": OPERATOR_ALLOWLIST,
-        })
-        ok = doc is not None
-        record("8a audit_logs has dealer_send_otp_blocked_operator for +918977986662",
-               ok, f"doc={'found' if doc else 'missing'}")
-
-        # 8b: operator_access_denied with stage='verify' from step 4a
-        doc = db.audit_logs.find_one({
-            "action": "operator_access_denied",
-            "meta.stage": "verify",
-        })
-        ok = doc is not None
-        record("8b audit_logs has operator_access_denied stage=verify",
-               ok, f"doc={'found' if doc else 'missing'}")
-    except Exception as exc:
-        record("8 audit logs (mongo direct check)", False, f"exc={exc}")
-
-
-# ---------------------------------------------------------------------
-# 9) Health regression
-# ---------------------------------------------------------------------
-def test_9_health() -> None:
-    print("\n=== 9) Health regression ===", flush=True)
-    sc, body = get("/")
-    ok = sc == 200 and isinstance(body, dict) and body.get("status") == "ok"
-    record("9a GET /api/ → 200 {status:ok}", ok, f"status={sc} body={body}")
-
-    # /api/auth/me without a token (should be 401, route still mounted)
-    sc, body = get("/auth/me")
-    ok = sc == 401  # route still exists, just unauthenticated
-    record("9b GET /api/auth/me (no token) → 401 (route still mounted)",
-           ok, f"status={sc} detail={detail_of(body)}")
-
-
-# ---------------------------------------------------------------------
-def main() -> int:
-    print(f"BASE = {BASE}", flush=True)
-    test_1_send_otp_role_gates()
-    test_2_mock_otp_rejected()
-    test_3_bogus_token_rejected()
-    test_4_operator_allowlist_at_verify()
-    test_5_dealer_vs_operator_exclusion()
-    # Rate limiting last so cooldowns don't break earlier role-gate tests
-    test_7_seller_silent_gate()
-    test_8_audit_logs()
-    test_9_health()
-    test_6_rate_limiting()  # ~2-3 minutes
-
-    passed = sum(1 for _, ok, _ in results if ok)
-    total = len(results)
-    print(f"\n=== RESULT: {passed}/{total} PASS ===", flush=True)
-    failed = [(l, d) for l, ok, d in results if not ok]
-    if failed:
-        print("FAILURES:", flush=True)
-        for l, d in failed:
-            print(f"  - {l} :: {d}", flush=True)
-    return 0 if passed == total else 1
+    print("\n========= SUMMARY =========")
+    print(f"PASS={len(PASS)} FAIL={len(FAIL)}")
+    if FAIL:
+        print("\nFAILURES:")
+        for f in FAIL:
+            print(f)
+    return len(FAIL) == 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    ok = asyncio.run(main())
+    sys.exit(0 if ok else 1)

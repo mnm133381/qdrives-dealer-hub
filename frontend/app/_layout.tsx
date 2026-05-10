@@ -13,40 +13,44 @@ import { colors } from '../src/theme';
 /**
  * Root layout.
  *
- * Bottom-inset / system nav strategy (Android):
+ * Bottom-inset / system-nav strategy (Android):
  *
- *   1. `app.json` → `edgeToEdgeEnabled: false` keeps the system 3-button
- *      nav opaque + non-overlapping at the OS layer.
+ *   We embrace EDGE-TO-EDGE rendering (`app.json` →
+ *   `android.edgeToEdgeEnabled: true`). On Android 15+ (`targetSdk
+ *   35`), Google ENFORCES edge-to-edge in release builds regardless
+ *   of any flag — so trying to disable it is a losing battle. Instead
+ *   we lean in:
  *
- *   2. `app.json` → `androidNavigationBar.backgroundColor: #08080A` and
- *      runtime `NavigationBar.setBackgroundColorAsync('#08080A')` paints
- *      the system nav matching `colors.bg` so it visually disappears
- *      into the app surface even on Samsung One UI which otherwise
- *      defaults to opaque white.
+ *     1. Android paints the system bars as TRANSLUCENT overlays
+ *        over our app surface.
+ *     2. `useSafeAreaInsets()` returns the real gesture/3-button
+ *        bar inset (e.g. 24-30dp on Samsung gesture nav, 0 on
+ *        3-button nav where Android pushes our window up).
+ *     3. The tab bar layouts apply
+ *           paddingBottom: Math.max(insets.bottom + 8, 24)
+ *        so the bar always has at least 24dp clearance and grows
+ *        naturally to ~32dp on Samsung gesture nav, ~36dp on Pixel.
  *
- *   3. Tab bar layouts apply `paddingBottom: Math.max(insets.bottom + 8,
- *      24)` so even if Samsung mis-reports the inset, our tab bar still
- *      keeps a 24dp safety strip above the system nav.
+ *   This matches the WORKING preview behavior in PRODUCTION builds
+ *   too — fixing the prior issue where release APKs collapsed the
+ *   tab bar into the system gesture area.
  *
- *   Net effect: nothing overlaps the system nav on Samsung One UI,
- *   Pixel, OnePlus, or any aspect ratio. Bulletproof on real devices.
+ *   Note: with edge-to-edge enabled, `NavigationBar.set*ColorAsync`
+ *   and `setBehaviorAsync` are no-ops — Android owns those entirely.
+ *   We still set `setButtonStyleAsync('light')` so the system nav
+ *   icons render in light style on our dark app surface.
  */
 export default function RootLayout() {
-  // Configure Android system nav bar at runtime. This is required for
-  // Samsung One UI compatibility — the static app.json
-  // `androidNavigationBar` config does not always persist across boots
-  // on One UI 5+. Calling it once on mount guarantees the bar matches
-  // our app surface.
+  // Edge-to-edge — most NavigationBar APIs are no-ops, but the
+  // button-style call still controls icon contrast (light/dark) on
+  // the system nav. Wrapped in try/catch for older devices.
   useEffect(() => {
     if (Platform.OS !== 'android') return;
     (async () => {
       try {
-        await NavigationBar.setBackgroundColorAsync('#08080A');
         await NavigationBar.setButtonStyleAsync('light');
-        await NavigationBar.setBehaviorAsync('overlay-swipe');
       } catch {
-        // expo-navigation-bar throws on Android Go / very old devices;
-        // safe to ignore — fallback to app.json defaults.
+        // safe to ignore — fallback to system default
       }
     })();
   }, []);

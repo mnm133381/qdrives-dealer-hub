@@ -17,10 +17,10 @@
         "foregroundImage": "./assets/brand/qdrives-shield.png",
         "backgroundColor": "#08080A"
       },
-      "edgeToEdgeEnabled": false,
+      "edgeToEdgeEnabled": true,
       "softwareKeyboardLayoutMode": "pan",
       "package": "app.emergent.qdrivesdealerhub32bd13b5",
-      "versionCode": 3
+      "versionCode": 4
     },
     "androidNavigationBar": {
       "barStyle": "light-content",

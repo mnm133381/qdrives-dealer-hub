@@ -2,7 +2,7 @@
   "expo": {
     "name": "Q Drives",
     "slug": "qdrives-dealer-hub",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/brand/qdrives-app-icon.png",
     "scheme": "qdrives",
@@ -21,7 +21,11 @@
       "softwareKeyboardLayoutMode": "pan",
       "package": "app.emergent.qdrivesdealerhub32bd13b5",
       "googleServicesFile": "./google-services.json",
-      "versionCode": 7
+      "blockedPermissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "versionCode": 8
     },
     "androidNavigationBar": {
       "barStyle": "light-content",

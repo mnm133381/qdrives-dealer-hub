@@ -1,0 +1,4 @@
+
+# Production secrets — never commit
+secrets/
+*.firebase-adminsdk.json

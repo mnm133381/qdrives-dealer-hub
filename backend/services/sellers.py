@@ -10,8 +10,8 @@ DESIGN INVARIANTS
 2. No public signup. Operator manually creates the seller record and
    links it to a vehicle's car_id (which has 1:1 with auction_id).
 
-3. Seller authentication = OTP via phone. We reuse the same mocked
-   `123456` flow as the dealer side. Tokens are namespaced as
+3. Seller authentication = OTP via phone, dispatched & verified by
+   Firebase Phone Auth (production provider). Tokens are namespaced as
    `kind: "seller_access"` so a stolen seller token cannot be replayed
    against any dealer/operator endpoint.
 
@@ -225,8 +225,8 @@ async def search_vehicle_by_registration(
 async def operator_send_access(
     db, *, seller_id: str, operator_id: str,
 ) -> Dict[str, Any]:
-    """Mark the seller access as 'access_sent'. (OTP is mocked 123456 for
-    MVP — Twilio integration is separate.) Audit-logged."""
+    """Mark seller access as 'access_sent'. SMS dispatch happens
+    client-side via Firebase Phone Auth. Audit-logged."""
     seller = await db.sellers.find_one({"id": seller_id}, {"_id": 0})
     if not seller:
         raise ValueError("Seller not found")

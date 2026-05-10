@@ -3794,7 +3794,7 @@ async def admin_realtime_health(_op = Depends(get_current_admin)):
     # ---- 4. Broadcast lag spikes (last hour) — quick p-numbers ----
     lag_samples: List[int] = []
     try:
-        async for row in db.realtime_metrics.find(
+        for row in await db.realtime_metrics.find(
             {"event": "broadcast_lag_spike", "ts": {"$gte": one_hour_ago}},
             {"_id": 0, "dispatch_ms": 1},
         ).limit(200).to_list(200):
@@ -3821,7 +3821,7 @@ async def admin_realtime_health(_op = Depends(get_current_admin)):
     # ---- 6. Recent close-race events ----
     close_races: List[Dict[str, Any]] = []
     try:
-        async for row in db.realtime_metrics.find(
+        for row in await db.realtime_metrics.find(
             {"event": "auction_close_race", "ts": {"$gte": one_hour_ago}},
             {"_id": 0, "auction_id": 1, "ts": 1, "end_time_skew_ms": 1, "dealer_id": 1},
         ).sort("ts", -1).limit(8).to_list(8):

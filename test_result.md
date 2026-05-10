@@ -6064,3 +6064,171 @@ agent_communication:
         anon GET /admin/realtime/health → 401 (post-revert sanity)
         Test artifacts     →  /app/backend_test_realtime_health.py
         DB cleanup         →  12 inserted realtime_metrics docs removed
+
+#====================================================================================================
+# RUN 35 — Operator Reliability Console (operational integrity, not BI)
+#====================================================================================================
+
+backend:
+  - task: "Extended /admin/realtime/health for the operator Reliability UI"
+    implemented: true
+    working: "NA"
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false  # already retested by deep_testing_backend_v2 (23/23 PASS)
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Extended GET /api/admin/realtime/health (operator-only) with
+          tightly-scoped operational signals — explicitly NOT a BI
+          dashboard. New response shape (legacy keys preserved, new
+          keys ADDITIVE — backward compatible):
+            * active_storms[] — dealers with >5 reconnects/5min in
+              the last 5 minutes (hot WS-churn perpetrators).
+            * race_top_auctions[] — top 5 auctions ranked by
+              bid_race_conflict count in the last hour (auction
+              integrity hotspots).
+            * close_races_1h[] — 8 most-recent bids landing within
+              the final 2 seconds of an auction.
+            * broadcast_lag_ms{samples,p50,p95,max} — quick
+              percentiles over the last 200 broadcast_lag_spike
+              samples in the last hour.
+            * auctions{live, ending_in_5m, paused} — three counts
+              from db.auctions for the live grid sanity strip.
+            * alerts[] — derived intervention alerts (severity
+              critical/warn/info, optional route). Built from the
+              same numbers above so the UI never has to compute
+              policy logic. Triggers:
+                · reconnect_storm   (any active_storms entries)
+                · race_spike        (>10 race conflicts in 1h)
+                · broadcast_lag     (>5 lag spikes in 1h OR peak >1500ms)
+                · auctions_ending   (any closing in next 5min)
+                · paused_auctions   (any paused auctions)
+            * server_ns + generated_at for client cache busting.
+
+          Bug found by testing agent and fixed: two `async for row in
+          db.realtime_metrics.find(...).to_list(...)` usages were
+          silently swallowed by the surrounding try/except (Motor
+          .to_list returns an awaitable Future, not an async iter).
+          Net effect was broadcast_lag_ms.samples == 0 and
+          close_races_1h == [] regardless of underlying data.
+          Replaced with `for row in await ....to_list(N):`. Verified
+          locally: no more "realtime health lag failed: 'async for'..."
+          warnings in backend.err.log after restart.
+
+          Backend test: 23/23 PASS (anon→401, dealer→403, operator→200
+          with all 12 keys present and well-typed, alert generation
+          confirmed via 12 inserted bid_race_conflict docs, response
+          time 148ms warm, no regression to legacy clients).
+
+frontend:
+  - task: "Operator Reliability Console screen"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/(admin)/reliability.tsx, frontend/app/(admin)/_layout.tsx, frontend/app/(admin)/index.tsx, frontend/src/api.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false  # awaiting user opt-in for frontend automation
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          /app/frontend/app/(admin)/reliability.tsx (NEW, ~310 lines)
+          — auto-refresh every 10s. Five sections, top→bottom by
+          operational urgency:
+
+          1. INTERVENTION ALERTS (only when `alerts.length > 0`).
+             Each renders as a colour-coded card (critical=red,
+             warn=amber, info=neutral). Tappable when `route` is
+             set. When empty, shows a green "all clear" banner —
+             no spinner, no chart.
+
+          2. WEBSOCKET HEALTH — 4 stat cells:
+                · Live connections (gauge)
+                · Churn 1h = ws_disconnect / ws_connect (warns >60%)
+                · Reconnects 1h
+                · Active storms (critical highlight if non-zero)
+             Plus an inline list of the top 5 storming dealers, each
+             tappable to /(admin)/dealer/{id} for direct intervention.
+
+          3. BID PROPAGATION — 4 stat cells:
+                · Broadcast p50 / p95 / max
+                · Race conflicts 1h (warns >10)
+                · Out-of-order frames 1h (warns >20)
+             Plus a list of the top 5 race-contested auctions,
+             tappable to /(admin)/auction/{id}.
+
+          4. ACTIVE AUCTIONS — 4 stat cells:
+                · Live count, Ending in 5m (warns >3),
+                · Paused (warns >0), Close races 1h
+             Plus list of recent close-race events with the bid's
+             skew_ms before close, tappable.
+
+          5. FAILED / REJECTED BIDS (1h) — race losers + duplicate
+             attempts + the active threshold reference line.
+
+          NO charts. NO drill-downs deeper than auction/dealer pages.
+          NO historical view. NO "this week / this month". Pure
+          live operational reliability surface.
+
+          Routing wired:
+            * (admin)/_layout.tsx adds <Tabs.Screen name="reliability"
+              options={{href: null}} /> so it's hidden from the tab bar
+              but accessible by router push.
+            * (admin)/index.tsx gains a new tile "RELIABILITY · INTEGRITY"
+              with Activity icon, placed directly above the Broadcast
+              tile (broadcast first, reliability surfaces above so the
+              ops-watcher sees it before composing nudges).
+
+          src/api.ts:
+            * adminRealtimeHealth() return type expanded to mirror the
+              new response shape (active_storms, race_top_auctions,
+              close_races_1h, broadcast_lag_ms, auctions, alerts,
+              server_ns, generated_at).
+
+          NO frontend automation run (per user policy — awaiting opt-in).
+
+metadata:
+  created_by: "main"
+  version: "1.35"
+  test_sequence: 35
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Extended /admin/realtime/health for the operator Reliability UI"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Operator Reliability Console shipped.
+
+      Backend: extended /admin/realtime/health endpoint passed
+      23/23 targeted tests. One real bug surfaced and fixed: two
+      `async for ... .to_list()` silent failures that zeroed out
+      broadcast_lag_ms and close_races_1h. Now using the correct
+      `for row in await ....to_list(N)` shape.
+
+      Frontend: single new operator screen
+      /app/frontend/app/(admin)/reliability.tsx — auto-refreshes
+      every 10s, no charts, no historicals. Five focused sections
+      mapping 1:1 to the user's stated priority order (alerts →
+      WS health → bid propagation → active auctions → failed bids).
+      Entry point: tile on the operator home, above the broadcast
+      composer.
+
+      Hidden from tab bar (operator-only access via push). All
+      clickable rows route to existing operator pages (/dealer/:id,
+      /auction/:id) so reliability stays one tap away from action.
+
+      No regressions. No wire-format breakages. No vanity metrics.
+      Pure operational reliability surface.
+
+      Awaiting user direction for next phase. C) VAHAN integration
+      remains the only open item from the original roadmap.
+

@@ -42,12 +42,14 @@ export default function AdminLayout() {
           backgroundColor: colors.bgElevated,
           borderTopColor: 'rgba(185,28,28,0.25)',
           borderTopWidth: 1,
-          // Operator console tab bar is denser (smaller font, smaller
-          // icons). 52dp base + insets.bottom keeps it tight on legacy
-          // 3-button-nav devices and clears gesture nav cleanly.
-          height: 52 + insets.bottom,
+          // Operator console tab bar is denser. 52dp base + max(insets,
+          // 24) keeps it tight on legacy 3-button-nav devices and
+          // clears gesture nav cleanly. The Math.max guard defends
+          // against Samsung One UI mis-reporting insets.bottom = 0
+          // while still painting an opaque overlay.
+          height: 52 + Math.max(insets.bottom, 24),
           paddingTop: 6,
-          paddingBottom: insets.bottom + 6,
+          paddingBottom: Math.max(insets.bottom + 6, 24),
         },
         tabBarActiveTintColor: colors.red,
         tabBarInactiveTintColor: colors.textMuted,

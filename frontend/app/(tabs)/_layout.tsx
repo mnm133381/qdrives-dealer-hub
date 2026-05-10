@@ -45,9 +45,14 @@ export default function TabsLayout() {
           borderTopWidth: 1,
           // 56 = base content (icon + label + paddingTop). The system
           // inset is added on top so the gesture bar never overlaps.
-          height: 56 + insets.bottom,
+          // We enforce a MINIMUM 24dp bottom buffer so Samsung 3-button-
+          // nav devices (which can mis-report `insets.bottom = 0` while
+          // still painting an opaque overlay) still get visible
+          // clearance. Gesture-nav devices land near 32dp (insets.bottom
+          // ~24-28 + the 8 spare in paddingBottom), matching the spec.
+          height: 56 + Math.max(insets.bottom, 24),
           paddingTop: 8,
-          paddingBottom: insets.bottom + 8,
+          paddingBottom: Math.max(insets.bottom + 8, 24),
         },
         tabBarActiveTintColor: colors.red,
         tabBarInactiveTintColor: colors.textMuted,

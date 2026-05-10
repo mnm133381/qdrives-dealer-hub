@@ -253,23 +253,10 @@ export default function Home() {
           ))}
         </View>
 
-        {/* Trust footer */}
-        <View style={styles.trustFooter}>
-          <View style={styles.trustItem}>
-            <Lock size={14} color={colors.silver} />
-            <Text style={styles.trustItemText}>Bank-grade{'\n'}escrow</Text>
-          </View>
-          <View style={styles.trustDivider} />
-          <View style={styles.trustItem}>
-            <ShieldCheck size={14} color={colors.silver} />
-            <Text style={styles.trustItemText}>Verified{'\n'}inventory</Text>
-          </View>
-          <View style={styles.trustDivider} />
-          <View style={styles.trustItem}>
-            <Zap size={14} color={colors.silver} />
-            <Text style={styles.trustItemText}>48-hr{'\n'}settlement</Text>
-          </View>
-        </View>
+        {/* Trust footer removed per ops policy — no commercial-guarantee
+            copy on dealer surfaces (escrow/settlement timelines were
+            promises we don't enforce in v1). RC-verified inventory is
+            now signaled inline on each lot card instead. */}
       </ScrollView>
     </View>
   );

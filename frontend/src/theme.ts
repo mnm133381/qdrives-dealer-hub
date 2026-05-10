@@ -136,7 +136,14 @@ export const maskRegNo = (reg?: string | null): string => {
  * Use exactly like:
  *   const tabPad = useTabBottomPad();
  *   <ScrollView contentContainerStyle={{ paddingBottom: tabPad }} />
+ *
+ * The dealer shell uses a FLOATING navigation tray (not a fixed bar),
+ * so `useBottomTabBarHeight()` returns 0. We supplement with an
+ * explicit FLOATING_TRAY_PILL constant (pill height + margin) so
+ * scrollable content stays clear of the floating pill area.
  */
+const FLOATING_TRAY_PILL = 56; // 38 pill + 12 bottom margin + 6 buffer
+
 export const useTabBottomPad = (extra = 24): number => {
   // useBottomTabBarHeight throws when not nested inside a Tab.Navigator,
   // so we wrap it. Falls back to insets.bottom + extra so seller / auth
@@ -144,7 +151,9 @@ export const useTabBottomPad = (extra = 24): number => {
   let h = 0;
   try { h = useBottomTabBarHeight(); } catch { h = 0; }
   const insets = useSafeAreaInsets();
-  return (h || insets.bottom) + extra;
+  // When h === 0 (floating tray case) we add the pill clearance.
+  const pillExtra = h === 0 ? FLOATING_TRAY_PILL : 0;
+  return (h || insets.bottom) + pillExtra + extra;
 };
 
 

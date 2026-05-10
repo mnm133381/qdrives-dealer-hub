@@ -336,7 +336,7 @@ export default function Sell() {
             )}
           </View>
           <Text style={styles.title}>Launch an auction</Text>
-          <Text style={styles.sub}>Verified inventory. Maximum bidder reach. Settlement in 48 hours.</Text>
+          <Text style={styles.sub}>Verified inventory. Maximum bidder reach.</Text>
         </View>
 
         {/* Inspection card */}

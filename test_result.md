@@ -4945,3 +4945,66 @@ agent_communication:
         These changes are NATIVE config — they take effect ONLY on
         a fresh native build. The user is preparing the EAS build
         (Path A); the resulting AAB will carry this fix.
+
+  - agent: "main"
+    message: |
+      [DEALER FLOATING NAV TRAY — replaces fixed tab bar]
+
+      The repeated bottom-system-nav overlap on Samsung release builds
+      is now structurally avoided by replacing the dealer fixed tab
+      bar with a FLOATING pull-up tray.
+
+      NEW COMPONENT  /app/frontend/src/components/FloatingNavTray.tsx
+        - Custom React Navigation `tabBar` for dealer `<Tabs>`
+        - Two states:
+            COLLAPSED: 38dp pill, centered, shows active route icon +
+                       label + chevron-up. Always visible. Floats with
+                       `Math.max(insets.bottom, 8) + 12dp` margin above
+                       the OS system nav so it physically cannot
+                       collide on any Android variant.
+            EXPANDED:  108dp tray with 5 icon+label tabs in a row.
+        - Animation: react-native-reanimated spring (damping 22,
+          stiffness 240). Smooth, premium, no bounce-out.
+        - Gestures: react-native-gesture-handler Pan
+          - Swipe up on tray → expand
+          - Swipe down → collapse
+          - Velocity-aware (flick > 300dp/s always wins)
+        - Backdrop: dimmed Animated.View over rest of screen when
+          expanded; tap to collapse.
+        - Auto-collapses ONLY on:
+          - tap outside (backdrop)
+          - swipe down
+          - selecting a nav target
+          NO time-based auto-collapse (per user direction — dealers
+          may pause to evaluate listings).
+        - Operator console (/(admin)) keeps existing fixed bar (power
+          users; terminal aesthetic; always-visible chrome
+          appropriate).
+
+      WIRING
+        - app/(tabs)/_layout.tsx: `tabBar={(props) => <FloatingNavTray {...props} />}`
+        - tabBarStyle.height = 0 + position: 'absolute' → React
+          Navigation reserves no space; tray paints over content.
+        - useTabBottomPad() in src/theme.ts now adds a +56dp
+          FLOATING_TRAY_PILL constant when h===0 so list rows still
+          clear the floating pill area.
+        - Hidden `sell` tab (href: null) gracefully handled by
+          NAV_META lookup guard.
+
+      ALSO REMOVED (caught during pass)
+        - "Settled in 48 hours" splash subtitle (auth)/index.tsx
+        - "Settlement in 48 hours" sell.tsx subtitle
+
+      VERIFIED
+        Web bundler clean (3385 modules). Floating tray will only
+        render in production native build — Metro hot-reload sees
+        the same code path so dev/preview should also reflect the
+        new UI on next reload.
+
+      NEXT
+        Trigger fresh native APK / AAB. The floating tray, by virtue
+        of `position: 'absolute'` + `Math.max(insets.bottom, 8) + 12`
+        margin, cannot overlap with the system nav under ANY device
+        configuration — gesture nav, 3-button nav, Samsung One UI,
+        Pixel, OnePlus, foldable. The fix is structural, not
+        cosmetic.

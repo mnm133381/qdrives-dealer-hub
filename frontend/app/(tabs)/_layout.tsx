@@ -2,26 +2,29 @@ import React from 'react';
 import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
 import { Tabs, Redirect } from 'expo-router';
 import { Home, Gavel, Heart, User, ShoppingBag } from 'lucide-react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../../src/theme';
 import { useAuth } from '../../src/auth';
+import { FloatingNavTray } from '../../src/components/FloatingNavTray';
 
 /**
  * Dealer (bidder) marketplace shell.
  *
- * Admins are redirected to the dedicated `/(admin)` shell. Dealers see a
- * cinematic auction-first marketplace with no seller-leaning surfaces.
+ * Tab navigation uses the custom <FloatingNavTray /> — a pull-up
+ * floating pill that:
+ *   - never collides with Android system gesture / 3-button nav
+ *   - keeps a small visible affordance at all times
+ *   - expands on tap or swipe-up to reveal all 5 nav targets
+ *   - collapses only on user action (tap outside / swipe down /
+ *     select a route) — no time-based auto-collapse
  *
- * Bottom-inset handling:
- *   The tab bar height/padding grow with `insets.bottom` so that on
- *   gesture-nav Android (Pixel, Samsung One UI 4+) and iPhones with a
- *   home indicator, the tab bar floats above the system gesture area.
- *   On 3-button-nav Android `insets.bottom` is 0 → bar collapses to a
- *   tight 56dp profile, preserving vertical space.
+ * `tabBarStyle.height: 0` plus `position: 'absolute'` tells React
+ * Navigation NOT to reserve fixed space at the bottom; the floating
+ * tray paints over screen content. Each screen continues to pad its
+ * scroll content via `useTabBottomPad()` so list rows don't sit
+ * underneath the pill.
  */
 export default function TabsLayout() {
   const { dealer, loading } = useAuth();
-  const insets = useSafeAreaInsets();
 
   if (loading) {
     return (
@@ -37,26 +40,13 @@ export default function TabsLayout() {
 
   return (
     <Tabs
+      tabBar={(props) => <FloatingNavTray {...props} />}
       screenOptions={{
         headerShown: false,
-        tabBarStyle: {
-          backgroundColor: colors.bg,
-          borderTopColor: colors.border,
-          borderTopWidth: 1,
-          // 56 = base content (icon + label + paddingTop). The system
-          // inset is added on top so the gesture bar never overlaps.
-          // We enforce a MINIMUM 24dp bottom buffer so Samsung 3-button-
-          // nav devices (which can mis-report `insets.bottom = 0` while
-          // still painting an opaque overlay) still get visible
-          // clearance. Gesture-nav devices land near 32dp (insets.bottom
-          // ~24-28 + the 8 spare in paddingBottom), matching the spec.
-          height: 56 + Math.max(insets.bottom, 24),
-          paddingTop: 8,
-          paddingBottom: Math.max(insets.bottom + 8, 24),
-        },
-        tabBarActiveTintColor: colors.red,
-        tabBarInactiveTintColor: colors.textMuted,
-        tabBarLabelStyle: { fontSize: 11, fontWeight: '700', letterSpacing: 0.4 },
+        // No fixed reserved space; floating tray paints over content
+        tabBarStyle: { height: 0, borderTopWidth: 0, position: 'absolute' },
+        // Keep the labels available in route metadata for the tray
+        tabBarLabelStyle: { fontSize: 0 },
       }}
     >
       <Tabs.Screen name="index" options={{ title: 'Home', tabBarIcon: ({ color, size }) => <Home size={size - 2} color={color} strokeWidth={2} /> }} />

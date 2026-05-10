@@ -66,7 +66,7 @@ export default function AuthLanding() {
 
             <Text style={styles.dealerTitle}>Dealer Network Access</Text>
             <Text style={styles.dealerSub}>
-              Bid, buy and watch verified inventory from Q Drives. Settled in 48 hours.
+              Bid, buy and watch verified inventory from the Q Drives auction floor.
             </Text>
 
             <View style={styles.featureRow}>

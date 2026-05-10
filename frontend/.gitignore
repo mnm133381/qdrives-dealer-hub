@@ -38,6 +38,3 @@ yarn-error.*
 
 app-example
 
-# Firebase config (regenerable, but should not be committed publicly)
-google-services.json
-GoogleService-Info.plist

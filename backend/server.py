@@ -832,6 +832,71 @@ async def _enrich_auction(a: dict) -> dict:
     seller = await db.dealers.find_one({"id": a.get("seller_id")}, {"_id": 0}) or {}
     insp = await db.inspections.find_one({"car_id": a["car_id"]}, {"_id": 0})
     a = serialize(a)
+
+    # ------------------------------------------------------------------
+    # Media join — single source of truth for what every consumer sees.
+    #
+    # Historical layout:  car.images[] was a list of legacy Unsplash demo
+    # URLs auto-seeded at car creation.
+    # New layout:         operators upload to db.media (gridfs / external
+    # providers, section-aware, with is_featured + order). Without this
+    # join the legacy demo URLs leak through to the dealer marketplace
+    # even after a fresh upload — that's the "Audi demo over Honda
+    # Amaze" bug.
+    #
+    # Strategy:
+    #   1. Pull ALL media rows for car_id (featured first, then ordered).
+    #   2. Build resolved absolute URLs (gridfs → /api/media/<id>/file).
+    #   3. Override car.images[] with this resolved list IF any uploaded
+    #      (non-external) media exists, OR if external media has been
+    #      explicitly featured. Else keep legacy car.images for back-compat.
+    #   4. Surface the full media list as auction.media + auction.car.media
+    #      so future frontend can render section-aware galleries directly
+    #      without a second HTTP round-trip.
+    # ------------------------------------------------------------------
+    if car:
+        try:
+            media_docs = await db.media.find(
+                {"car_id": car["id"]}, {"_id": 0},
+            ).sort([("is_featured", -1), ("order", 1), ("created_at", 1)]).to_list(80)
+        except Exception:
+            media_docs = []
+
+        def _abs_url(m: dict) -> str:
+            if m.get("provider") == "external" and m.get("external_url"):
+                return str(m["external_url"])
+            mid = m.get("id")
+            return f"/api/media/{mid}/file" if mid else ""
+
+        resolved = [_abs_url(m) for m in media_docs if _abs_url(m)]
+        has_uploaded = any(m.get("provider") != "external" for m in media_docs)
+
+        if resolved and (has_uploaded or any(m.get("is_featured") for m in media_docs)):
+            # Override legacy demo URLs with the authoritative list.
+            car["images"] = resolved
+        elif not car.get("images"):
+            # Defensive: never let an empty array silently render as broken
+            # tiles; let the frontend show its own "no image yet" tile.
+            car["images"] = []
+
+        # Compact serialised media for clients that want section-aware view
+        car["media"] = [
+            {
+                "id": m.get("id"),
+                "section": m.get("section"),
+                "subsection": m.get("subsection"),
+                "url": _abs_url(m),
+                "thumb_url": (
+                    f"/api/media/{m['id']}/thumb"
+                    if m.get("thumb_storage_id") and m.get("id") else _abs_url(m)
+                ),
+                "is_featured": bool(m.get("is_featured")),
+                "order": m.get("order"),
+                "provider": m.get("provider"),
+            }
+            for m in media_docs
+        ]
+
     a["car"] = serialize(car) if car else None
     a["seller"] = {"id": seller.get("id"), "dealership_name": seller.get("dealership_name", ""), "city": seller.get("city", ""), "verified": seller.get("verified", False)} if seller else None
     a["inspection_pdf"] = serialize(insp) if insp else None
@@ -3513,10 +3578,19 @@ async def set_featured_media(car_id: str, media_id: str, dealer = Depends(get_cu
     ok = await media_svc.set_featured(db, car_id, media_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Media not found for this car")
-    # Reflect featured into car.images[0] for backwards compat (if non-external)
+    # Reflect the new featured image into car.images[0] for ALL providers
+    # (not just external). Without this, dealers reading auction.car.images
+    # continue to see the previous Unsplash demo URL even after the operator
+    # picks a real uploaded photo. _enrich_auction will also overwrite
+    # car.images at read time, but persisting here keeps the legacy field
+    # consistent for any consumer that bypasses the enricher.
     feat = await db.media.find_one({"id": media_id}, {"_id": 0})
-    if feat and feat.get("provider") == "external" and feat.get("external_url"):
-        await db.cars.update_one({"id": car_id}, {"$set": {"images.0": feat["external_url"]}})
+    if feat:
+        if feat.get("provider") == "external" and feat.get("external_url"):
+            featured_url = feat["external_url"]
+        else:
+            featured_url = f"/api/media/{media_id}/file"
+        await db.cars.update_one({"id": car_id}, {"$set": {"images.0": featured_url}})
     return {"success": True}
 
 

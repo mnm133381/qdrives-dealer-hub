@@ -5,6 +5,7 @@ import {
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ShoppingBag, Trophy, Clock, ChevronRight, AlertCircle } from 'lucide-react-native';
+import { firstCarImage } from '../../src/imageUri';
 import { colors, radii, formatINR, formatINRFull, useTabBottomPad } from '../../src/theme';
 import { api } from '../../src/api';
 
@@ -109,7 +110,7 @@ export default function Purchases() {
                 style={styles.card}
                 activeOpacity={0.85}
               >
-                <Image source={{ uri: car.images?.[0] || '' }} style={styles.thumb} />
+                <Image source={{ uri: firstCarImage(car.images) }} style={styles.thumb} />
                 <View style={{ flex: 1, padding: 12 }}>
                   <View style={styles.statusRow}>
                     {tab === 'won' ? (

@@ -5,6 +5,7 @@ import {
 import * as Haptics from 'expo-haptics';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Bell, Activity, TrendingUp, ShieldCheck, ChevronRight, Search, BadgeCheck, Lock, Zap, Filter, Inbox } from 'lucide-react-native';
+import { firstCarImage } from '../../src/imageUri';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, formatINR, maskRegNo, radii, useTabBottomPad } from '../../src/theme';
 import { useAuth } from '../../src/auth';
@@ -329,7 +330,7 @@ function FeaturedCard({ auction }: { auction: any }) {
       accessibilityLabel={`Open auction for ${auction.car?.year || ''} ${auction.car?.make || ''} ${auction.car?.model || ''}`}
       style={styles.featCard}
     >
-      <Image source={{ uri: auction.car?.images?.[0] }} style={[styles.featImage, { pointerEvents: 'none' }]} />
+      <Image source={{ uri: firstCarImage(auction.car?.images) }} style={[styles.featImage, { pointerEvents: 'none' }]} />
       <View style={[styles.featGradTop, { pointerEvents: 'none' }]} />
       <View style={[styles.featGradBottom, { pointerEvents: 'none' }]} />
       {ending && (

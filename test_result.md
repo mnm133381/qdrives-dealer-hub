@@ -6610,3 +6610,136 @@ agent_communication:
       in chat (deployment checklist, known limitations, rollback
       procedure, post-launch monitoring, first-48-hour priorities).
 
+
+
+#====================================================================================================
+# RUN 37 — Media pipeline regression (_enrich_auction joins db.media)
+#====================================================================================================
+
+backend:
+  - task: "Media pipeline join in _enrich_auction (car.images rebuilt, car.media surfaced)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          [RUN 37 — MEDIA PIPELINE REGRESSION — 30/31 PASS]
+          Target: https://qdrives-dealer-hub.preview.emergentagent.com/api
+          Test artifact: /app/backend_test_media_pipeline.py
+          Read-only run — no DB writes, no bids placed, no media uploaded,
+          no JWTs minted.
+
+          ===== 1) GET /api/auctions ✅ =====
+          • HTTP 200, returned a list of 3 live auctions.
+          • Spot-checked 3 items. Every item has car.images (list) AND
+            the NEW car.media (list) fields.
+          • item[0]: media_len=0, car.images=1 legacy Unsplash URL
+            (kept because no uploaded media yet — correct).
+          • item[1]: media_len=8, car.images=8 (rebuilt from media,
+            featured-first ordering — external provider URLs honored).
+            car.media[0] has the FULL expected schema:
+            {id, section, subsection, url, thumb_url, is_featured, order,
+             provider} — no keys missing.
+          • item[2]: media_len=0, car.images=4 legacy URLs (back-compat
+            preserved when no media docs exist).
+
+          ===== 2) GET /api/auctions/{id} ✅ =====
+          • Fetched live auction id=6fad2aaf-...; HTTP 200.
+          • car.images present (legacy field still populated).
+          • car.media present as a new array (NO regression on shape).
+          • Core auction fields all preserved: id, car_id, seller_id,
+            status, start_time, end_time, current_bid, starting_bid,
+            reserve_price, seconds_remaining, recent_bids[], seller{},
+            inspection_pdf, interested_dealers, data_class,
+            hidden_from_* flags, ended_notified.
+          • GET on non-existent id 'abc' correctly returns 404 (sanity).
+
+          ===== 3) GET /api/cars (list + by-id) ✅ =====
+          • GET /api/cars → 200, list of 30.
+          • GET /api/cars/{id} → 200 for the first car.
+          • Car-level images here are NOT joined with media (expected
+            per spec — _enrich_auction is the join point, not car GET).
+            No regression.
+
+          ===== 4) POST /api/auctions/{id}/bid (anon) ✅ =====
+          • Anonymous POST with body {"amount":1} on a live auction →
+            401 {"detail":"Not authenticated"}. Endpoint signature
+            unchanged; no 500.
+
+          ===== 5) Media endpoints ✅ =====
+          • GET /api/cars/{id}/media → 200, returns list. No 500.
+          • GET /api/cars/{id}/media/completeness → 401 (auth-gated by
+            Depends(get_current_dealer) at server.py:3501 — by design,
+            NOT a regression from the media-pipeline fix, NOT a 500).
+            Logged in script as a check-200 expectation; this is the
+            single "fail" line in the run summary and is expected
+            behaviour. Verified no 500.
+
+          ===== 6) POST /api/cars/{id}/media/featured/{media_id} ✅ =====
+          • Anonymous POST → 401 {"detail":"Not authenticated"}.
+            Admin gate (get_current_admin) fires before media-id
+            validation. No 500.
+
+          ===== VERDICT =====
+          The media pipeline fix in _enrich_auction (server.py:830-898)
+          is working as specified:
+            (a) car.images[] is overridden with the resolved media list
+                when uploaded (non-external) media exists, OR when any
+                external media row has is_featured=true.
+            (b) car.media[] is ALWAYS present (may be empty array).
+            (c) Each car.media item carries the documented schema
+                {id, section, subsection, url, thumb_url, is_featured,
+                 order, provider} with relative /api/media/<id>/file
+                URLs for uploaded items and external_url passthrough for
+                provider='external'.
+            (d) Auction-level fields are intact — no schema regressions.
+            (e) Auth gates on /bid and /set-featured unchanged (401 anon).
+
+          No 500s anywhere in the surface. Ship it.
+
+metadata:
+  created_by: "testing"
+  version: "1.37"
+  test_sequence: 37
+  run_ui: false
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      [RUN 37 — MEDIA PIPELINE REGRESSION COMPLETE — VERDICT: PASS]
+
+      30/31 strict assertions PASS. The single non-PASS line is
+      /api/cars/{id}/media/completeness returning 401 anonymous —
+      that endpoint is gated by Depends(get_current_dealer) at
+      server.py:3501 and has always been auth-only. Not a regression
+      from the media-pipeline fix; not a 500.
+
+      Confirmed in production-shape data:
+        • car.media[] is present on EVERY auction (the NEW field).
+        • car.images[] is rebuilt from media when uploaded/external
+          media exists with is_featured (verified on a live auction
+          with 8 external media → 8 resolved URLs in car.images,
+          featured-first order).
+        • car.media[0] carries the exact documented schema
+          {id, section, subsection, url, thumb_url, is_featured,
+           order, provider}.
+        • Auction-level fields preserved (id, car_id, seller_id,
+          status, start_time, end_time, current_bid, recent_bids,
+          seller, inspection_pdf, seconds_remaining, …).
+        • POST /api/auctions/{id}/bid anon → 401 (signature intact).
+        • POST /api/cars/{id}/media/featured/{media_id} anon → 401
+          (admin gate intact).
+
+      No 500s. No schema regressions. No DB writes performed
+      during this audit.

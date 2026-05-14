@@ -8,6 +8,7 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, ActivityIn
 import { useRouter, useFocusEffect, Redirect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
+import { firstCarImage } from '../../src/imageUri';
 import { ArrowLeft, FileText, Upload, ChevronRight, ShieldCheck, FileX, Eye, Pause, Play, XCircle, Archive, Lock, Edit3 } from 'lucide-react-native';
 import { colors, formatINR, maskRegNo, radii } from '../../src/theme';
 import { api, inspectionPdfUrl } from '../../src/api';
@@ -204,7 +205,7 @@ export default function MyListings() {
             return (
               <View key={a.id} style={styles.card} testID={`my-listing-${a.id}`}>
                 <TouchableOpacity onPress={() => router.push({ pathname: '/lot/[id]', params: { id: a.id } } as any)} style={styles.cardHead} activeOpacity={0.85}>
-                  <Image source={{ uri: car.images?.[0] }} style={styles.thumb} />
+                  <Image source={{ uri: firstCarImage(car.images) }} style={styles.thumb} />
                   <View style={{ flex: 1, marginLeft: 12 }}>
                     <View style={styles.titleRow}>
                       <Text style={styles.cardTitle} numberOfLines={1}>{car.year} {car.make} {car.model}</Text>

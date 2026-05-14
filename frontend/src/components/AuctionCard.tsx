@@ -4,6 +4,7 @@ import { colors, formatINR, maskRegNo, radii, spacing } from '../theme';
 import { CountdownTimer } from './CountdownTimer';
 import { LivePulse } from './LivePulse';
 import { Heart, Gauge, Calendar, Fuel, Eye, Flame, ShieldCheck, BadgeCheck } from 'lucide-react-native';
+import { firstCarImage } from '../imageUri';
 
 type Props = {
   auction: any;
@@ -33,10 +34,23 @@ export function AuctionCard({ auction, onPress, onWatch, watching, testID }: Pro
       {isLive && <View style={styles.activeEdge} pointerEvents="none" />}
 
       <View style={styles.imageWrap}>
-        <Image
-          source={{ uri: (car.images && car.images[0]) || 'https://images.unsplash.com/photo-1768965468641-39e87aa78a9d?w=1200&q=80' }}
-          style={styles.image}
-        />
+        {/* Image source resolution rules (production):
+             1. Prefer the FIRST entry from car.images[] (server now
+                returns uploaded photo URLs via the media join in
+                _enrich_auction).
+             2. Relative paths like "/api/media/<id>/file" are prefixed
+                with EXPO_PUBLIC_BACKEND_URL so the native APK can
+                fetch them.
+             3. If no image exists at all we render an empty placeholder
+                tile — NEVER fall back to a hardcoded demo URL, that
+                was the "Audi over Honda Amaze" bug. */}
+        {(() => {
+          const uri = firstCarImage(car.images);
+          if (!uri) {
+            return <View style={[styles.image, styles.imagePlaceholder]}><Text style={styles.placeholderText}>No photo yet</Text></View>;
+          }
+          return <Image source={{ uri }} style={styles.image} />;
+        })()}
         <View style={styles.imageGradTop} />
         <View style={styles.imageGradBottom} />
 
@@ -201,6 +215,8 @@ const styles = StyleSheet.create({
   },
   imageWrap: { width: '100%', height: 248, position: 'relative', backgroundColor: '#000' },
   image: { width: '100%', height: '100%' },
+  imagePlaceholder: { backgroundColor: colors.bgCard, alignItems: 'center', justifyContent: 'center' },
+  placeholderText: { color: colors.textMuted, fontSize: 11, fontWeight: '600' },
   imageGradTop: { position: 'absolute', top: 0, left: 0, right: 0, height: 80, backgroundColor: 'rgba(5,5,8,0.65)' },
   imageGradBottom: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 130, backgroundColor: 'rgba(5,5,8,0.92)' },
 

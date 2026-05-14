@@ -6974,12 +6974,41 @@ agent_communication:
 backend:
   - task: "Draft / Launch workflow — auctions default to draft + atomic launch endpoint"
     implemented: true
-    working: false
+    working: true
     file: "backend/server.py"
     stuck_count: 0
     priority: "high"
     needs_retesting: false
     status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          [RUN 39 — Double-launch idempotency RETEST — PASS]
+          Test script: /app/test_double_launch.py against http://localhost:8001/api.
+          Operator: +919900000099 (super_admin). DEV_BYPASS_OTP=true.
+
+          Sequence:
+            1) operator/verify-otp → 200, token minted.
+            2) POST /cars (no launch_immediately) → 200, auction.status='draft'.
+            3) 3x POST /media/upload (multipart JPEG, section=exterior) → 3x 200.
+            4) POST /cars/{car_id}/media/featured/{media_id} → 200.
+            5) POST /admin/auctions/{id}/launch → HTTP 200,
+               body.success=true, body.auction.status='live'.
+            6) ** POST /admin/auctions/{id}/launch AGAIN ** →
+               HTTP 409 with body EXACTLY
+               {"detail":"Auction is no longer in draft state."}  ✅
+            7) POST /admin/auctions/00000000-0000-0000-0000-000000000000/launch
+               → HTTP 404 {"detail":"Auction not found"}  ✅
+
+          Fix verified at server.py:1396-1400 — wrong-state guard now
+          runs BEFORE _launch_readiness, so already-live auctions short-
+          circuit to 409 with the human-readable message instead of the
+          misleading 422 LAUNCH_NOT_READY with empty issues[]. 404 path
+          for unknown auction id also confirmed (404 fired before
+          readiness check).
+
+          Earlier failure (see prior entry) is fully resolved. Marking
+          working=true.
       - working: false
         agent: "testing"
         comment: |

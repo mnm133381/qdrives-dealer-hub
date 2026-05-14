@@ -1386,6 +1386,19 @@ async def admin_auction_launch(auction_id: str, req: AuctionLaunchReq, op = Depe
     recomputed from req.duration_minutes (or the existing window if not
     overridden). Emits an ops broadcast so live grids update instantly.
     """
+    # ── Wrong-state guard FIRST so a double-tap on the Launch button
+    # returns the spec-correct 409 (the auction has already transitioned),
+    # not a misleading 422 LAUNCH_NOT_READY with empty issues[] (which
+    # would otherwise be the result of _launch_readiness flagging
+    # status!='draft' but stripping the human-readable message). Keeps
+    # the API contract simple: 422 == fix media / featured; 409 ==
+    # nothing to do, auction is no longer a draft.
+    pre = await db.auctions.find_one({"id": auction_id}, {"_id": 0, "status": 1})
+    if not pre:
+        raise HTTPException(status_code=404, detail="Auction not found")
+    if pre.get("status") not in ("draft", "ready"):
+        raise HTTPException(status_code=409, detail="Auction is no longer in draft state.")
+
     readiness = await _launch_readiness(auction_id)
     if not readiness["ready"]:
         # 422 is the right status here — request is well-formed but the

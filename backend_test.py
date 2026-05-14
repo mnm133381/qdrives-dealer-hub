@@ -1,370 +1,359 @@
 """
-Backend test for RUN 34 — Realtime Bid Reliability + WebSocket Hardening.
-Public preview URL is hit (NOT localhost).
+Backend test suite for the Draft → Launch auction workflow.
+
+Targets: standard host http://localhost:8001 (API prefix /api), per review
+request. Uses OTP=123456 via DEV_BYPASS_OTP (operator phone allow-listed
+via ADMIN_PHONES env var).
+
+Run:
+    python /app/backend_test.py
 """
-import os
+from __future__ import annotations
+
+import io
 import sys
-import time
-import json
-import uuid
-import asyncio
-import urllib.parse
-from typing import Any, Dict, Optional, Tuple, List
+import traceback
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
-import httpx
-import websockets
-from motor.motor_asyncio import AsyncIOMotorClient
+import requests
 
-BASE = "https://qdrives-dealer-hub.preview.emergentagent.com/api"
-WS_BASE = "wss://qdrives-dealer-hub.preview.emergentagent.com/api"
+BASE = "http://localhost:8001/api"
+OPERATOR_PHONE = "+918977986662"  # super_admin per ADMIN_PHONES / test_credentials
+OTP = "123456"
 
-OPERATOR_PHONE = "+919900000099"
-DEALER_A_PHONE = "+919900000001"
-DEALER_B_PHONE = "+919900000002"
-
-mongo = AsyncIOMotorClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
-db = mongo["qdrives_db"]
-
-PASS: List[str] = []
-FAIL: List[str] = []
+results: List[Tuple[str, bool, str]] = []
 
 
-def log(ok: bool, name: str, detail: str = "") -> None:
-    line = f"{'PASS' if ok else 'FAIL'} {name}{(' — ' + detail) if detail else ''}"
-    print(line)
-    (PASS if ok else FAIL).append(line)
+def record(name: str, ok: bool, detail: str = "") -> None:
+    results.append((name, ok, detail))
+    sym = "PASS" if ok else "FAIL"
+    print(f"[{sym}] {name} :: {detail}")
 
 
-async def login(client: httpx.AsyncClient, phone: str, kind: str = "dealer") -> Dict[str, Any]:
-    path = "/auth/operator/verify-otp" if kind == "operator" else "/auth/dealer/verify-otp"
-    r = await client.post(BASE + path, json={"phone": phone, "otp": "123456"})
-    r.raise_for_status()
+def operator_login() -> str:
+    r = requests.post(f"{BASE}/auth/operator/send-otp", json={"phone": OPERATOR_PHONE}, timeout=10)
+    if r.status_code != 200:
+        raise RuntimeError(f"operator send-otp failed: {r.status_code} {r.text}")
+    r = requests.post(
+        f"{BASE}/auth/operator/verify-otp",
+        json={"phone": OPERATOR_PHONE, "otp": OTP},
+        timeout=10,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"operator verify-otp failed: {r.status_code} {r.text}")
+    body = r.json()
+    if body.get("dealer", {}).get("role") not in ("admin", "super_admin"):
+        raise RuntimeError(f"operator role wrong: {body.get('dealer', {}).get('role')}")
+    return body["token"]
+
+
+def make_jpeg_bytes(size_px: int = 64, color: Tuple[int, int, int] = (200, 50, 50)) -> bytes:
+    """Generate a minimal valid JPEG."""
+    try:
+        from PIL import Image
+        img = Image.new("RGB", (size_px, size_px), color)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=80)
+        return buf.getvalue()
+    except Exception:
+        return bytes.fromhex(
+            "ffd8ffe000104a46494600010100000100010000ffdb004300080606070605080707070909080a0c140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e2720222c231c1c2837292c30313434341f27393d38323c2e333432ffdb0043010909090c0b0c180d0d1832211c213232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232ffc00011080001000103012200021101031101ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffc4001f0100030101010101010101010000000000000102030405060708090a0bffc400b51100020102040403040705040400010277000102031104052131061241510761711322328108144291a1b1c109233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a636465666768696a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c03010002110311003f00fbfba28a2803ffd9"
+        )
+
+
+def create_car_draft(token: str, suffix: str = "DRAFT", launch_immediately: bool = False) -> Dict[str, Any]:
+    payload = {
+        "registration_number": f"MH99{suffix}",
+        "make": "Hyundai",
+        "model": "Creta",
+        "variant": "SX(O) Turbo",
+        "year": 2023,
+        "manufacturing_year": 2022,
+        "registration_year": 2023,
+        "fuel_type": "Petrol",
+        "transmission": "Automatic",
+        "km_driven": 28000,
+        "color": "Phantom Black",
+        "owners": 1,
+        "insurance_validity": "08/2026",
+        "rto_details": "MH02 - Mumbai West",
+        "notes": "Single owner, accident-free, full service history.",
+        "reserve_price": 1450000,
+        "starting_bid": 1100000,
+        "duration_minutes": 60,
+        "launch_immediately": launch_immediately,
+    }
+    r = requests.post(
+        f"{BASE}/cars", json=payload,
+        headers={"Authorization": f"Bearer {token}"}, timeout=15,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"POST /cars failed: {r.status_code} {r.text}")
     return r.json()
 
 
-async def main():
-    async with httpx.AsyncClient(timeout=30) as client:
-        # ============ PRECONDITION ============
-        r = await client.get(BASE + "/dashboard/stats")
-        log(r.status_code == 401, "PRE 401 on /dashboard/stats no auth", f"status={r.status_code}")
-        r = await client.get(BASE + "/auctions/abc/snapshot")
-        log(r.status_code == 401, "PRE 401 on /auctions/x/snapshot no auth", f"status={r.status_code}")
-        r = await client.post(BASE + "/realtime/report", json={"event":"frame_out_of_order"})
-        log(r.status_code == 401, "PRE 401 on /realtime/report no auth", f"status={r.status_code}")
-        r = await client.get(BASE + "/admin/realtime/health")
-        log(r.status_code == 401, "PRE 401 on /admin/realtime/health no auth", f"status={r.status_code}")
+def upload_media(token: str, car_id: str, section: str = "exterior") -> Dict[str, Any]:
+    files = {
+        "file": ("photo.jpg", make_jpeg_bytes(), "image/jpeg"),
+    }
+    data = {"car_id": car_id, "section": section}
+    r = requests.post(
+        f"{BASE}/media/upload", files=files, data=data,
+        headers={"Authorization": f"Bearer {token}"}, timeout=20,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"POST /media/upload failed: {r.status_code} {r.text}")
+    return r.json()
 
-        # ============ Login ============
-        try:
-            op = await login(client, OPERATOR_PHONE, "operator")
-            op_jwt = op["token"]
-            log(True, "Login operator", f"role={op['dealer']['role']}")
-        except Exception as e:
-            log(False, "Login operator", str(e))
-            return
 
-        try:
-            dA = await login(client, DEALER_A_PHONE, "dealer")
-            jwt_A = dA["token"]
-            dealer_A_id = dA["dealer"]["id"]
-            log(True, "Login dealer A", f"phone={DEALER_A_PHONE} id={dealer_A_id}")
-        except Exception as e:
-            log(False, "Login dealer A", str(e))
-            return
+def set_featured(token: str, car_id: str, media_id: str) -> None:
+    r = requests.post(
+        f"{BASE}/cars/{car_id}/media/featured/{media_id}",
+        headers={"Authorization": f"Bearer {token}"}, timeout=10,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"set_featured failed: {r.status_code} {r.text}")
 
-        try:
-            dB = await login(client, DEALER_B_PHONE, "dealer")
-            jwt_B = dB["token"]
-            dealer_B_id = dB["dealer"]["id"]
-            log(True, "Login dealer B", f"phone={DEALER_B_PHONE} id={dealer_B_id}")
-        except Exception as e:
-            log(False, "Login dealer B", str(e))
-            jwt_B = None
-            dealer_B_id = None
 
-        OP_H = {"Authorization": f"Bearer {op_jwt}"}
-        A_H = {"Authorization": f"Bearer {jwt_A}"}
-        B_H = {"Authorization": f"Bearer {jwt_B}"} if jwt_B else None
+def run() -> bool:
+    print("=" * 70)
+    print("Draft → Launch workflow test :: BASE =", BASE)
+    print("=" * 70)
 
-        # ============ A) Auth gating ============
-        r = await client.get(BASE + "/admin/realtime/health", headers=OP_H)
-        ok = r.status_code == 200
-        body = r.json() if ok else {}
-        keys_present = all(k in body for k in ("live_ws","rooms","events_1h","thresholds")) if ok else False
-        types_ok = isinstance(body.get("live_ws"), int) and isinstance(body.get("rooms"), list) and isinstance(body.get("events_1h"), dict) and isinstance(body.get("thresholds"), dict) if ok else False
-        log(ok and keys_present and types_ok, "A.4 GET /admin/realtime/health (operator)", f"status={r.status_code} keys={list(body)[:6]}")
+    op_token = operator_login()
+    auth = {"Authorization": f"Bearer {op_token}"}
+    print(f"[setup] Operator JWT acquired for {OPERATOR_PHONE}")
 
-        r = await client.get(BASE + "/admin/realtime/health", headers=A_H)
-        log(r.status_code == 403, "A.5 GET /admin/realtime/health (dealer)", f"status={r.status_code}")
+    # ---- 1. Default-to-draft on car/auction creation ----
+    res_default = create_car_draft(op_token, suffix="DR001")
+    draft_auction = res_default["auction"]
+    draft_id = draft_auction["id"]
+    draft_car_id = res_default["car"]["id"]
+    ok = draft_auction.get("status") == "draft"
+    record("1a. POST /cars defaults to status='draft'",
+           ok, f"status={draft_auction.get('status')} auction_id={draft_id}")
 
-        # ============ B) /realtime/report validation ============
-        r = await client.post(BASE + "/realtime/report", headers=A_H,
-                              json={"event":"frame_out_of_order","auction_id":"x","expected_seq":5,"got_seq":7})
-        log(r.status_code == 200 and r.json().get("ok") is True, "B.6 frame_out_of_order valid", f"status={r.status_code} body={r.text[:80]}")
+    res_imm = create_car_draft(op_token, suffix="IMM01", launch_immediately=True)
+    imm_auction = res_imm["auction"]
+    imm_id = imm_auction["id"]
+    ok = imm_auction.get("status") == "live"
+    record("1b. POST /cars with launch_immediately=true → status='live'",
+           ok, f"status={imm_auction.get('status')} auction_id={imm_id}")
 
-        r = await client.post(BASE + "/realtime/report", headers=A_H,
-                              json={"event":"definitely_not_real"})
-        ok = (r.status_code == 400 and "unknown_event" in r.text)
-        log(ok, "B.7 unknown_event -> 400", f"status={r.status_code} body={r.text[:80]}")
+    # ---- 2. Draft hidden from dealers ----
+    r = requests.get(f"{BASE}/auctions", timeout=10)
+    pub_list = r.json() if r.status_code == 200 else []
+    hidden_ok = (
+        r.status_code == 200
+        and not any(a.get("status") == "draft" for a in pub_list)
+        and not any(a.get("id") == draft_id for a in pub_list)
+    )
+    record("2a. GET /auctions (anon) excludes drafts",
+           hidden_ok,
+           f"status={r.status_code} total={len(pub_list)} draft_present={any(a.get('id')==draft_id for a in pub_list)}")
 
-        # 9e30 truncated to int via Pydantic v2 — if rejected, that's still acceptable (no 500)
-        r = await client.post(BASE + "/realtime/report", headers=OP_H,
-                              json={"event":"snapshot_resync","expected_seq":2147483648,"got_seq":1})
-        log(r.status_code in (200, 422, 400), "B.8 huge counter -> no 500", f"status={r.status_code}")
+    r = requests.get(f"{BASE}/auctions/{draft_id}", timeout=10)
+    if r.status_code == 200:
+        body = r.json()
+        ok_directfetch = body.get("status") == "draft"
+        record("2b. GET /auctions/{draft_id} direct fetch", ok_directfetch,
+               f"200 returned with status={body.get('status')} (preserved, NOT promoted to live)")
+    elif r.status_code == 404:
+        record("2b. GET /auctions/{draft_id} direct fetch", True,
+               f"404 — draft filtered (acceptable per review)")
+    else:
+        record("2b. GET /auctions/{draft_id} direct fetch", False,
+               f"unexpected status={r.status_code} body={r.text[:200]}")
 
-        # ============ C) Snapshot endpoint ============
-        from datetime import datetime, timezone
-        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
-        a_doc = await db.auctions.find_one(
-            {"status":"live", "end_time": {"$gt": now_naive}},
-            {"_id":0},
+    # ---- 3. Launch readiness pre-flight (empty draft) ----
+    r = requests.get(f"{BASE}/admin/auctions/{draft_id}/launch-readiness",
+                     headers=auth, timeout=10)
+    ok = r.status_code == 200
+    readiness_empty = r.json() if ok else {}
+    record("3a. GET /launch-readiness reachable (empty draft)",
+           ok, f"status={r.status_code}")
+    if ok:
+        issues = readiness_empty.get("issues", [])
+        upload_issue = any("Upload at least" in i and "photos" in i for i in issues)
+        featured_issue = any("Featured" in i for i in issues)
+        ok2 = (
+            readiness_empty.get("ready") is False
+            and upload_issue and featured_issue
         )
-        if not a_doc:
-            log(False, "C precondition: live auction available", "no truly-live auctions in DB")
-            return
-        AID = a_doc["id"]
+        record("3b. Empty draft: ready=false + photos+featured issues present",
+               ok2,
+               f"ready={readiness_empty.get('ready')} media_count={readiness_empty.get('media_count')} "
+               f"featured_count={readiness_empty.get('featured_count')} "
+               f"min_photos_required={readiness_empty.get('min_photos_required')} issues={issues}")
 
-        r = await client.get(BASE + f"/auctions/{AID}/snapshot", headers=A_H)
-        ok = r.status_code == 200
-        body = r.json() if ok else {}
-        keys_ok = all(k in body for k in ("auction","bids","seq","server_ns")) if ok else False
-        log(ok and keys_ok, "C.9 snapshot dealer keys",
-            f"status={r.status_code} keys={list(body)[:6]} seq={body.get('seq')}")
-        log(isinstance(body.get("seq"), int) and isinstance(body.get("server_ns"), int) and isinstance(body.get("bids"), list) and isinstance(body.get("auction"), dict),
-            "C.9 types of seq/server_ns/bids/auction", f"seq_type={type(body.get('seq')).__name__}")
+    # ---- 4. Launch endpoint hard-gating ----
+    r = requests.post(
+        f"{BASE}/admin/auctions/{draft_id}/launch", json={},
+        headers=auth, timeout=10,
+    )
+    ok = r.status_code == 422
+    body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+    detail = body.get("detail") if isinstance(body, dict) else None
+    code_ok = (
+        isinstance(detail, dict)
+        and detail.get("code") == "LAUNCH_NOT_READY"
+        and isinstance(detail.get("issues"), list)
+        and len(detail["issues"]) > 0
+    )
+    record("4a. POST /launch on unready draft → 422 LAUNCH_NOT_READY", ok and code_ok,
+           f"status={r.status_code} detail={detail}")
 
-        fresh = await db.auctions.find_one({"id": AID}, {"_id":0,"bid_seq":1})
-        log(int(fresh.get("bid_seq") or 0) == int(body.get("seq") or 0),
-            "C.10 snapshot.seq == db.auctions.bid_seq",
-            f"snap.seq={body.get('seq')} db.bid_seq={fresh.get('bid_seq') or 0}")
+    # Upload 3 media + set featured
+    media_ids: List[str] = []
+    for _ in range(3):
+        m = upload_media(op_token, draft_car_id, section="exterior")
+        media_ids.append(m["id"])
+    record("4b. Uploaded 3 media via /media/upload", len(media_ids) == 3,
+           f"media_ids={media_ids}")
+    set_featured(op_token, draft_car_id, media_ids[0])
+    record("4c. Set featured via POST /cars/{car_id}/media/featured/{media_id}",
+           True, f"featured_media={media_ids[0]}")
 
-        bids_in_snap = body.get("bids") or []
-        ord_ok = True
-        for i in range(len(bids_in_snap) - 1):
-            if str(bids_in_snap[i].get("created_at") or "") < str(bids_in_snap[i+1].get("created_at") or ""):
-                ord_ok = False
-                break
-        log(ord_ok and len(bids_in_snap) <= 50, "C.11 snapshot.bids DESC + ≤50",
-            f"len={len(bids_in_snap)} ord_ok={ord_ok}")
+    r = requests.get(f"{BASE}/admin/auctions/{draft_id}/launch-readiness",
+                     headers=auth, timeout=10)
+    readiness_ready = r.json() if r.status_code == 200 else {}
+    ok = (
+        readiness_ready.get("ready") is True
+        and readiness_ready.get("media_count", 0) >= 3
+        and readiness_ready.get("featured_count", 0) >= 1
+    )
+    record("4d. Re-check /launch-readiness → ready=true", ok,
+           f"ready={readiness_ready.get('ready')} media_count={readiness_ready.get('media_count')} "
+           f"featured_count={readiness_ready.get('featured_count')} issues={readiness_ready.get('issues')}")
 
-        r = await client.get(BASE + "/auctions/00000000-0000-0000-0000-000000000000/snapshot", headers=A_H)
-        log(r.status_code == 404, "C.12 snapshot non-existent -> 404", f"status={r.status_code}")
+    before_launch_ts = datetime.utcnow()
+    r = requests.post(
+        f"{BASE}/admin/auctions/{draft_id}/launch", json={},
+        headers=auth, timeout=10,
+    )
+    ok = r.status_code == 200
+    body = r.json() if ok else {}
+    launched_at = body.get("launched_at")
+    auc = body.get("auction") or {}
+    success_flag = body.get("success") is True
+    status_live = auc.get("status") == "live"
 
-        # ============ D) Bid + idempotency ============
-        candidates = await db.auctions.find(
-            {"status":"live", "end_time": {"$gt": now_naive}},
-            {"_id":0},
-        ).to_list(20)
-        chosen = None
-        for cand in candidates:
-            if cand.get("seller_id") not in (dealer_A_id, dealer_B_id):
-                chosen = cand
-                break
-        if not chosen:
-            log(False, "D precondition: live auction with neutral seller", "skipping write tests")
-        else:
-            AID = chosen["id"]
-            base_amt = int(chosen.get("current_bid") or chosen.get("starting_bid") or 0)
-            print(f"\n[D] Using auction {AID} base={base_amt}")
+    delta_min = None
+    delta_start = None
+    timing_ok = False
+    try:
+        st = datetime.fromisoformat((auc.get("start_time") or "").replace("Z", "+00:00")).replace(tzinfo=None)
+        et = datetime.fromisoformat((auc.get("end_time") or "").replace("Z", "+00:00")).replace(tzinfo=None)
+        delta_min = (et - st).total_seconds() / 60.0
+        delta_start = abs((st - before_launch_ts).total_seconds())
+        timing_ok = (55 <= delta_min <= 65) and (delta_start < 60)
+    except Exception as e:
+        print("    [warn] timing parse fail:", e)
 
-            pre_count = await db.bids.count_documents({"auction_id": AID})
+    record("4e. POST /launch on ready draft → 200, status=live, timestamps OK",
+           ok and success_flag and status_live and bool(launched_at) and timing_ok,
+           f"status_code={r.status_code} success={success_flag} auction.status={auc.get('status')} "
+           f"launched_at={launched_at} start={auc.get('start_time')} end={auc.get('end_time')} "
+           f"duration_min={delta_min} start_drift_s={delta_start}")
 
-            k1 = "k1-" + str(uuid.uuid4())
-            amt1 = base_amt + 5000
-            r = await client.post(BASE + f"/auctions/{AID}/bid", headers=A_H,
-                                  json={"amount": amt1, "idempotency_key": k1})
-            ok = r.status_code == 200
-            j = r.json() if ok else {}
-            seq1 = j.get("seq")
-            log(ok and j.get("success") is True and isinstance(seq1, int) and seq1 > 0,
-                "D.13 happy path bid -> 200 with seq",
-                f"status={r.status_code} seq={seq1}")
-            mid_count = await db.bids.count_documents({"auction_id": AID})
-            log(mid_count == pre_count + 1, "D.13 db.bids increments by 1",
-                f"pre={pre_count} mid={mid_count}")
+    # ---- 5. Double-launch idempotency ----
+    r = requests.post(
+        f"{BASE}/admin/auctions/{draft_id}/launch", json={},
+        headers=auth, timeout=10,
+    )
+    ok = r.status_code == 409
+    body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+    record("5. Double-launch on already-live auction → 409",
+           ok, f"status={r.status_code} detail={body.get('detail') if isinstance(body, dict) else body}")
 
-            r2 = await client.post(BASE + f"/auctions/{AID}/bid", headers=A_H,
-                                   json={"amount": amt1, "idempotency_key": k1})
-            ok2 = r2.status_code == 200
-            j2 = r2.json() if ok2 else {}
-            log(ok2 and j2.get("seq") == seq1 and j2.get("success") is True,
-                "D.14 replay identical -> same shape",
-                f"status={r2.status_code} seq2={j2.get('seq')}")
-            after_count = await db.bids.count_documents({"auction_id": AID})
-            log(after_count == mid_count, "D.14 db.bids unchanged on replay",
-                f"mid={mid_count} after={after_count}")
+    # ---- 6. Now visible to dealers ----
+    r = requests.get(f"{BASE}/auctions", timeout=10)
+    pub_list2 = r.json() if r.status_code == 200 else []
+    in_list = any(a.get("id") == draft_id for a in pub_list2)
+    record("6a. Launched auction now appears in GET /auctions (anon)",
+           in_list, f"status={r.status_code} list_size={len(pub_list2)} present={in_list}")
 
-            r3 = await client.post(BASE + f"/auctions/{AID}/bid", headers=A_H,
-                                   json={"amount": amt1 + 50000, "idempotency_key": k1})
-            j3 = r3.json() if r3.status_code == 200 else {}
-            log(r3.status_code == 200 and j3.get("seq") == seq1,
-                "D.15 same key, diff amount -> cached original",
-                f"status={r3.status_code} seq={j3.get('seq')}")
-            after2 = await db.bids.count_documents({"auction_id": AID})
-            log(after2 == mid_count, "D.15 no new bid on key reuse",
-                f"mid={mid_count} after2={after2}")
+    r = requests.get(f"{BASE}/auctions/{draft_id}", timeout=10)
+    ok = r.status_code == 200
+    body = r.json() if ok else {}
+    car = body.get("car") or {}
+    media_list = car.get("media") or []
+    images_list = car.get("images") or []
+    images_resolved = all(
+        (isinstance(u, str) and ("/api/media/" in u or u.startswith("http"))) for u in images_list
+    ) if images_list else False
+    no_unsplash_placeholder = not any(
+        isinstance(u, str) and "unsplash.com" in u for u in images_list
+    )
+    record(
+        "6b. GET /auctions/{id} returns status=live with media[]+images resolved",
+        ok and body.get("status") == "live" and len(media_list) >= 3
+        and images_resolved and no_unsplash_placeholder,
+        f"status={body.get('status')} media_count={len(media_list)} images={len(images_list)} "
+        f"images_resolved={images_resolved} unsplash_present={not no_unsplash_placeholder} "
+        f"sample_url={(images_list or ['<none>'])[0]}",
+    )
 
-            await asyncio.sleep(2)
-            since = await db.realtime_metrics.find({"event":"bid_duplicate_attempt","auction_id":AID}).sort("ts",-1).limit(5).to_list(5)
-            log(len(since) >= 1, "F.23 telemetry bid_duplicate_attempt emitted",
-                f"count={len(since)}")
+    # ---- 7. Duration override ----
+    res2 = create_car_draft(op_token, suffix="DR002")
+    draft2_id = res2["auction"]["id"]
+    draft2_car_id = res2["car"]["id"]
+    m_ids2 = []
+    for _ in range(3):
+        m = upload_media(op_token, draft2_car_id, section="exterior")
+        m_ids2.append(m["id"])
+    set_featured(op_token, draft2_car_id, m_ids2[0])
 
-            r4 = await client.post(BASE + f"/auctions/{AID}/bid", headers=A_H,
-                                   json={"amount": amt1 - 100, "idempotency_key": str(uuid.uuid4())})
-            log(r4.status_code == 400 and "at least" in r4.text,
-                "D.16 below current -> 400",
-                f"status={r4.status_code} body={r4.text[:80]}")
+    r = requests.post(
+        f"{BASE}/admin/auctions/{draft2_id}/launch",
+        json={"duration_minutes": 5}, headers=auth, timeout=10,
+    )
+    ok = r.status_code == 200
+    body = r.json() if ok else {}
+    auc2 = body.get("auction") or {}
+    delta_min2 = None
+    timing_ok = False
+    try:
+        st = datetime.fromisoformat((auc2.get("start_time") or "").replace("Z", "+00:00")).replace(tzinfo=None)
+        et = datetime.fromisoformat((auc2.get("end_time") or "").replace("Z", "+00:00")).replace(tzinfo=None)
+        delta_min2 = (et - st).total_seconds() / 60.0
+        timing_ok = 4.5 <= delta_min2 <= 5.5
+    except Exception:
+        pass
+    record("7. POST /launch with duration_minutes=5 → end-start ≈ 5 min",
+           ok and timing_ok,
+           f"status={r.status_code} duration_min={delta_min2}")
 
-            k2 = str(uuid.uuid4())
-            amt2 = amt1 + 5000
-            r5 = await client.post(BASE + f"/auctions/{AID}/bid", headers=A_H,
-                                   json={"amount": amt2, "idempotency_key": k2})
-            j5 = r5.json() if r5.status_code == 200 else {}
-            log(r5.status_code == 200 and j5.get("seq") == (seq1 or 0) + 1,
-                "D.17 above current -> seq +1",
-                f"status={r5.status_code} seq={j5.get('seq')} expected={(seq1 or 0)+1}")
+    # ---- Regression sanity ----
+    for path, hdrs, label in [
+        ("/auctions", {}, "GET /auctions anon"),
+        ("/auctions", auth, "GET /auctions auth"),
+        ("/admin/realtime/health", auth, "GET /admin/realtime/health"),
+        ("/dashboard/stats", auth, "GET /dashboard/stats"),
+    ]:
+        r = requests.get(f"{BASE}{path}", headers=hdrs, timeout=10)
+        ok = r.status_code < 500
+        record(f"R. {label} no 5xx", ok, f"status={r.status_code}")
 
-            # 18. Concurrency
-            if jwt_B and dealer_B_id and chosen.get("seller_id") != dealer_B_id:
-                race_amt = amt2 + 5000
-                count_before = await db.bids.count_documents({"auction_id": AID})
-                async def fire(token, key):
-                    h = {"Authorization": f"Bearer {token}"}
-                    t0 = time.monotonic()
-                    rr = await client.post(BASE + f"/auctions/{AID}/bid", headers=h,
-                                           json={"amount": race_amt, "idempotency_key": key})
-                    return (t0, rr.status_code, rr.text)
-                k_a = str(uuid.uuid4())
-                k_b = str(uuid.uuid4())
-                resA, resB = await asyncio.gather(
-                    fire(jwt_A, k_a),
-                    fire(jwt_B, k_b),
-                )
-                t_delta_ms = abs(resA[0] - resB[0]) * 1000
-                statuses = sorted([resA[1], resB[1]])
-                bid_winner_status = "?"
-                bid_loser_detail = "?"
-                if resA[1] == 200:
-                    bid_winner_status = f"A({DEALER_A_PHONE})"
-                    bid_loser_detail = resB[2][:160]
-                elif resB[1] == 200:
-                    bid_winner_status = f"B({DEALER_B_PHONE})"
-                    bid_loser_detail = resA[2][:160]
-                log(statuses == [200, 409], "D.18 concurrent bids: exactly one wins, one 409",
-                    f"send_delta={t_delta_ms:.1f}ms statuses={statuses} winner={bid_winner_status} loser={bid_loser_detail}")
-                count_after = await db.bids.count_documents({"auction_id": AID})
-                log(count_after == count_before + 1, "D.19 only winner row landed",
-                    f"before={count_before} after={count_after}")
-                await asyncio.sleep(1.5)
-                race_metrics = await db.realtime_metrics.find({"event":"bid_race_conflict","auction_id":AID}).sort("ts",-1).limit(5).to_list(5)
-                log(len(race_metrics) >= 1, "F.23 telemetry bid_race_conflict emitted",
-                    f"count={len(race_metrics)}")
-            else:
-                log(True, "D.18 concurrent bids", "SKIPPED - dealer B unavailable or seller")
-
-            # 24. Backward compat
-            cur = await db.auctions.find_one({"id": AID}, {"_id":0,"current_bid":1,"bid_seq":1})
-            old_amt = int(cur.get("current_bid") or 0) + 5000
-            r6 = await client.post(BASE + f"/auctions/{AID}/bid", headers=A_H,
-                                   json={"amount": old_amt})
-            j6 = r6.json() if r6.status_code == 200 else {}
-            log(r6.status_code == 200 and j6.get("success") is True and isinstance(j6.get("seq"), int),
-                "G.24 no-idempotency-key bid still works",
-                f"status={r6.status_code} seq={j6.get('seq')}")
-
-        # ============ E) WS additivity ============
-        ws_url = WS_BASE + f"/ws/auction/{AID}?token={urllib.parse.quote(jwt_A)}"
-        snapshot_frame = None
-        new_bid_frame = None
-        pong_frame = None
-        try:
-            async with websockets.connect(ws_url, open_timeout=10, close_timeout=5) as ws:
-                msg = await asyncio.wait_for(ws.recv(), timeout=5)
-                snapshot_frame = json.loads(msg)
-                await ws.send(json.dumps({"type":"ping"}))
-                t0 = time.monotonic()
-                while time.monotonic() - t0 < 3:
-                    try:
-                        m = await asyncio.wait_for(ws.recv(), timeout=2.5)
-                    except asyncio.TimeoutError:
-                        break
-                    parsed = json.loads(m)
-                    if parsed.get("type") == "pong":
-                        pong_frame = parsed
-                        break
-                cur2 = await db.auctions.find_one({"id": AID}, {"_id":0,"current_bid":1})
-                next_amt = int(cur2.get("current_bid") or 0) + 5000
-
-                async def collect():
-                    nonlocal new_bid_frame
-                    deadline = time.monotonic() + 8
-                    while time.monotonic() < deadline:
-                        try:
-                            m = await asyncio.wait_for(ws.recv(), timeout=4)
-                        except asyncio.TimeoutError:
-                            return
-                        try:
-                            p = json.loads(m)
-                        except Exception:
-                            continue
-                        if p.get("type") == "new_bid":
-                            new_bid_frame = p
-                            return
-                collect_task = asyncio.create_task(collect())
-                await asyncio.sleep(0.3)
-                rr = await client.post(BASE + f"/auctions/{AID}/bid", headers=A_H,
-                                       json={"amount": next_amt, "idempotency_key": str(uuid.uuid4())})
-                print(f"[E] bid REST status={rr.status_code}")
-                try:
-                    await asyncio.wait_for(collect_task, timeout=10)
-                except asyncio.TimeoutError:
-                    pass
-        except Exception as e:
-            log(False, "E.20-22 WS connect/exchange", f"exc={e!r}")
-
-        if snapshot_frame:
-            ok = (snapshot_frame.get("type") == "snapshot"
-                  and "auction" in snapshot_frame
-                  and "seq" in snapshot_frame
-                  and "server_ns" in snapshot_frame)
-            log(ok, "E.20 WS snapshot frame includes seq+server_ns",
-                f"keys={list(snapshot_frame)} seq={snapshot_frame.get('seq')}")
-        else:
-            log(False, "E.20 WS snapshot frame", "no snapshot received")
-
-        if pong_frame:
-            log(isinstance(pong_frame.get("server_ns"), int),
-                "E.21 ping->pong with server_ns",
-                f"frame={pong_frame}")
-        else:
-            log(False, "E.21 ping->pong", "no pong received")
-
-        if new_bid_frame:
-            legacy = all(k in new_bid_frame for k in ("current_bid","top_bidder_id","top_bidder_name","total_bids","bid"))
-            additive = all(k in new_bid_frame for k in ("seq","server_ns"))
-            log(legacy and additive,
-                "E.22 new_bid frame has BOTH legacy + additive fields",
-                f"legacy={legacy} additive={additive} keys={list(new_bid_frame)}")
-        else:
-            log(False, "E.22 new_bid broadcast", "no new_bid frame received")
-
-        # ============ G) Backward compat ============
-        r = await client.get(BASE + "/dashboard/stats", headers=A_H)
-        log(r.status_code == 200, "G.25a /dashboard/stats", f"status={r.status_code}")
-        r = await client.get(BASE + "/auctions", headers=A_H)
-        log(r.status_code == 200, "G.25b /auctions", f"status={r.status_code}")
-        r = await client.get(BASE + "/auth/me", headers=A_H)
-        log(r.status_code == 200, "G.25c /auth/me", f"status={r.status_code}")
-
-    print("\n========= SUMMARY =========")
-    print(f"PASS={len(PASS)} FAIL={len(FAIL)}")
-    if FAIL:
-        print("\nFAILURES:")
-        for f in FAIL:
-            print(f)
-    return len(FAIL) == 0
+    # ---- Summary ----
+    total = len(results)
+    failed = [r for r in results if not r[1]]
+    print()
+    print("=" * 70)
+    print(f"SUMMARY: {total - len(failed)}/{total} passed")
+    if failed:
+        print("FAILURES:")
+        for name, _, detail in failed:
+            print(f"  ❌ {name} — {detail}")
+    print("=" * 70)
+    return len(failed) == 0
 
 
 if __name__ == "__main__":
-    ok = asyncio.run(main())
-    sys.exit(0 if ok else 1)
+    try:
+        ok = run()
+        sys.exit(0 if ok else 1)
+    except Exception as e:
+        traceback.print_exc()
+        sys.exit(2)

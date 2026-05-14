@@ -6743,3 +6743,283 @@ agent_communication:
 
       No 500s. No schema regressions. No DB writes performed
       during this audit.
+
+## ──────────────────────────────────────────────────────────────
+## RUN 38 — DRAFT / LAUNCH WORKFLOW (PRE-LAUNCH MEDIA UPLOAD)
+## ──────────────────────────────────────────────────────────────
+
+backend:
+  - task: "Draft / Launch workflow — auctions default to draft + atomic launch endpoint"
+    implemented: true
+    working: "NA"
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Backend already modified in prior turn:
+            • New auctions created via POST /api/cars now default to
+              status="draft" unless launch_immediately=true (legacy
+              compat for seeders).
+            • New endpoint GET  /api/admin/auctions/{id}/launch-readiness
+              returns {ready, issues[], media_count, featured_count,
+              min_photos_required, status}. Hard-gated to operator role.
+            • New endpoint POST /api/admin/auctions/{id}/launch
+              atomically transitions draft|ready → live ONLY if
+              readiness passes; sets fresh start_time=now and recomputes
+              end_time from req.duration_minutes (or preserves the
+              originally-planned window), audits "auction_launched",
+              broadcasts on the "ops" room.
+            • Gating constants: LAUNCH_MIN_PHOTOS=3, LAUNCH_REQUIRE_FEATURED=True.
+            • Draft auctions remain hidden from dealer-facing lists
+              (status NOT IN ["archived","withdrawn","draft","cancelled","ended"]
+              filter at server.py:935 / :971).
+          Needs testing focus:
+            1) Creating a car/auction → auction.status === "draft".
+            2) /launch-readiness on a fresh draft returns ready=false
+               with media_count<3.
+            3) /launch on not-ready draft → 422 LAUNCH_NOT_READY.
+            4) /launch on ready draft (≥3 media + ≥1 featured) → 200,
+               auction.status now "live", new start/end_time.
+            5) Double-tap /launch → 409 on second call (idempotency via
+               status guard).
+            6) Draft auctions MUST NOT appear in GET /api/auctions
+               (anonymous) and MUST NOT be reachable as live lots.
+            7) Legacy: POST /api/cars with launch_immediately=true still
+               creates a live auction directly (seeders compat).
+
+frontend:
+  - task: "Draft / Launch workflow — sell screen + media manager Launch CTA"
+    implemented: true
+    working: "NA"
+    file: "frontend/app/(tabs)/sell.tsx, frontend/app/inventory/[carId]/media.tsx, frontend/app/my-listings/index.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Frontend changes:
+            • sell.tsx — Removed STOCK_GALLERY (no more Unsplash demo
+              fallbacks). On "Save draft & upload photos" tap, creates
+              car with images=[] (backend defaults status=draft) and
+              routes to /inventory/{carId}/media?auctionId={auctionId}.
+              Inspection PDF, if drafted, is attached to the draft.
+              Toast: "Draft created · upload photos next".
+            • media.tsx — Reads auctionId from query params (or
+              auto-discovers via GET /api/auctions filtered by car_id).
+              Pulls /admin/auctions/{id}/launch-readiness on load,
+              renders:
+                 - Top banner: "DRAFT — NOT VISIBLE TO DEALERS" or
+                   "✓ READY TO LAUNCH" + photo/featured counters and
+                   first issue text.
+                 - Sticky bottom red FAB "Launch Auction" (disabled
+                   with helper text "Upload X more · pick featured"
+                   when not ready). Confirm dialog on tap.
+                 - On success → router.replace("/lot/[id]") + success
+                   toast "Auction is now LIVE".
+            • my-listings/index.tsx — DRAFTS tab already existed (tab
+              counter logic intact). "VEHICLE PHOTOS" row now passes
+              auctionId in query params so the media manager can show
+              the launch CTA for any draft, not just newly created ones.
+          Gallery (lot/[id].tsx): unchanged — already uses the in-house
+            ZoomGallery (pinch, double-tap zoom, swipe, counter,
+            swipe-down close). react-native-image-viewing was evaluated
+            but rejected because the package ships .ios.js/.android.js
+            only and breaks the web bundler (UnableToResolveError for
+            ./components/ImageItem/ImageItem on platform=web). The
+            in-house ZoomGallery is feature-equivalent and works on
+            web + iOS + android without metro.config patches.
+          Will request frontend testing only after user approval.
+
+metadata:
+  created_by: "main"
+  version: "1.38"
+  test_sequence: 38
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Draft / Launch workflow — auctions default to draft + atomic launch endpoint"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      [RUN 38 — DRAFT / LAUNCH WORKFLOW IMPLEMENTED]
+
+      Backend already prepared in prior run; frontend now fully wires
+      it up. Please run the backend testing agent on the FOCUS task
+      "Draft / Launch workflow — auctions default to draft + atomic
+      launch endpoint" with the verification list below.
+
+      Verification list (mirrors the user's checklist):
+        ✓ draft auction creation (POST /api/cars → status=draft)
+        ✓ media upload before launch works (existing endpoints OK)
+        ✓ featured image persistence (existing /set-featured OK)
+        ✓ image synchronization across roles (_enrich_auction OK from RUN 37)
+        ✓ live listing image rendering (RUN 37 PASS)
+        ✓ gallery fetch APIs (RUN 37 PASS)
+        ✓ launch endpoint behaviour:
+            - 422 LAUNCH_NOT_READY when <3 photos or no featured
+            - 200 on ready draft + transitions status=live + sets
+              new start/end_time
+            - 409 on double-launch
+        ✓ cache invalidation (broadcast on "ops" room → live grids
+          refresh; also _enrich_auction always joins fresh media)
+        ✓ no fallback/demo image leakage (sell.tsx no longer sends
+          STOCK_GALLERY; backend createCar already removed the demo
+          placeholder)
+        ✓ auction publish state transitions (draft → live atomically;
+          status guard prevents re-launch)
+
+      Auth creds for testing live in /app/memory/test_credentials.md.
+
+  - agent: "testing"
+    message: |
+      [RUN 38 — DRAFT / LAUNCH WORKFLOW BACKEND TEST — 18/19 PASS, 1 BUG]
+
+      Target: http://localhost:8001/api (per review request). Set
+      DEV_BYPASS_OTP=true in /app/backend/.env so OTP=123456 path is
+      honoured. Operator phone +918977986662 (super_admin per
+      ADMIN_PHONES). Test script: /app/backend_test.py.
+
+      ✅ 1a. POST /api/cars without launch_immediately → auction.status="draft".
+      ✅ 1b. POST /api/cars with launch_immediately=true → auction.status="live".
+      ✅ 2a. GET /api/auctions (anon) excludes drafts — list returned
+            4 entries, none with status=draft, none matching draft_id.
+      ✅ 2b. GET /api/auctions/{draft_id} direct fetch returns 200
+            with status="draft" preserved (NOT promoted to live). API
+            doesn't 404 the draft — it surfaces it with its true state,
+            which is acceptable per review ("either 404 or returned but
+            never publicly-visible live lot"). The status preservation
+            is enforced by EXPLICIT_PRESERVE in _enrich_auction.
+      ✅ 3a/3b. GET /admin/auctions/{draft_id}/launch-readiness on empty
+            draft → 200 {ready=false, media_count=0, featured_count=0,
+            min_photos_required=3, issues=["Upload at least 3 photos
+            (current: 0).", "Mark one photo as Featured before
+            launching."]}. Exact strings match review expectation.
+      ✅ 4a. POST /launch on not-ready draft → 422 with
+            detail.code=="LAUNCH_NOT_READY" and detail.issues=
+            ["Upload at least 3 photos (current: 0).", "Mark one
+            photo as Featured before launching."].
+      ✅ 4b. Uploaded 3 media via POST /media/upload (multipart, JPEG,
+            section=exterior) → 3 media ids minted.
+      ✅ 4c. POST /cars/{car_id}/media/featured/{media_id} → 200.
+      ✅ 4d. /launch-readiness re-check → {ready=true, media_count=3,
+            featured_count=1, issues=[]}.
+      ✅ 4e. POST /launch with body {} → 200 {success:true,
+            auction.status="live", launched_at=2026-05-14T14:49:35Z,
+            start_time≈now (drift 2ms), end_time = start + 60min}.
+            Default duration of 60min preserved when duration_minutes
+            not supplied.
+
+      ❌ 5. Double-launch idempotency on already-live auction →
+            Expected: HTTP 409 with detail "Auction is no longer in
+            draft state."
+            Actual: HTTP 422 with detail={"code":"LAUNCH_NOT_READY",
+            "issues":[]}.
+            ROOT CAUSE (server.py:1389-1396 + 1352-1361):
+            admin_auction_launch() runs _launch_readiness() FIRST.
+            _launch_readiness sets ready = (issues==[] AND status in
+            ('draft','ready')). For a live auction status='live' is
+            NOT in ('draft','ready'), so ready=False — but the only
+            issue check that appends a string requires status NOT in
+            ('draft','ready','live'), so for status='live' the issues
+            list stays empty. Net effect: 422 LAUNCH_NOT_READY with
+            empty issues, swallowing the intended 409 path at
+            server.py:1432-1433.
+            FIX (minimal): in _launch_readiness, when status not in
+            ('draft','ready') append an explicit issue like
+            "Auction is in status='{status}' — cannot launch."
+            OR more correctly, in admin_auction_launch(): re-fetch
+            auction status FIRST and 409 if status != 'draft' BEFORE
+            calling _launch_readiness. The atomic CAS at
+            find_one_and_update is correctly written ({"status":
+            {"$in": ["draft","ready"]}}) but the 422 short-circuits
+            it. The review spec explicitly requires 409 here, so this
+            is in-scope.
+
+      ✅ 6a. After launch, GET /api/auctions (anon) now lists the
+            auction (list_size grew 4 → 5, present=true).
+      ✅ 6b. GET /api/auctions/{id} returns status=live, car.media[]
+            length=3, car.images[] length=3 — all images resolved to
+            /api/media/{id}/file paths (NO unsplash placeholder URLs).
+            Verified _enrich_auction joins db.media correctly.
+      ✅ 7. POST /launch with body {"duration_minutes": 5} on a fresh
+            ready draft → 200 with end-start delta = 5.0 minutes
+            exactly.
+
+      Regression sanity (no 5xx confirmed):
+        ✅ GET /api/auctions anon → 200
+        ✅ GET /api/auctions auth → 200
+        ✅ GET /api/admin/realtime/health (operator) → 200
+        ✅ GET /api/dashboard/stats (operator) → 200
+
+      ENV NOTE: set /app/backend/.env DEV_BYPASS_OTP=true to honour
+      OTP=123456 path. Production must flip this back to false; the
+      test cannot otherwise mint a Firebase ID token without the
+      live Firebase admin SDK + a real device session.
+
+      Summary: 18/19 PASS. Single in-scope bug is the double-launch
+      idempotency path returning 422 instead of 409. Trivial fix in
+      _launch_readiness or admin_auction_launch.
+
+backend:
+  - task: "Draft / Launch workflow — auctions default to draft + atomic launch endpoint"
+    implemented: true
+    working: false
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: |
+          [Draft → Launch test — 18/19 PASS] Test script /app/backend_test.py.
+          PASSING:
+            • POST /cars defaults to status='draft' (1a)
+            • POST /cars launch_immediately=true → status='live' (1b)
+            • GET /auctions (anon) excludes drafts (2a)
+            • GET /auctions/{draft_id} returns 200 with status='draft' preserved
+              (2b — review accepts either 404 or returned with non-live state)
+            • GET /launch-readiness on empty draft → ready=false with exact
+              expected issue strings (3a/3b)
+            • POST /launch on unready draft → 422 with
+              detail.code='LAUNCH_NOT_READY' and non-empty issues[] (4a)
+            • Media upload via /media/upload + set-featured both 200 (4b/4c)
+            • /launch-readiness on populated draft → ready=true (4d)
+            • POST /launch on ready draft → 200 success=true,
+              auction.status='live', launched_at present, start_time≈now,
+              end_time=start+60min (4e)
+            • Now appears in GET /auctions anon (6a)
+            • GET /auctions/{id} status='live' with car.media[]=3 and
+              car.images[] resolved to /api/media/{id}/file (no Unsplash) (6b)
+            • Duration override 5min works (delta=5.0min exactly) (7)
+            • Regression: /auctions, /admin/realtime/health, /dashboard/stats
+              all <500.
+
+          ❌ FAILING (1 bug, in scope per review):
+            • Test 5: Double-launch on already-live auction returns HTTP 422
+              {"detail":{"code":"LAUNCH_NOT_READY","issues":[]}} instead of
+              the spec-required HTTP 409 "Auction is no longer in draft state."
+              Root cause: admin_auction_launch (server.py:1389-1396) runs
+              _launch_readiness() first. For a live auction, _launch_readiness
+              returns ready=false (because status='live' is not in
+              ('draft','ready')) with EMPTY issues[] (because the issue
+              string only fires for status NOT in ('draft','ready','live')).
+              The 422 short-circuits the atomic CAS guard at server.py:1432
+              ("Auction is no longer in draft state.") so the 409 path is
+              unreachable.
+              FIX (one-line): either (a) in _launch_readiness when
+              status='live' append "Auction already live — cannot relaunch."
+              to issues, OR (b) preferred: in admin_auction_launch, fetch
+              auction status BEFORE _launch_readiness and 409 immediately
+              if status != 'draft'.

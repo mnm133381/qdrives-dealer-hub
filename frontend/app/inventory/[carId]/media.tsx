@@ -21,7 +21,7 @@ import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import {
   ArrowLeft, ImagePlus, Star, Trash2, Move, CheckCircle2, AlertCircle,
-  Upload as UploadIcon, X, ChevronDown, ShieldAlert, ShieldCheck,
+  Upload as UploadIcon, X, ChevronDown, ShieldAlert, ShieldCheck, Rocket,
 } from 'lucide-react-native';
 import { colors, radii } from '../../../src/theme';
 import { api } from '../../../src/api';
@@ -51,8 +51,9 @@ type PendingUpload = {
 export default function MediaManager() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ carId: string }>();
+  const params = useLocalSearchParams<{ carId: string; auctionId?: string }>();
   const carId = params.carId as string;
+  const auctionIdParam = (params.auctionId as string) || null;
   const toast = useToast();
   const { dealer } = useAuth();
 
@@ -68,6 +69,18 @@ export default function MediaManager() {
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [moveTarget, setMoveTarget] = useState<Media | null>(null);
 
+  // ---- Draft / launch state ----
+  // If we don't get auctionId via query params (e.g. user landed here from
+  // my-listings or by deep-link), discover it by scanning auctions filtered
+  // by car_id. We keep the discovered id in local state so the Launch CTA
+  // can use it.
+  const [auctionId, setAuctionId] = useState<string | null>(auctionIdParam);
+  const [auctionStatus, setAuctionStatus] = useState<string | null>(null);
+  const [readiness, setReadiness] = useState<{
+    ready: boolean; issues: string[]; media_count: number; featured_count: number; min_photos_required: number;
+  } | null>(null);
+  const [launching, setLaunching] = useState(false);
+
   const load = useCallback(async () => {
     try {
       const [m, c] = await Promise.all([
@@ -76,12 +89,44 @@ export default function MediaManager() {
       ]);
       setMedia(m as any[]);
       setCompleteness(c);
+
+      // Discover auction id by car_id if not passed in via query params.
+      // This is what enables the Launch button when an operator arrives
+      // here via my-listings → "Manage gallery".
+      let aid = auctionId;
+      if (!aid) {
+        try {
+          const all: any[] = await api.auctions();
+          const match = all.find((x) => x?.car?.id === carId || x?.car_id === carId);
+          if (match) aid = match.id;
+          if (aid) setAuctionId(aid);
+        } catch {}
+      }
+      // Pull launch-readiness only for draft auctions (operator-only API)
+      if (aid) {
+        try {
+          const r: any = await api.launchReadiness(aid);
+          setReadiness({
+            ready: !!r.ready,
+            issues: r.issues || [],
+            media_count: r.media_count || 0,
+            featured_count: r.featured_count || 0,
+            min_photos_required: r.min_photos_required || 3,
+          });
+          setAuctionStatus(r.status || null);
+        } catch {
+          // Endpoint 404s or returns 422 on already-live/closed auctions;
+          // we simply hide the Launch CTA in that case.
+          setReadiness(null);
+          setAuctionStatus(null);
+        }
+      }
     } catch (e: any) {
       toast.show(e.message || 'Failed to load media', 'error');
     } finally {
       setLoading(false);
     }
-  }, [carId]);
+  }, [carId, auctionId]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -216,6 +261,44 @@ export default function MediaManager() {
     } catch (e: any) { toast.show(e.message || 'Attestation failed', 'error'); }
   };
 
+  // ---- Launch (draft → live) ----
+  // Hard-gated server-side via /admin/auctions/{id}/launch-readiness.
+  // We pre-flight to give the operator an explicit reason why launch is
+  // blocked (e.g. "Mark one photo as Featured before launching.").
+  const onLaunch = async () => {
+    if (!auctionId) {
+      toast.show('Auction id missing — go back and try again', 'error');
+      return;
+    }
+    if (!readiness?.ready) {
+      const reason = readiness?.issues?.[0] || 'Upload required media before launching';
+      Alert.alert('Not ready to launch', reason);
+      return;
+    }
+    Alert.alert(
+      'Launch this auction?',
+      `${readiness.media_count} photos uploaded · ${readiness.featured_count} featured.\n\nOnce launched, this listing becomes visible to all verified dealers and the live timer starts.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Launch now', style: 'destructive', onPress: async () => {
+            setLaunching(true);
+            try {
+              const res: any = await api.launchAuction(auctionId);
+              toast.show('Auction is now LIVE', 'success');
+              router.replace({ pathname: '/lot/[id]', params: { id: res.auction.id } } as any);
+            } catch (e: any) {
+              const detail = e?.message || '';
+              // Server returns 422 with LAUNCH_NOT_READY + a list of issues
+              toast.show(detail.includes('LAUNCH_NOT_READY')
+                ? 'Launch blocked — open the banner above for details'
+                : (detail || 'Launch failed'), 'error');
+              load();
+            } finally { setLaunching(false); }
+        }},
+      ],
+    );
+  };
+
   // --- Derived state ---
   const sectionMedia = media.filter((m) => m.section === activeSection)
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
@@ -243,6 +326,31 @@ export default function MediaManager() {
           <Text style={styles.counterText}>{media.length}/{MAX_PER_CAR}</Text>
         </View>
       </View>
+
+      {/* Draft / Launch banner — only shown when this auction is still draft */}
+      {auctionStatus === 'draft' && readiness && (
+        <View style={[styles.draftBar, readiness.ready ? styles.draftBarReady : styles.draftBarPending]}>
+          <View style={{ flex: 1 }}>
+            <View style={styles.draftBarTopRow}>
+              <View style={[styles.draftPill, readiness.ready ? styles.draftPillReady : styles.draftPillPending]}>
+                <Text style={[styles.draftPillText, readiness.ready ? { color: colors.success } : { color: colors.warning }]}>
+                  {readiness.ready ? '✓ READY TO LAUNCH' : 'DRAFT — NOT VISIBLE TO DEALERS'}
+                </Text>
+              </View>
+            </View>
+            <Text style={styles.draftBarTitle}>
+              {readiness.ready
+                ? 'All checks passed. Launch when you are ready.'
+                : `${readiness.media_count}/${readiness.min_photos_required} photos · ${readiness.featured_count} featured`}
+            </Text>
+            {!readiness.ready && readiness.issues.length > 0 && (
+              <Text style={styles.draftBarIssue} numberOfLines={2}>
+                • {readiness.issues[0]}
+              </Text>
+            )}
+          </View>
+        </View>
+      )}
 
       {/* Completeness banner */}
       {completeness && (
@@ -394,6 +502,32 @@ export default function MediaManager() {
         }
       />
 
+      {/* Sticky Launch CTA — only when auction is still a draft */}
+      {auctionStatus === 'draft' && (
+        <View style={[styles.launchFabWrap, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+          <TouchableOpacity
+            onPress={onLaunch}
+            disabled={launching || !readiness?.ready}
+            activeOpacity={0.85}
+            style={[styles.launchFab, !readiness?.ready && styles.launchFabDisabled]}
+            testID="media-launch-btn"
+          >
+            {launching ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Rocket size={18} color="#fff" />
+            )}
+            <Text style={styles.launchFabText}>
+              {launching
+                ? 'Launching...'
+                : readiness?.ready
+                  ? 'Launch Auction'
+                  : `Upload ${Math.max(0, (readiness?.min_photos_required || 3) - (readiness?.media_count || 0))} more · ${readiness?.featured_count ? '' : 'pick featured'}`.replace(/ · $/, '')}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Move-to-section sheet */}
       <Modal visible={!!moveTarget} transparent animationType="fade" onRequestClose={() => setMoveTarget(null)}>
         <Pressable style={styles.backdrop} onPress={() => setMoveTarget(null)}>
@@ -505,4 +639,35 @@ const styles = StyleSheet.create({
   previewClose: { position: 'absolute', top: Platform.OS === 'ios' ? 50 : 20, right: 16, zIndex: 5, width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.12)', alignItems: 'center', justifyContent: 'center' },
   previewImage: { width: '100%', height: '85%' },
   previewIndex: { position: 'absolute', bottom: Platform.OS === 'ios' ? 50 : 30, color: '#fff', fontSize: 12, fontWeight: '800', letterSpacing: 1.4, opacity: 0.8 },
+
+  // Draft / Launch banner & sticky FAB
+  draftBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginHorizontal: 20, marginTop: 12, paddingHorizontal: 14, paddingVertical: 12,
+    borderRadius: radii.md, borderWidth: 1,
+  },
+  draftBarPending: { backgroundColor: 'rgba(245,158,11,0.06)', borderColor: 'rgba(245,158,11,0.4)' },
+  draftBarReady:   { backgroundColor: 'rgba(16,185,129,0.06)', borderColor: 'rgba(16,185,129,0.45)' },
+  draftBarTopRow:  { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
+  draftPill:       { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, borderWidth: 1 },
+  draftPillPending:{ backgroundColor: 'rgba(245,158,11,0.10)', borderColor: 'rgba(245,158,11,0.5)' },
+  draftPillReady:  { backgroundColor: 'rgba(16,185,129,0.10)', borderColor: 'rgba(16,185,129,0.5)' },
+  draftPillText:   { fontSize: 9.5, fontWeight: '900', letterSpacing: 1.2 },
+  draftBarTitle:   { color: colors.textPrimary, fontSize: 13, fontWeight: '800', letterSpacing: -0.2 },
+  draftBarIssue:   { color: colors.textChrome, fontSize: 11, fontWeight: '600', marginTop: 3, lineHeight: 15 },
+
+  launchFabWrap: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    paddingHorizontal: 20, paddingTop: 10,
+    backgroundColor: 'rgba(11,11,13,0.96)',
+    borderTopColor: colors.border, borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  launchFab: {
+    backgroundColor: colors.red,
+    paddingVertical: 16, borderRadius: radii.md,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    shadowColor: colors.red, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.45, shadowRadius: 16, elevation: 8,
+  },
+  launchFabDisabled: { backgroundColor: '#3F2828', shadowOpacity: 0 },
+  launchFabText: { color: '#fff', fontSize: 15, fontWeight: '900', letterSpacing: 0.4 },
 });

@@ -7,7 +7,7 @@ import { useRouter, Redirect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Sparkles, Clock, ArrowRight, ShieldCheck, ChevronRight, FileCheck2,
-  FlaskConical, Save, Trash2, AlertCircle,
+  FlaskConical, Save, Trash2, AlertCircle, ImagePlus,
 } from 'lucide-react-native';
 import { colors, radii, formatINRFull, formatINR } from '../../src/theme';
 import { api } from '../../src/api';
@@ -16,13 +16,6 @@ import { useInspection, inspectionStats } from '../../src/inspection';
 import { storage } from '../../src/storage';
 import { Select } from '../../src/components/Select';
 import { useAuth } from '../../src/auth';
-
-const STOCK_GALLERY = [
-  'https://images.unsplash.com/photo-1768965468641-39e87aa78a9d?w=1400&q=85',
-  'https://images.unsplash.com/photo-1764089859664-30aa6919ef0b?w=1400&q=85',
-  'https://images.unsplash.com/photo-1761229170508-f4791c297af8?w=1400&q=85',
-  'https://images.pexels.com/photos/29755707/pexels-photo-29755707.jpeg?auto=compress&cs=tinysrgb&w=1400',
-];
 
 const FUEL = ['Petrol', 'Diesel', 'CNG', 'Electric', 'Hybrid'];
 const TRANS = ['Manual', 'Automatic', 'AMT', 'CVT', 'DCT'];
@@ -246,7 +239,12 @@ export default function Sell() {
     }
   };
 
-  // ---- Launch ----
+  // ---- Create draft → route to media manager ----
+  // The new flow: this screen creates a DRAFT auction (no images yet), then
+  // routes the operator straight to the per-car Media Manager so they can
+  // upload + organise photos. The auction only becomes "live" after the
+  // operator taps Launch from the media manager (which calls
+  // /api/admin/auctions/{id}/launch with hard-gated readiness checks).
   const launch = async () => {
     const e = validate(form);
     setErrors(e);
@@ -282,21 +280,29 @@ export default function Sell() {
         starting_bid: form.starting_bid,
         reserve_price: form.reserve_price,
         duration_minutes: form.duration_minutes,
-        images: STOCK_GALLERY,
+        // No stock images — operator uploads real photos in the next step.
+        // Backend creates this auction with status="draft" by default
+        // (launch_immediately defaults to false).
+        images: [],
         description: form.notes.trim() || `${form.registration_year} ${form.make} ${form.model} listed for wholesale auction.`,
       });
+      // Attach inspection PDF (if drafted in this session) to the new car
       if (pdfDraft && res?.car?.id) {
         try {
           await api.uploadInspection(res.car.id, pdfDraft.uri, pdfDraft.name);
           setPdfDraft(null);
-          toast.show('Auction launched · inspection PDF attached', 'success');
         } catch (uploadErr: any) {
-          toast.show(`Auction launched, but PDF upload failed: ${uploadErr.message || 'try again from My Listings'}`, 'error');
+          toast.show(`Draft saved, but PDF upload failed: ${uploadErr.message || 'retry from media manager'}`, 'error');
         }
-      } else {
-        toast.show('Auction launched successfully', 'success');
       }
-      router.push({ pathname: '/lot/[id]', params: { id: res.auction.id } } as any);
+      toast.show('Draft created · upload photos next', 'success');
+      // Hop directly to the media manager. We carry the auction_id so the
+      // media screen can render its Launch button (which transitions the
+      // draft → live once mandatory media gates are met).
+      router.push({
+        pathname: '/inventory/[carId]/media',
+        params: { carId: res.car.id, auctionId: res.auction.id },
+      } as any);
       // Clear form + draft for next listing
       setForm(EMPTY_FORM);
       setErrors({});
@@ -305,7 +311,7 @@ export default function Sell() {
       try { await storage.removeItem(DRAFT_KEY); } catch {}
       setDraftRestored(false);
     } catch (err: any) {
-      toast.show(err.message || 'Failed to launch', 'error');
+      toast.show(err.message || 'Failed to create draft', 'error');
     } finally {
       setCreating(false);
     }
@@ -744,19 +750,25 @@ export default function Sell() {
           ]}
           testID="sell-launch-btn"
         >
-          {inspStats.status !== 'completed' && <FileCheck2 size={16} color="#fff" />}
+          {inspStats.status !== 'completed' ? (
+            <FileCheck2 size={16} color="#fff" />
+          ) : (
+            <ImagePlus size={18} color="#fff" />
+          )}
           <Text style={styles.launchText}>
             {creating
-              ? 'Launching...'
+              ? 'Creating draft...'
               : inspStats.status !== 'completed'
               ? `Inspection ${inspStats.percent}% — Launch locked`
-              : 'Launch Auction'}
+              : 'Save draft & upload photos'}
           </Text>
           {inspStats.status === 'completed' && !creating && <ArrowRight size={18} color="#fff" />}
         </TouchableOpacity>
 
         <Text style={styles.legalNote}>
-          By launching you confirm the details are accurate and authorise Q Drives to share this listing with verified dealers in our network.
+          We save this as a <Text style={{ color: colors.textChrome, fontWeight: '800' }}>Draft</Text> first.
+          Upload exterior/interior/damage photos in the next screen, then tap{' '}
+          <Text style={{ color: colors.red, fontWeight: '800' }}>Launch Auction</Text> to publish it to verified dealers.
         </Text>
       </ScrollView>
     </KeyboardAvoidingView>

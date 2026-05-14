@@ -157,6 +157,23 @@ export const api = {
   car: (id: string) => request(`/cars/${id}`),
   createCar: (payload: any) => request('/cars', { method: 'POST', body: JSON.stringify(payload) }),
 
+  // ---- Pre-launch / draft workflow (operator) ----
+  launchReadiness: (auctionId: string) =>
+    request<{
+      auction_id: string;
+      status: string;
+      media_count: number;
+      featured_count: number;
+      min_photos_required: number;
+      ready: boolean;
+      issues: string[];
+    }>(`/admin/auctions/${auctionId}/launch-readiness`),
+  launchAuction: (auctionId: string, duration_minutes?: number) =>
+    request<{ success: boolean; auction: any; launched_at: string }>(
+      `/admin/auctions/${auctionId}/launch`,
+      { method: 'POST', body: JSON.stringify({ duration_minutes: duration_minutes ?? null }) },
+    ),
+
   watchlist: () => request('/watchlist'),
   addWatch: (id: string) => request(`/watchlist/${id}`, { method: 'POST' }),
   removeWatch: (id: string) => request(`/watchlist/${id}`, { method: 'DELETE' }),

@@ -565,7 +565,9 @@ export default function AuctionScreen() {
         )}
       </View>
 
-      {/* Fullscreen pinch-zoom gallery */}
+      {/* Fullscreen pinch-zoom gallery (custom: pinch + double-tap zoom,
+       *   horizontal swipe, swipe-down close, image counter — works on
+       *   web + native without platform-specific files). */}
       <Modal visible={zoomOpen} transparent={false} animationType="fade" onRequestClose={() => setZoomOpen(false)}>
         <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#000' }}>
           <View style={styles.zoomTopBar}>

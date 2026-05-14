@@ -270,7 +270,10 @@ export default function MyListings() {
                 <View style={styles.divider} />
 
                 <TouchableOpacity
-                  onPress={() => router.push(`/inventory/${car.id}/media`)}
+                  onPress={() => router.push({
+                    pathname: '/inventory/[carId]/media',
+                    params: { carId: car.id, auctionId: a.id },
+                  } as any)}
                   style={styles.mediaRow}
                   activeOpacity={0.85}
                   testID={`my-listing-${a.id}-media`}

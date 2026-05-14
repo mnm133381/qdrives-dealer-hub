@@ -332,6 +332,13 @@ class CarCreateReq(BaseModel):
     images: List[str] = []
     description: Optional[str] = ""
     duration_minutes: int = 60
+    # Pre-launch workflow flag. Default False → auction is created as a
+    # DRAFT (status="draft") so operators can upload media + organise
+    # the gallery BEFORE launching to dealers. Set True only for legacy
+    # callers that want the immediate-live behaviour. The recommended
+    # path is: create draft → upload media → set featured → call
+    # /api/admin/auctions/{id}/launch.
+    launch_immediately: bool = False
 
 class PriceEstimateReq(BaseModel):
     make: str
@@ -1266,7 +1273,11 @@ async def create_car(req: CarCreateReq, dealer = Depends(get_current_admin)):
         "insurance_validity": req.insurance_validity or "",
         "rto_details": req.rto_details or "",
         "notes": req.notes or "",
-        "images": req.images or ["https://images.unsplash.com/photo-1768965468641-39e87aa78a9d?w=1200&q=80"],
+        "images": req.images or [],  # No demo placeholder — operator uploads
+                                       # media via /api/media/upload during the
+                                       # draft phase; _enrich_auction joins
+                                       # db.media at read time. An empty array
+                                       # is the safe "no photos yet" sentinel.
         "description": req.description or req.notes or "",
         "inspection_score": round(random.uniform(7.5, 9.4), 1),
         "condition_grade": random.choice(["A", "A", "B", "B+"]),
@@ -1295,10 +1306,12 @@ async def create_car(req: CarCreateReq, dealer = Depends(get_current_admin)):
         "start_time": now_utc(),
         "end_time": now_utc() + timedelta(minutes=req.duration_minutes),
         "created_at": now_utc(),
-        # Phase 2C: explicit lifecycle state. Without this the doc gets
-        # auto-archived by the legacy_cleanup migration as a "pre-lifecycle
-        # ghost". Setting it on creation keeps the listing valid forever.
-        "status": "live",
+        # Pre-launch workflow: new auctions start as drafts so the
+        # operator can upload media + organise the gallery BEFORE
+        # dealers see the listing. `launch_immediately=True` preserves
+        # the legacy "create live" semantics for any caller that needs
+        # it (e.g. seeded data scripts).
+        "status": "live" if req.launch_immediately else "draft",
         "status_changed_at": now_utc(),
         "status_changed_by": dealer["id"],
         # Data isolation tag — production auctions are tagged so they can
@@ -1312,6 +1325,124 @@ async def create_car(req: CarCreateReq, dealer = Depends(get_current_admin)):
 
     await db.dealers.update_one({"id": dealer["id"]}, {"$inc": {"total_listed": 1}})
     return {"car": serialize(car), "auction": await _enrich_auction(auction)}
+
+
+# ---------- Pre-launch workflow (draft → live) ------------------------
+# Minimum media gates for an auction to be allowed to go live. Without
+# these dealers see empty / placeholder galleries and the listing has
+# no chance of attracting a bid.
+LAUNCH_MIN_PHOTOS = 3              # minimum total photos across all sections
+LAUNCH_REQUIRE_FEATURED = True     # must have an explicitly featured image
+
+
+async def _launch_readiness(auction_id: str) -> Dict[str, Any]:
+    a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Auction not found")
+    car_id = a.get("car_id")
+    media_count = await db.media.count_documents({"car_id": car_id}) if car_id else 0
+    featured_count = await db.media.count_documents(
+        {"car_id": car_id, "is_featured": True}
+    ) if car_id else 0
+    issues: List[str] = []
+    if media_count < LAUNCH_MIN_PHOTOS:
+        issues.append(f"Upload at least {LAUNCH_MIN_PHOTOS} photos (current: {media_count}).")
+    if LAUNCH_REQUIRE_FEATURED and featured_count < 1:
+        issues.append("Mark one photo as Featured before launching.")
+    if a.get("status") not in ("draft", "ready", "live"):
+        issues.append(f"Auction is in status='{a.get('status')}' — cannot launch.")
+    return {
+        "auction_id": auction_id,
+        "status": a.get("status"),
+        "media_count": int(media_count),
+        "featured_count": int(featured_count),
+        "min_photos_required": LAUNCH_MIN_PHOTOS,
+        "ready": len(issues) == 0 and a.get("status") in ("draft", "ready"),
+        "issues": issues,
+    }
+
+
+@api.get("/admin/auctions/{auction_id}/launch-readiness")
+async def admin_auction_launch_readiness(auction_id: str, _op = Depends(get_current_admin)):
+    """Operator-facing pre-flight: returns whether a draft auction can
+    safely be launched. UI uses this to render a green Launch button
+    vs a grey-with-reason button."""
+    return await _launch_readiness(auction_id)
+
+
+class AuctionLaunchReq(BaseModel):
+    # Optional override of the duration set at draft creation. If omitted
+    # the existing start/end_time on the doc is preserved (but start_time
+    # is bumped to now() so the countdown is accurate at launch moment).
+    duration_minutes: Optional[int] = None
+
+
+@api.post("/admin/auctions/{auction_id}/launch")
+async def admin_auction_launch(auction_id: str, req: AuctionLaunchReq, op = Depends(get_current_admin)):
+    """Atomically transition a draft auction → live.
+
+    Hard-gated on _launch_readiness so an unfinished listing can NEVER
+    surface to dealers. start_time is reset to now() and end_time is
+    recomputed from req.duration_minutes (or the existing window if not
+    overridden). Emits an ops broadcast so live grids update instantly.
+    """
+    readiness = await _launch_readiness(auction_id)
+    if not readiness["ready"]:
+        # 422 is the right status here — request is well-formed but the
+        # resource state isn't acceptable for the transition.
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "LAUNCH_NOT_READY", "issues": readiness["issues"]},
+        )
+    a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Auction not found")
+
+    new_start = now_utc()
+    if req.duration_minutes and req.duration_minutes > 0:
+        new_end = new_start + timedelta(minutes=int(req.duration_minutes))
+    elif a.get("start_time") and a.get("end_time"):
+        # Preserve the originally-planned duration window
+        try:
+            old_start = a["start_time"]
+            old_end = a["end_time"]
+            if isinstance(old_start, str):
+                old_start = datetime.fromisoformat(old_start.replace("Z", "+00:00"))
+            if isinstance(old_end, str):
+                old_end = datetime.fromisoformat(old_end.replace("Z", "+00:00"))
+            new_end = new_start + (old_end - old_start)
+        except Exception:
+            new_end = new_start + timedelta(minutes=60)
+    else:
+        new_end = new_start + timedelta(minutes=60)
+
+    # Atomic transition — guarded on status=draft so a double-tap on the
+    # Launch button cannot transition an already-live auction.
+    updated = await db.auctions.find_one_and_update(
+        {"id": auction_id, "status": {"$in": ["draft", "ready"]}},
+        {"$set": {
+            "status": "live",
+            "start_time": new_start,
+            "end_time": new_end,
+            "status_changed_at": new_start,
+            "status_changed_by": op["id"],
+        }},
+        return_document=True,
+    )
+    if not updated:
+        raise HTTPException(status_code=409, detail="Auction is no longer in draft state.")
+
+    asyncio.create_task(audit(
+        db, "auction_launched", op["id"], auction_id,
+        {"media_count": readiness["media_count"]},
+    ))
+    enriched = await _enrich_auction(updated)
+    # Tell live ops + watchers immediately
+    try:
+        await manager.broadcast("ops", {"type": "auction_launched", "auction": jsonable_encoder(enriched)})
+    except Exception:
+        pass
+    return {"success": True, "auction": enriched, "launched_at": new_start.isoformat()}
 
 
 # ---------- Watchlist ----------

@@ -2,3 +2,16 @@
 # Production secrets — never commit
 secrets/
 *.firebase-adminsdk.json
+
+# Python caches & lint artefacts (keep source archives lean for deploys)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Local venvs
+.venv/
+venv/

@@ -38,3 +38,14 @@ yarn-error.*
 
 app-example
 
+# Python tooling caches (don't belong in this folder, but block them defensively)
+.ruff_cache/
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+
+# Local Android signing material (must NEVER ship in the source archive)
+android-creds/
+google-services.local.json
+*.keystore

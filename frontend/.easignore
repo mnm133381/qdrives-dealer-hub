@@ -1,0 +1,48 @@
+# Files & directories that should NEVER be uploaded to EAS Build.
+# EAS Build defaults to using .gitignore; .easignore overrides it so we
+# can exclude bulky / unsafe paths even when they are committed.
+
+# ── Heavy / cache artefacts ──────────────────────────────────────────
+node_modules
+.expo
+.expo-shared
+.metro-cache
+.cache
+dist
+build
+web-build
+android/build
+android/app/build
+ios/build
+ios/Pods
+
+# Python tooling caches that leaked into the frontend during dev
+.ruff_cache
+__pycache__
+*.pyc
+.mypy_cache
+.pytest_cache
+
+# Editor / OS noise
+.DS_Store
+*.log
+*.tsbuildinfo
+
+# Local secrets must not ship to the build worker
+*.keystore
+*.p12
+*.jks
+google-services.local.json
+
+# Tests / dev-only assets
+__tests__
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
+
+# The frontend should never contain backend artefacts. If they leak in
+# (they did once during a refactor), keep them out of the bundle.
+backend
+test_reports
+tests

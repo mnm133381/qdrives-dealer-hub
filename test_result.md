@@ -6845,6 +6845,7 @@ metadata:
 test_plan:
   current_focus:
     - "Draft / Launch workflow — auctions default to draft + atomic launch endpoint"
+    - "GET /auctions?seller_id=me operator escape hatch"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -7194,3 +7195,175 @@ backend:
         2) Add gt=0 validators on CarCreateReq.starting_bid and
            reserve_price so payloads with zero values are rejected with
            422 (frontend already has a UI matcher for this).
+
+  - agent: "testing"
+    message: |
+      [RUN 40 — OPERATOR DRAFT → LAUNCH END-TO-END (13 STEPS) — 14/15 PASS,
+       1 REAL BACKEND BUG]
+      Test script: /app/backend_test.py
+      Target: http://localhost:8001/api
+      Operator: +918977986662 (super_admin per ADMIN_PHONES)
+      DEV_BYPASS_OTP=true · OTP=123456
+
+      ✅ Step 1   POST /auth/operator/send-otp   → HTTP 200
+                  {success:true, message:"OTP gate cleared", provider:"firebase"}
+      ✅ Step 2   POST /auth/operator/verify-otp → HTTP 200
+                  token minted (219-char JWT); dealer.role="super_admin";
+                  dealer.id="f2a53eb2-697e-4655-9dcc-7bc89e20a4da"
+      ✅ Step 3   POST /api/cars (no launch_immediately) → HTTP 200
+                  car.id="916e81bc-be3e-460d-b2eb-72ec963a4919"
+                  auction.id="f00f7086-449c-485b-bf87-92bf0dca25e1"
+                  auction.status="draft"   ✔ correct default
+      ❌ Step 4   GET /api/auctions?seller_id=me → HTTP 200 but draft NOT
+                  present in response. Response contained 7 items, all
+                  status=live (NO drafts), AND mixed seller_ids
+                  (operator's own + 7a739d7e-…), i.e. the operator's draft
+                  was filtered out AND auctions from other sellers were
+                  returned. This means the `?seller_id=me` operator-escape
+                  branch is NOT being taken; the handler is falling through
+                  to the public marketplace_query().
+
+                  ROOT CAUSE — server.py:1011
+                  ───────────────────────────────────────────────────
+                    payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+                  ───────────────────────────────────────────────────
+                  The variable name is `JWT_ALG` but the module-level
+                  constant is `JWT_ALGO` (defined at server.py:46 as
+                  "HS256"). Every other JWT decode site in the file
+                  correctly uses `JWT_ALGO` (lines 143, 1922, 3644,
+                  3909, 5246). Line 1011 alone has the typo.
+                  Because `JWT_ALG` is undefined, the decode call raises
+                  NameError, which is caught by the bare `except Exception`
+                  at server.py:1016, so `show_drafts_for_me` is silently
+                  stuck at False. The handler then falls through to
+                  marketplace_query() (server.py:1032), returning the
+                  PUBLIC list (excludes drafts AND ignores seller_id),
+                  which is exactly what the test observed.
+                  Confirmed by directly querying Mongo at the same
+                  instant: 12 auctions match
+                    {seller_id: operator_id,
+                     status: {$nin: [archived, withdrawn, cancelled]}}
+                  including the freshly-created draft, but the API
+                  returned only 7 live entries from MULTIPLE sellers.
+
+                  FIX (one character):
+                    server.py:1011  JWT_ALG  →  JWT_ALGO
+                  No other changes needed. After the fix:
+                    • Operator JWT  +  ?seller_id=me → returns ONLY the
+                      operator's auctions, INCLUDING drafts.
+                    • Anonymous / dealer JWT → falls through to public
+                      marketplace_query() (no privacy leak — same as today).
+
+                  IMPACT: Operator's my-listings → Drafts tab is empty in
+                  the UI because the data never arrives. Functional gap
+                  reported in RUN 38 supposedly fixed via this escape
+                  hatch — fix was shipped but typo'd, so the gap is
+                  still present.
+
+      ✅ Step 5   GET /admin/auctions/{aid}/launch-readiness → HTTP 200
+                  {ready:false, media_count:0, featured_count:0,
+                   min_photos_required:3,
+                   issues:["Upload at least 3 photos (current: 0).",
+                           "Mark one photo as Featured before launching."]}
+                  Exact strings match review spec.
+      ✅ Step 6   POST /admin/auctions/{aid}/launch {} on unready draft
+                  → HTTP 422 with detail.code="LAUNCH_NOT_READY" and
+                  non-empty detail.issues[] (the 2 strings above).
+      ✅ Step 7   3× POST /api/media/upload (multipart, JPEG 644 bytes,
+                  section=exterior, width=32, height=32) → HTTP 200 each.
+                  3 unique media ids minted, persisted in GridFS bucket
+                  "media", provider="gridfs", urls
+                  "/api/media/{id}/file" returned per upload.
+      ✅ Step 8   POST /cars/{car_id}/media/featured/{media_id} → HTTP 200
+                  {success:true}. First media flipped to is_featured=true.
+      ✅ Step 9   GET /launch-readiness again → HTTP 200
+                  {ready:true, media_count:3, featured_count:1,
+                   issues:[]}.   ✔
+      ✅ Step 10  POST /admin/auctions/{aid}/launch {} on ready draft
+                  → HTTP 200 {
+                    success:true,
+                    auction:{ status:"live", … },
+                    launched_at:"2026-05-15T04:05:09.689955+00:00",
+                    start_time:"2026-05-15T04:05:09.689000+00:00",
+                    end_time :"2026-05-15T05:05:09.689000+00:00"
+                  }. start_time≈now, end_time = start + 60min (the
+                  duration_minutes from the original POST /cars payload
+                  is honoured at launch time).
+      ✅ Step 11  POST /admin/auctions/{aid}/launch AGAIN → HTTP 409
+                  body EXACTLY {"detail":"Auction is no longer in draft
+                  state."}.   ✔ idempotency guard working.
+      ✅ Step 12  GET /api/auctions (anonymous, no Authorization header)
+                  → HTTP 200, list contains the launched auction id
+                  (items_count grew 7→8, present=true). Public
+                  marketplace correctly surfaces the newly-live lot.
+      ✅ Step 13  GET /api/auctions/{aid} (anonymous) → HTTP 200, body
+                  status="live", car.media[] length=3 (all 3 uploads
+                  joined), car.images[] length=3 (resolved to
+                  /api/media/{id}/file paths — NO Unsplash placeholder).
+
+      Regression sanity:
+        • GET /api/  → 200 {"service":"Q Drives API","status":"ok"}
+        • Backend logs show no exceptions / tracebacks for the run.
+        • OTP bypass cleanly logged as
+          "DEV_BYPASS_OTP active for +918977986662 (NOT FOR PRODUCTION)".
+
+      ===== ANSWER TO REVIEW QUESTION =====
+      ❌  NOT all 13 steps PASS. 12/13 steps PASS;
+          Step 4 (GET /api/auctions?seller_id=me) FAILS — the
+          operator's freshly-created draft is NOT returned because of
+          the JWT_ALG/JWT_ALGO typo at server.py:1011.
+
+          The ATOMIC LAUNCH PIPELINE (steps 5-13) IS WORKING end-to-end:
+          launch-readiness, 422 LAUNCH_NOT_READY, 3 media + featured,
+          200 launch with launched_at/start_time/end_time, 409 double-
+          launch, and anonymous discovery via /api/auctions +
+          /api/auctions/{id} all behave exactly as the review spec
+          requires.
+
+          Only the my-listings Drafts visibility (Step 4) is broken,
+          and it's a 1-character backend typo fix.
+
+      ===== ACTION FOR MAIN AGENT =====
+      Replace `JWT_ALG` with `JWT_ALGO` on server.py line 1011:
+        -    payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        +    payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
+      No other code changes required. After the fix, re-run
+      /app/backend_test.py and Step 4 will PASS (response will contain
+      the operator's draft + any other auctions owned by the same
+      seller, regardless of status).
+
+backend:
+  - task: "GET /auctions?seller_id=me operator escape hatch"
+    implemented: true
+    working: false
+    file: "backend/server.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: |
+          [RUN 40] /api/auctions?seller_id=me with a valid super_admin
+          operator JWT does NOT include the caller's drafts and returns
+          mixed seller_ids (i.e. falls through to public marketplace_query).
+          Root cause: NameError typo at server.py:1011 — uses `JWT_ALG`
+          while the module constant is `JWT_ALGO` (every other decode
+          site uses JWT_ALGO). The bare-`except Exception` at line 1016
+          swallows the NameError so `show_drafts_for_me` is permanently
+          False, and the handler reverts to marketplace_query() which
+          (a) excludes drafts via MARKETPLACE_EXCLUDED_STATUSES and
+          (b) does NOT filter by seller_id at all. Net effect: the
+          freshly-created draft is invisible to its owner, and the
+          response leaks every other seller's live auctions instead of
+          scoping to "me".
+
+          One-line fix: rename JWT_ALG → JWT_ALGO at server.py:1011.
+          The operator's own drafts will then surface as designed and
+          the my-listings → Drafts tab will populate.
+
+          Verified mid-test that the draft IS in the database
+          (db.auctions.find({seller_id: f2a53eb2…, status: draft})
+          → 1 match for the test's auction_id), so this is purely a
+          handler-side bug, not a write-path bug.
+

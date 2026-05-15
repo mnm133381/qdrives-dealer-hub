@@ -275,38 +275,92 @@ export default function MediaManager() {
   // Hard-gated server-side via /admin/auctions/{id}/launch-readiness.
   // We pre-flight to give the operator an explicit reason why launch is
   // blocked (e.g. "Mark one photo as Featured before launching.").
-  const onLaunch = async () => {
+  //
+  // CRITICAL: Alert.alert with custom buttons is a NO-OP on React Native
+  // Web (it console.logs and returns). The earlier implementation
+  // therefore appeared "broken" on the emergent.host preview — the
+  // confirm dialog never appeared, so the launch call never fired.
+  // We now branch on Platform.OS and use `window.confirm` on web.
+  const performLaunch = async () => {
     if (!auctionId) {
       toast.show('Auction id missing — go back and try again', 'error');
+      console.error('[media.launch] aborted — no auctionId in state');
+      return;
+    }
+    console.log('[media.launch] POST /api/admin/auctions/' + auctionId + '/launch');
+    setLaunching(true);
+    try {
+      const res: any = await api.launchAuction(auctionId);
+      console.log('[media.launch] launched', { auctionId, status: res?.auction?.status, launched_at: res?.launched_at });
+      toast.show('Auction is now LIVE', 'success');
+      router.replace({ pathname: '/lot/[id]', params: { id: res.auction.id } } as any);
+    } catch (e: any) {
+      const detail = e?.message || '';
+      console.error('[media.launch] FAILED', { auctionId, detail, status: e?.status });
+      let msg = detail || 'Launch failed';
+      if (detail.includes('LAUNCH_NOT_READY')) {
+        msg = 'Launch blocked — readiness checks failed';
+      } else if (/409|no longer in draft/i.test(detail)) {
+        msg = 'This auction is already live (or was withdrawn)';
+      } else if (/401|TOKEN_/i.test(detail)) {
+        msg = 'Session expired — please sign in again';
+      } else if (/403/i.test(detail)) {
+        msg = 'Operator permission denied for this auction';
+      } else if (/network/i.test(detail.toLowerCase())) {
+        msg = 'Network error — check your connection and retry';
+      }
+      toast.show(msg, 'error');
+      load();
+    } finally {
+      setLaunching(false);
+    }
+  };
+
+  const onLaunch = async () => {
+    console.log('[media.launch] tap', { auctionId, ready: readiness?.ready, status: auctionStatus, mediaCount: media.length, featured: media.filter((m) => m.is_featured).length });
+
+    if (!auctionId) {
+      toast.show('Auction id missing — reopen this listing from My Listings', 'error');
+      console.error('[media.launch] no auctionId — discovery failed');
       return;
     }
     if (!readiness?.ready) {
       const reason = readiness?.issues?.[0] || 'Upload required media before launching';
-      Alert.alert('Not ready to launch', reason);
+      console.warn('[media.launch] not ready', { issues: readiness?.issues });
+      // Just toast — Alert.alert(title, msg) without buttons works on
+      // web, but the toast is more reliable + less noisy.
+      toast.show(`Not ready: ${reason}`, 'error');
       return;
     }
-    Alert.alert(
-      'Launch this auction?',
-      `${readiness.media_count} photos uploaded · ${readiness.featured_count} featured.\n\nOnce launched, this listing becomes visible to all verified dealers and the live timer starts.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Launch now', style: 'destructive', onPress: async () => {
-            setLaunching(true);
-            try {
-              const res: any = await api.launchAuction(auctionId);
-              toast.show('Auction is now LIVE', 'success');
-              router.replace({ pathname: '/lot/[id]', params: { id: res.auction.id } } as any);
-            } catch (e: any) {
-              const detail = e?.message || '';
-              // Server returns 422 with LAUNCH_NOT_READY + a list of issues
-              toast.show(detail.includes('LAUNCH_NOT_READY')
-                ? 'Launch blocked — open the banner above for details'
-                : (detail || 'Launch failed'), 'error');
-              load();
-            } finally { setLaunching(false); }
-        }},
-      ],
-    );
+
+    const confirmText = `${readiness.media_count} photos · ${readiness.featured_count} featured. Make this auction LIVE and visible to all dealers?`;
+
+    // Cross-platform confirmation. On web we use the browser confirm
+    // (which RN-Web's Alert does NOT polyfill for button arrays). On
+    // native we use Alert.alert which DOES show buttons correctly.
+    let confirmed = false;
+    if (Platform.OS === 'web') {
+      // eslint-disable-next-line no-alert
+      confirmed = typeof window !== 'undefined' && typeof window.confirm === 'function'
+        ? window.confirm(confirmText)
+        : true; // SSR or test env — just proceed
+    } else {
+      confirmed = await new Promise<boolean>((resolve) => {
+        Alert.alert(
+          'Launch this auction?',
+          confirmText,
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Launch now', style: 'destructive', onPress: () => resolve(true) },
+          ],
+          { cancelable: true, onDismiss: () => resolve(false) },
+        );
+      });
+    }
+    console.log('[media.launch] confirm result =', confirmed);
+    if (!confirmed) return;
+
+    await performLaunch();
   };
 
   // --- Derived state ---
@@ -517,7 +571,11 @@ export default function MediaManager() {
         <View style={[styles.launchFabWrap, { paddingBottom: Math.max(insets.bottom, 12) }]}>
           <TouchableOpacity
             onPress={onLaunch}
-            disabled={launching || !readiness?.ready}
+            // Only block taps WHILE a launch request is in flight — when
+            // not-ready we let the tap through so `onLaunch` can fire a
+            // toast naming the exact blocker (rather than a "dead
+            // button" that operators interpret as a bug).
+            disabled={launching}
             activeOpacity={0.85}
             style={[styles.launchFab, !readiness?.ready && styles.launchFabDisabled]}
             testID="media-launch-btn"
@@ -532,7 +590,9 @@ export default function MediaManager() {
                 ? 'Launching...'
                 : readiness?.ready
                   ? 'Launch Auction'
-                  : `Upload ${Math.max(0, (readiness?.min_photos_required || 3) - (readiness?.media_count || 0))} more · ${readiness?.featured_count ? '' : 'pick featured'}`.replace(/ · $/, '')}
+                  : !readiness
+                    ? 'Checking readiness…'
+                    : `Upload ${Math.max(0, (readiness.min_photos_required || 3) - (readiness.media_count || 0))} more${readiness.featured_count ? '' : ' · pick featured'}`}
             </Text>
           </TouchableOpacity>
         </View>

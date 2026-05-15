@@ -119,3 +119,12 @@ const webPhoneAuth: PhoneAuthApi = {
 };
 
 export default webPhoneAuth;
+
+// Re-export the error class so `import { PhoneAuthError } from
+// '../../src/firebase/phoneAuth'` continues to work on web (Metro
+// resolves the import to THIS file first because of the `.web.ts`
+// extension; without this re-export, PhoneAuthError is `undefined`
+// at runtime and any `e instanceof PhoneAuthError` check throws the
+// JS engine error "Right hand side of instanceof is not an object").
+export { PhoneAuthError } from './phoneAuth';
+export type { PhoneOtpHandle, PhoneAuthApi } from './phoneAuth';

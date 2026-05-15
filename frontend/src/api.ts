@@ -68,7 +68,14 @@ async function request<T = any>(path: string, options: RequestInit = {}, _retrie
       try { await storage.removeItem(REFRESH_TOKEN_KEY); } catch {}
       onSessionKilled?.();
     }
-    throw new Error(detailStr);
+    // Prefix the HTTP status so callers can branch on it (e.g. 401 vs 403
+    // vs 422 → operator-facing messages in sell.tsx). The raw `detail`
+    // string from FastAPI is preserved so server-side codes like
+    // LAUNCH_NOT_READY or DEALER_ACCOUNT_SUSPENDED still match.
+    const err = new Error(`${res.status} ${detailStr}`);
+    (err as any).status = res.status;
+    (err as any).detail = detailStr;
+    throw err;
   }
   return data as T;
 }

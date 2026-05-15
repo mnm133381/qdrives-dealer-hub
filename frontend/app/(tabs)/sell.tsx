@@ -239,70 +239,148 @@ export default function Sell() {
     }
   };
 
+  // Friendly human-readable labels for each form field — surfaced in
+  // validation errors so the operator knows EXACTLY which field is
+  // blocking submission instead of a generic "Fix the highlighted fields".
+  const FIELD_LABELS: Record<keyof FormShape, string> = {
+    registration_number: 'Registration number',
+    make: 'Make', model: 'Model', variant: 'Variant',
+    manufacturing_year: 'Manufacturing year',
+    registration_year: 'Registration year',
+    fuel_type: 'Fuel type', transmission: 'Transmission',
+    km_driven: 'Kilometers driven', color: 'Color', owners: 'Owners',
+    insurance_validity: 'Insurance validity',
+    rto_details: 'RTO details', notes: 'Notes',
+    starting_bid: 'Starting bid', reserve_price: 'Reserve price',
+    duration_minutes: 'Duration',
+  };
+
   // ---- Create draft → route to media manager ----
   // The new flow: this screen creates a DRAFT auction (no images yet), then
   // routes the operator straight to the per-car Media Manager so they can
   // upload + organise photos. The auction only becomes "live" after the
   // operator taps Launch from the media manager (which calls
   // /api/admin/auctions/{id}/launch with hard-gated readiness checks).
+  //
+  // INSTRUMENTATION (P0): every step is loud — console-traced + toasted.
+  // No silent failures: validation errors name the failing fields, role
+  // mismatches are surfaced, API exceptions are shown verbatim, and the
+  // post-create navigation hop is logged so we can diagnose any future
+  // "button does nothing" reports without guessing.
   const launch = async () => {
+    const t0 = Date.now();
+    // eslint-disable-next-line no-console
+    console.log('[sell.launch] tapped', { role: dealer?.role, ts: t0 });
+
+    // ── Step 1: Role gate. Should never trigger because the screen
+    // itself is role-gated above, but a belt-and-braces check protects
+    // against state-race conditions (e.g. token refresh swapping role).
+    const role = dealer?.role;
+    if (!role || !['admin', 'super_admin', 'operations_admin', 'inspection_admin'].includes(role as any)) {
+      const msg = `Only operators can create listings (your role: ${role || 'unknown'})`;
+      console.warn('[sell.launch] role-blocked', { role });
+      toast.show(msg, 'error');
+      return;
+    }
+
+    // ── Step 2: Field validation. Show ALL failing fields by name so
+    // the operator can fix them in one pass instead of trial-and-error.
     const e = validate(form);
     setErrors(e);
     setTouched(new Set(Object.keys(form) as (keyof FormShape)[]));
     if (Object.keys(e).length) {
-      toast.show('Fix the highlighted fields', 'error');
+      const fieldList = (Object.keys(e) as (keyof FormShape)[])
+        .map((k) => FIELD_LABELS[k] || String(k))
+        .slice(0, 4)
+        .join(', ');
+      const more = Object.keys(e).length > 4 ? ` (+${Object.keys(e).length - 4} more)` : '';
+      const msg = `Fix: ${fieldList}${more}`;
+      console.warn('[sell.launch] validation-failed', e);
+      toast.show(msg, 'error');
       return;
     }
+
+    // ── Step 3: Inspection-completion gate. The previous flow silently
+    // redirected to /sell/inspection which felt like "the button does
+    // nothing". Now we show an explicit toast first AND log it so the
+    // operator knows exactly why they're being moved.
     if (inspStats.status !== 'completed') {
-      toast.show('Complete the inspection report first', 'error');
-      router.push('/sell/inspection');
+      const pct = inspStats.percent;
+      const msg = `Inspection ${pct}% complete — finish all 6 sections to unlock Launch`;
+      console.warn('[sell.launch] inspection-incomplete', { status: inspStats.status, percent: pct, completed: inspStats.completed, total: inspStats.total });
+      toast.show(msg, 'error');
+      // Give the user time to read the toast before navigating away.
+      setTimeout(() => router.push('/sell/inspection'), 600);
       return;
     }
+
+    // ── Step 4: Build payload + hit the API.
     setCreating(true);
+    const km = parseInt(form.km_driven.replace(/[^0-9]/g, ''), 10);
+    const payload = {
+      registration_number: form.registration_number.trim().toUpperCase(),
+      make: form.make.trim(),
+      model: form.model.trim(),
+      variant: form.variant.trim(),
+      year: form.registration_year,
+      manufacturing_year: form.manufacturing_year,
+      registration_year: form.registration_year,
+      fuel_type: form.fuel_type,
+      transmission: form.transmission,
+      km_driven: km,
+      color: form.color.trim(),
+      owners: form.owners,
+      insurance_validity: form.insurance_validity.trim(),
+      rto_details: form.rto_details.trim(),
+      notes: form.notes.trim(),
+      starting_bid: form.starting_bid,
+      reserve_price: form.reserve_price,
+      duration_minutes: form.duration_minutes,
+      // No stock images — operator uploads real photos in the next step.
+      // Backend creates this auction with status="draft" by default
+      // (launch_immediately defaults to false).
+      images: [],
+      description: form.notes.trim() || `${form.registration_year} ${form.make} ${form.model} listed for wholesale auction.`,
+    };
+    console.log('[sell.launch] POST /api/cars →', { reg: payload.registration_number, km, reserve: payload.reserve_price });
+
     try {
-      const km = parseInt(form.km_driven.replace(/[^0-9]/g, ''), 10);
-      const res: any = await api.createCar({
-        registration_number: form.registration_number.trim().toUpperCase(),
-        make: form.make.trim(),
-        model: form.model.trim(),
-        variant: form.variant.trim(),
-        year: form.registration_year,
-        manufacturing_year: form.manufacturing_year,
-        registration_year: form.registration_year,
-        fuel_type: form.fuel_type,
-        transmission: form.transmission,
-        km_driven: km,
-        color: form.color.trim(),
-        owners: form.owners,
-        insurance_validity: form.insurance_validity.trim(),
-        rto_details: form.rto_details.trim(),
-        notes: form.notes.trim(),
-        starting_bid: form.starting_bid,
-        reserve_price: form.reserve_price,
-        duration_minutes: form.duration_minutes,
-        // No stock images — operator uploads real photos in the next step.
-        // Backend creates this auction with status="draft" by default
-        // (launch_immediately defaults to false).
-        images: [],
-        description: form.notes.trim() || `${form.registration_year} ${form.make} ${form.model} listed for wholesale auction.`,
-      });
+      const res: any = await api.createCar(payload);
+      const elapsed = Date.now() - t0;
+      console.log('[sell.launch] draft created', { carId: res?.car?.id, auctionId: res?.auction?.id, status: res?.auction?.status, elapsed });
+
+      if (!res?.car?.id || !res?.auction?.id) {
+        // Backend success status but malformed body — surface this.
+        throw new Error('Server returned an incomplete response (missing carId/auctionId)');
+      }
+      if (res.auction.status !== 'draft') {
+        console.warn('[sell.launch] unexpected status', res.auction.status);
+      }
+
       // Attach inspection PDF (if drafted in this session) to the new car
       if (pdfDraft && res?.car?.id) {
         try {
           await api.uploadInspection(res.car.id, pdfDraft.uri, pdfDraft.name);
           setPdfDraft(null);
+          console.log('[sell.launch] inspection PDF attached');
         } catch (uploadErr: any) {
+          console.error('[sell.launch] PDF upload failed', uploadErr);
           toast.show(`Draft saved, but PDF upload failed: ${uploadErr.message || 'retry from media manager'}`, 'error');
         }
       }
+
       toast.show('Draft created · upload photos next', 'success');
+
       // Hop directly to the media manager. We carry the auction_id so the
       // media screen can render its Launch button (which transitions the
       // draft → live once mandatory media gates are met).
-      router.push({
-        pathname: '/inventory/[carId]/media',
+      const nav = {
+        pathname: '/inventory/[carId]/media' as const,
         params: { carId: res.car.id, auctionId: res.auction.id },
-      } as any);
+      };
+      console.log('[sell.launch] navigating →', nav.pathname, nav.params);
+      router.push(nav as any);
+
       // Clear form + draft for next listing
       setForm(EMPTY_FORM);
       setErrors({});
@@ -311,7 +389,21 @@ export default function Sell() {
       try { await storage.removeItem(DRAFT_KEY); } catch {}
       setDraftRestored(false);
     } catch (err: any) {
-      toast.show(err.message || 'Failed to create draft', 'error');
+      const elapsed = Date.now() - t0;
+      const detail = err?.message || String(err) || 'Unknown error';
+      console.error('[sell.launch] FAILED', { detail, elapsed, payload });
+      // Distinguish common server errors so the operator gets a clear next-step.
+      let userMsg = detail;
+      if (/401|Authentication|TOKEN_INVALID|TOKEN_EXPIRED/i.test(detail)) {
+        userMsg = 'Session expired — please sign in again';
+      } else if (/403|Admin access required|OPERATOR/i.test(detail)) {
+        userMsg = 'Operator permission denied — your account may not have inventory rights';
+      } else if (/network|fetch|timeout|abort/i.test(detail.toLowerCase())) {
+        userMsg = 'Network error — check your connection and retry';
+      } else if (/422|validation/i.test(detail)) {
+        userMsg = `Server rejected the form: ${detail}`;
+      }
+      toast.show(userMsg, 'error');
     } finally {
       setCreating(false);
     }

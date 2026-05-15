@@ -7052,3 +7052,145 @@ backend:
               to issues, OR (b) preferred: in admin_auction_launch, fetch
               auction status BEFORE _launch_readiness and 409 immediately
               if status != 'draft'.
+
+
+  - agent: "testing"
+    message: |
+      [P0 OPERATOR DRAFT END-TO-END PIPELINE — 27/30 PASS, CORE FLOW HEALTHY]
+      Test script: /app/backend_test_operator_draft.py
+      Target: http://localhost:8001/api
+      Operator: +918977986662 (super_admin per ADMIN_PHONES)
+      DEV_BYPASS_OTP=true; OTP=123456
+
+      ========== CORE QUESTION ==========
+      ✅ OPERATOR CAN CREATE THE DRAFT. Backend pipeline is healthy.
+      No 401/403/404/422/500 anywhere on the happy path. The reported
+      "Save draft & upload photos is not progressing" is NOT a backend
+      bug — every endpoint the sell screen depends on returned 200 with
+      the exact response shape the frontend hard-checks.
+
+      ========== HAPPY PATH (Sections 1, 3, 5) ==========
+      ✅ POST /api/auth/operator/send-otp +918977986662 → 200
+      ✅ POST /api/auth/operator/verify-otp +918977986662 otp=123456 →
+         200 with {access_token, dealer:{id, role:'super_admin', ...}}.
+         Role is admin-tier per review requirement.
+      ✅ GET /api/auth/me → 200, role='super_admin' (matches login).
+      ✅ POST /api/cars (operator JWT, no launch_immediately) → 200
+         Response body shape (frontend now hard-fails if missing):
+         {
+           "car":     { "id": "51fcf93a-693c-48e6-bf80-2c18160c6fe5", ... },
+           "auction": { "id": "dd6756b0-e603-4aa7-bde6-08544c86255d",
+                        "status": "draft", "seller_id": "<operator-dealer-id>",
+                        "car_id": "<car id>", "starting_bid": 600000,
+                        "reserve_price": 800000, "start_time", "end_time",
+                        "current_bid", "total_bids", "interested_dealers",
+                        "data_class": "production_live_data",
+                        "hidden_from_marketplace": false, ...,
+                        "car": {...joined...}, "seller": {...joined...} }
+         }
+         ✓ res.car.id present
+         ✓ res.auction.id present
+         ✓ res.auction.status === "draft"
+      ✅ GET /api/admin/auctions/{draft_id}/launch-readiness (operator JWT) →
+         200 {ready:false, media_count:0, featured_count:0,
+              min_photos_required:3,
+              issues:["Upload at least 3 photos (current: 0).",
+                      "Mark one photo as Featured before launching."]}.
+
+      ========== ROLE ISOLATION (Section 2) ==========
+      ✅ POST /api/auth/dealer/send-otp +918977986662 (operator phone) →
+         HTTP 403 {"detail":"USE_OPERATOR_LOGIN"}. Hard barrier verified.
+      ✅ POST /api/auth/dealer/verify-otp +919900000001 → 200, dealer.role
+         hard-pinned to "dealer".
+      ✅ POST /api/cars with dealer JWT → HTTP 403
+         {"detail":"Admin access required"}. Exact string matches review
+         requirement.
+      Operator / dealer / seller roles are truly isolated. Operator phones
+      cannot acquire dealer JWTs and vice versa; dealer JWTs are rejected
+      from /cars with the documented detail string.
+
+      ========== DRAFT VISIBILITY (Section 4) ==========
+      ✅ GET /api/auctions (anon) — 7 items returned, NONE with status=draft,
+         the newly created draft id is NOT in the list. Confirmed
+         marketplace_query() in server.py:977 excludes status="draft".
+      ✅ GET /api/auctions/{draft_id} (operator JWT) → 200 with
+         status="draft" preserved.
+
+      ❌ GET /api/auctions?seller_id=me (operator JWT) — endpoint IGNORES
+         the seller_id query param (FastAPI handler at server.py:984 only
+         accepts {status_filter, limit}). The marketplace filter still
+         excludes drafts, so the operator's own draft is NOT visible via
+         /api/auctions. There is no `/api/auctions?seller_id=me` filter and
+         no `/admin/inventory/drafts` listing endpoint either. The frontend
+         /my-listings/index.tsx (line 44-45) does `api.auctions()` then
+         client-side filters by `a.seller_id === dealer.id`, which works
+         for LIVE auctions but NEVER surfaces drafts because the backend
+         pre-filters them out.
+         IMPACT: Operator cannot see their own drafts on the my-listings
+         "Drafts" tab — the tab is wired client-side but data never arrives.
+         This is a UX gap; the draft itself was created correctly and is
+         reachable via direct GET /auctions/{draft_id} or via the media
+         manager's auto-discovery path.
+         FIX (one-line): either add a `?seller_id=me` branch in
+         list_auctions that drops marketplace_query() and filters by
+         seller_id == caller.id (requires auth), OR add a new operator
+         endpoint GET /admin/inventory/drafts that returns all
+         status='draft' auctions for the caller.
+
+      ========== VALIDATION 422 SANITY (Section 6) ==========
+      ✅ POST /cars without 'make' → 422, detail is a list of pydantic
+         errors:
+         [{"type":"missing","loc":["body","make"],"msg":"Field required",...}]
+         Frontend /422|validation/i matcher WILL fire for this case.
+
+      ❌ POST /cars with starting_bid=0 AND reserve_price=0 → HTTP 200.
+         Payload accepted; the car was created (id 549ed63e-...). The
+         CarCreateReq pydantic model (server.py:314-341) declares
+         `starting_bid: int` and `reserve_price: int` with NO gt=0 / ge=1
+         validator. Pydantic accepts 0 as a valid int. The review expected
+         422 here, but the backend silently creates the draft. Frontend's
+         /422|validation/i fallback will never fire for this payload.
+         FIX (one-line): add `gt=0` constraints, e.g.
+           starting_bid: int = Field(..., gt=0)
+           reserve_price: int = Field(..., gt=0)
+         OR a model_validator that enforces reserve_price >= starting_bid > 0.
+
+      ========== REGRESSION SANITY ==========
+      ✅ GET /api/ → 200 {"service":"Q Drives API","status":"ok"}
+      ✅ Backend logs show no exceptions during the test run.
+      ✅ All endpoints touched by the sell screen are <500 / non-blocking.
+
+      ========== ANSWERS TO REVIEW QUESTIONS ==========
+      • Was the operator able to create the draft? — YES. POST /api/cars
+        returns 200 with car.id and auction.id present and
+        auction.status="draft". This is the CRITICAL path and it works.
+      • Were any HTTP 401/403/404/422/500 errors triggered along the path?
+        — NONE on the operator happy path. 403s only fired on the
+        deliberate negative tests (dealer→/cars, operator phone→dealer
+        endpoint), which is the correct designed behavior.
+      • Are operator/dealer/seller roles truly isolated? — YES. Operator
+        phones blocked from /auth/dealer/send-otp with USE_OPERATOR_LOGIN.
+        Dealer JWTs blocked from /api/cars with "Admin access required".
+        Role on dealer doc hard-pinned to "dealer".
+
+      ========== CONCLUSION ==========
+      The operator's reported "Save draft & upload photos is not
+      progressing" is NOT caused by the backend. Backend creates the
+      draft and returns the exact shape the frontend expects. The
+      failure must be in client-side handling (e.g., the frontend's
+      navigation/state code after the POST response, or the inspection
+      PDF attach step). Main agent should look at:
+        - /app/frontend/app/sell.tsx — POST /cars response handler +
+          router.push to /inventory/{carId}/media?auctionId={auctionId}
+        - any inspection PDF upload chained AFTER createCar that may be
+          throwing silently and blocking navigation
+        - the toast/spinner state machine
+
+      Two backend-side cleanups recommended (NOT blockers for the P0
+      report):
+        1) Add operator-self draft listing (either seller_id=me filter
+           or /admin/inventory/drafts) so the my-listings Drafts tab is
+           actually populated.
+        2) Add gt=0 validators on CarCreateReq.starting_bid and
+           reserve_price so payloads with zero values are rejected with
+           422 (frontend already has a UI matcher for this).

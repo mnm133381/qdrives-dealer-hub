@@ -31,6 +31,13 @@ const CURRENT_YEAR = new Date().getFullYear();
 const YEAR_OPTIONS = Array.from({ length: 30 }, (_, i) => CURRENT_YEAR - i);
 
 const DRAFT_KEY = 'qdrives_listing_draft_v1';
+// Demo RC data — used for the "Auto-fill from RC" smoke test in dev.
+// CRITICAL: every field must match FormShape exactly. Mixing in a raw
+// number for km_driven (which is typed as `string` for free typing)
+// caused a hard crash in launch() the moment the operator tapped Save
+// — `form.km_driven.replace` was suddenly not a function. We now keep
+// km_driven as a string AND pass everything through coerceFormShape()
+// before merging into state, as belt-and-braces defence.
 const DEMO_RC_DATA = {
   registration_number: 'MH02AB1234',
   make: 'Hyundai',
@@ -40,12 +47,78 @@ const DEMO_RC_DATA = {
   registration_year: 2022,
   fuel_type: 'Petrol',
   transmission: 'Automatic',
-  km_driven: 24800,
+  km_driven: '24800',
   color: 'Phantom Black',
   owners: 1,
   insurance_validity: '08/2026',
   rto_details: 'MH02 - Mumbai West',
 };
+
+// ---------------------------------------------------------------------
+// Defensive typing helpers
+// ---------------------------------------------------------------------
+// The form was crashing in production with `form.km_driven.replace is
+// not a function` because the persisted draft (and the demo RC data
+// auto-fill) sometimes contained numbers / nulls where the FormShape
+// expects strings. We never want a single bad field to break the entire
+// operator pipeline, so all numeric-string fields are normalised at
+// every state boundary (mount → draft restore → demo fill → setForm).
+//
+// Rules:
+//   • `km_driven` is a *string* (free typing) — coerce numbers, nulls,
+//     undefined → string. Strip non-digits at coerce time so even a
+//     pasted "24,800 km" turns into "24800".
+//   • Numeric int fields (starting_bid, reserve_price, owners,
+//     duration_minutes, years) get Number()-cast or fallback to the
+//     EMPTY_FORM value.
+//   • Trimmed-string fields fall back to empty string.
+
+const safeStringDigits = (v: unknown): string => {
+  if (v === null || v === undefined) return '';
+  return String(v).replace(/[^0-9]/g, '');
+};
+const safeString = (v: unknown): string => {
+  if (v === null || v === undefined) return '';
+  return typeof v === 'string' ? v : String(v);
+};
+const safeIntOrNull = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === '') return null;
+  const n = typeof v === 'number' ? v : parseInt(String(v).replace(/[^0-9.-]/g, ''), 10);
+  return Number.isFinite(n) ? n : null;
+};
+const safeInt = (v: unknown, fallback: number): number => {
+  const n = safeIntOrNull(v);
+  return n === null ? fallback : n;
+};
+
+/**
+ * Coerce ANY object into a valid FormShape. Used at every mutation
+ * entry point (initial state, draft restore, demo auto-fill, update
+ * handler) so the rest of the screen can call `.replace`, parseInt,
+ * etc. without crashing on a malformed value.
+ */
+function coerceFormShape(input: Partial<Record<keyof FormShape, any>>): FormShape {
+  return {
+    registration_number: safeString(input.registration_number).toUpperCase().replace(/\s+/g, ''),
+    make:                safeString(input.make),
+    model:               safeString(input.model),
+    variant:             safeString(input.variant),
+    manufacturing_year:  safeIntOrNull(input.manufacturing_year),
+    registration_year:   safeIntOrNull(input.registration_year),
+    fuel_type:           safeString(input.fuel_type),
+    transmission:        safeString(input.transmission),
+    // CRITICAL — must remain a string so `.replace` works downstream.
+    km_driven:           safeStringDigits(input.km_driven),
+    color:               safeString(input.color),
+    owners:              safeInt(input.owners, 1),
+    insurance_validity:  safeString(input.insurance_validity),
+    rto_details:         safeString(input.rto_details),
+    notes:               safeString(input.notes),
+    starting_bid:        safeInt(input.starting_bid, 0),
+    reserve_price:       safeInt(input.reserve_price, 0),
+    duration_minutes:    safeInt(input.duration_minutes, 60),
+  };
+}
 
 type FormShape = {
   registration_number: string;
@@ -91,11 +164,11 @@ type Errors = Partial<Record<keyof FormShape, string>>;
 
 function validate(form: FormShape): Errors {
   const e: Errors = {};
-  if (!form.registration_number.trim() || form.registration_number.trim().length < 6) {
+  if (!safeString(form.registration_number).trim() || safeString(form.registration_number).trim().length < 6) {
     e.registration_number = 'Enter a valid registration number';
   }
-  if (!form.make.trim()) e.make = 'Required';
-  if (!form.model.trim()) e.model = 'Required';
+  if (!safeString(form.make).trim()) e.make = 'Required';
+  if (!safeString(form.model).trim()) e.model = 'Required';
   if (!form.manufacturing_year) e.manufacturing_year = 'Required';
   if (!form.registration_year) e.registration_year = 'Required';
   if (
@@ -106,7 +179,10 @@ function validate(form: FormShape): Errors {
   }
   if (!form.fuel_type) e.fuel_type = 'Required';
   if (!form.transmission) e.transmission = 'Required';
-  const km = parseInt(form.km_driven.replace(/[^0-9]/g, ''), 10);
+  // Use safeStringDigits so a number / null / undefined km_driven
+  // (from a stale draft or RC autofill that bypassed coercion) cannot
+  // crash this validator — it gets stringified first.
+  const km = parseInt(safeStringDigits(form.km_driven), 10);
   if (!km || km < 1) e.km_driven = 'Enter a valid number';
   else if (km > 1_000_000) e.km_driven = 'Looks too high';
   if (!form.starting_bid || form.starting_bid < 50000) e.starting_bid = 'Min ₹50,000';
@@ -114,7 +190,7 @@ function validate(form: FormShape): Errors {
     e.reserve_price = 'Reserve must be ≥ starting bid';
   }
   if (form.insurance_validity) {
-    const ok = /^(\d{2})\/(\d{4})$/.test(form.insurance_validity.trim());
+    const ok = /^(\d{2})\/(\d{4})$/.test(safeString(form.insurance_validity).trim());
     if (!ok) e.insurance_validity = 'Use MM/YYYY';
   }
   return e;
@@ -151,7 +227,12 @@ export default function Sell() {
         if (raw) {
           const parsed = JSON.parse(raw);
           if (parsed && typeof parsed === 'object') {
-            setForm({ ...EMPTY_FORM, ...parsed });
+            // Coerce — older drafts may have stored km_driven as a
+            // number (bug we shipped before this fix) which would
+            // crash `.replace()` on the very next render. Normalise
+            // every field through the type guard before committing
+            // it to state.
+            setForm(coerceFormShape({ ...EMPTY_FORM, ...parsed }));
             setDraftRestored(true);
           }
         }
@@ -175,11 +256,14 @@ export default function Sell() {
   }, [form]);
 
   const u = (k: keyof FormShape, v: any) => {
-    setForm((p) => ({ ...p, [k]: v }));
+    // Re-coerce on every update — this guarantees that even if a
+    // caller (RC API mock, AI price estimate, etc.) passes a wrong-
+    // typed value, the form state stays type-clean.
+    setForm((p) => coerceFormShape({ ...p, [k]: v }));
     if (touched.has(k)) {
       // re-validate this field on each keystroke once touched
       setErrors((prev) => {
-        const next = validate({ ...form, [k]: v });
+        const next = validate(coerceFormShape({ ...form, [k]: v }));
         return { ...prev, [k]: next[k] };
       });
     }
@@ -189,10 +273,11 @@ export default function Sell() {
 
   // ---- Demo RC autofill (clearly labeled) ----
   const useDemoData = () => {
-    setForm((p) => ({
-      ...p,
-      ...DEMO_RC_DATA,
-    }));
+    // DEMO_RC_DATA was the historic crash source — km_driven was a
+    // raw number. coerceFormShape now stringifies it before it ever
+    // hits state, but we keep the fix defence-in-depth at the merge
+    // site too.
+    setForm((p) => coerceFormShape({ ...p, ...DEMO_RC_DATA }));
     setErrors({});
     setTouched(new Set());
     toast.show('Demo data loaded. This is mock data, not a real RC lookup.', 'info');
@@ -222,7 +307,7 @@ export default function Sell() {
         make: form.make,
         model: form.model,
         year: form.registration_year,
-        km_driven: parseInt(form.km_driven.replace(/[^0-9]/g, ''), 10) || 0,
+        km_driven: parseInt(safeStringDigits(form.km_driven), 10) || 0,
         fuel_type: form.fuel_type || 'Petrol',
         owners: form.owners,
         condition_score: 8.5,
@@ -230,7 +315,7 @@ export default function Sell() {
       setAiEst(res);
       const start = Math.max(50000, Math.round(((res as any).market_low_inr || 1000000) * 0.95 / 1000) * 1000);
       const reserve = Math.round(((res as any).estimated_price_inr || 1200000) / 1000) * 1000;
-      setForm((p) => ({ ...p, starting_bid: start, reserve_price: reserve }));
+      setForm((p) => coerceFormShape({ ...p, starting_bid: start, reserve_price: reserve }));
       toast.show('Valuation ready', 'success');
     } catch (e: any) {
       toast.show(e.message || 'Valuation failed', 'error');
@@ -316,31 +401,48 @@ export default function Sell() {
 
     // ── Step 4: Build payload + hit the API.
     setCreating(true);
-    const km = parseInt(form.km_driven.replace(/[^0-9]/g, ''), 10);
+    // safeStringDigits is paranoid — even if a stale draft restored
+    // a number into km_driven, this normalises to string-of-digits
+    // before parseInt, so the launch button can never crash with
+    // "form.km_driven.replace is not a function".
+    const km = parseInt(safeStringDigits(form.km_driven), 10);
+    if (!km || km < 1) {
+      // Belt-and-braces: validate() already caught this, but if a
+      // type-clobbered draft slipped through, surface a clear toast
+      // instead of sending `NaN` to the backend.
+      setCreating(false);
+      console.warn('[sell.launch] km_driven failed final coercion', form.km_driven);
+      toast.show('Kilometers driven is invalid — please re-enter', 'error');
+      return;
+    }
+    // Defensive: every string field is run through safeString() before
+    // `.trim()`. Even if some upstream caller (RC autofill, AI
+    // estimate, deep-link) shoved a non-string into state, we can no
+    // longer crash here.
     const payload = {
-      registration_number: form.registration_number.trim().toUpperCase(),
-      make: form.make.trim(),
-      model: form.model.trim(),
-      variant: form.variant.trim(),
-      year: form.registration_year,
-      manufacturing_year: form.manufacturing_year,
-      registration_year: form.registration_year,
-      fuel_type: form.fuel_type,
-      transmission: form.transmission,
-      km_driven: km,
-      color: form.color.trim(),
-      owners: form.owners,
-      insurance_validity: form.insurance_validity.trim(),
-      rto_details: form.rto_details.trim(),
-      notes: form.notes.trim(),
-      starting_bid: form.starting_bid,
-      reserve_price: form.reserve_price,
-      duration_minutes: form.duration_minutes,
+      registration_number: safeString(form.registration_number).trim().toUpperCase(),
+      make:                safeString(form.make).trim(),
+      model:               safeString(form.model).trim(),
+      variant:             safeString(form.variant).trim(),
+      year:                form.registration_year,
+      manufacturing_year:  form.manufacturing_year,
+      registration_year:   form.registration_year,
+      fuel_type:           safeString(form.fuel_type),
+      transmission:        safeString(form.transmission),
+      km_driven:           km,
+      color:               safeString(form.color).trim(),
+      owners:              safeInt(form.owners, 1),
+      insurance_validity:  safeString(form.insurance_validity).trim(),
+      rto_details:         safeString(form.rto_details).trim(),
+      notes:               safeString(form.notes).trim(),
+      starting_bid:        safeInt(form.starting_bid, 0),
+      reserve_price:       safeInt(form.reserve_price, 0),
+      duration_minutes:    safeInt(form.duration_minutes, 60),
       // No stock images — operator uploads real photos in the next step.
       // Backend creates this auction with status="draft" by default
       // (launch_immediately defaults to false).
-      images: [],
-      description: form.notes.trim() || `${form.registration_year} ${form.make} ${form.model} listed for wholesale auction.`,
+      images: [] as string[],
+      description: safeString(form.notes).trim() || `${form.registration_year} ${form.make} ${form.model} listed for wholesale auction.`,
     };
     console.log('[sell.launch] POST /api/cars →', { reg: payload.registration_number, km, reserve: payload.reserve_price });
 

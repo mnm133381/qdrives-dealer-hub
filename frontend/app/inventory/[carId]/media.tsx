@@ -193,8 +193,16 @@ export default function MediaManager() {
         setPending((p) => p.filter((x) => x.localId !== item.localId));
       }, 600);
     } catch (e: any) {
-      setPending((p) => p.map((x) => (x.localId === item.localId ? { ...x, status: 'error', error: e.message || 'Upload failed' } : x)));
-      toast.show(`Upload failed: ${e.message || 'try again'}`, 'error');
+      // Always extract a readable string. `e.message` is already formatted
+      // by uploadOnce's formatErrorDetail(), but if something else
+      // throws (e.g. compressForUpload) we still want a clean toast
+      // instead of "[object Object]".
+      const friendly = typeof e?.message === 'string' && e.message
+        ? e.message
+        : (typeof e === 'string' ? e : 'try again');
+      setPending((p) => p.map((x) => (x.localId === item.localId ? { ...x, status: 'error', error: friendly } : x)));
+      console.error('[media.upload] failed', { section: item.section, uri: item.uri, err: e });
+      toast.show(`Upload failed: ${friendly}`, 'error');
     }
   };
 

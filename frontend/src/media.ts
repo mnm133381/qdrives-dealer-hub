@@ -157,8 +157,75 @@ export function uploadMediaXhr(opts: {
   });
 }
 
+/**
+ * Normalise any FastAPI / fetch error payload to a single human-readable
+ * string. FastAPI 422 returns `detail` as an ARRAY of pydantic error
+ * objects like `[{type, loc, msg, ...}]`, and naïvely doing
+ * `new Error(data.detail)` produces the infamous
+ * "[object Object],[object Object]" toast that hid the real cause for
+ * us in production.
+ *
+ * Order of precedence:
+ *   1. Array of {msg|loc} objects   → join "field: msg, field: msg"
+ *   2. Single object with msg/detail → use that
+ *   3. Plain string                  → use as-is
+ *   4. anything else                  → JSON.stringify (last resort)
+ */
+function formatErrorDetail(data: any, status?: number): string {
+  if (!data) return status ? `Upload failed (${status})` : 'Upload failed';
+  const detail = data.detail ?? data.message ?? data;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail.map((d: any) => {
+      if (!d) return '';
+      if (typeof d === 'string') return d;
+      const loc = Array.isArray(d.loc) ? d.loc.filter((x: any) => x !== 'body').join('.') : '';
+      const msg = d.msg || d.message || d.type || JSON.stringify(d);
+      return loc ? `${loc}: ${msg}` : msg;
+    }).filter(Boolean);
+    return parts.length ? parts.join(', ') : `Upload failed (${status ?? '?'})`;
+  }
+  if (typeof detail === 'object') {
+    return detail.msg || detail.message || JSON.stringify(detail);
+  }
+  return String(detail);
+}
+
+/**
+ * Build the file part of the multipart form. React Native and web
+ * disagree about how to attach a local image:
+ *
+ *   • iOS / Android (React Native FormData polyfill):
+ *       fd.append('file', { uri, type, name })  ← required shape
+ *
+ *   • Web (browser native FormData):
+ *       fd.append('file', BlobOrFile, filename) ← `{uri,...}` is
+ *       silently coerced to "[object Object]" which then FAILS
+ *       FastAPI's `UploadFile = File(...)` validator and returns a 422
+ *       with `detail = [{type:"missing", loc:["body","file"]}, ...]`
+ *       — the exact crash that produced the "[object Object],[object
+ *       Object]" toast on emergent.host.
+ *
+ * For web we fetch the (blob:/data:/http:) URI as a Blob and append
+ * that instead. For native we keep the legacy shape.
+ */
+async function buildFilePart(uri: string, name: string): Promise<any> {
+  if (typeof window !== 'undefined' && typeof (window as any).Blob !== 'undefined' && uri && (uri.startsWith('blob:') || uri.startsWith('data:') || uri.startsWith('http'))) {
+    // Web path — must be a real Blob to satisfy `UploadFile`.
+    const r = await fetch(uri);
+    const blob = await r.blob();
+    // Pass the filename as the 3rd FormData arg.
+    return { __webBlob: blob, __webName: name };
+  }
+  // React Native path — keep legacy shape.
+  return { uri, type: 'image/jpeg', name };
+}
+
 async function uploadOnce(opts: any): Promise<any> {
   const token = await storage.getItem(TOKEN_KEY);
+  // Pre-build the file parts (may need an async Blob fetch on web).
+  const filePart = await buildFilePart(opts.fullUri, opts.filename || 'photo.jpg');
+  const thumbPart = opts.thumbUri ? await buildFilePart(opts.thumbUri, 'thumb.jpg') : null;
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     const url = `${BASE}/api/media/upload`;
@@ -172,32 +239,40 @@ async function uploadOnce(opts: any): Promise<any> {
     xhr.onload = () => {
       try {
         const data = xhr.responseText ? JSON.parse(xhr.responseText) : null;
-        if (xhr.status >= 200 && xhr.status < 300) resolve(data);
-        else reject(new Error((data && (data.detail || data.message)) || `Upload failed (${xhr.status})`));
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(data);
+        } else {
+          // CRITICAL: format errors that come back as arrays of pydantic
+          // objects so the toast never shows "[object Object],..." again.
+          const err = new Error(formatErrorDetail(data, xhr.status));
+          (err as any).status = xhr.status;
+          (err as any).detail = data;
+          reject(err);
+        }
       } catch (e: any) {
-        reject(new Error(e?.message || 'Upload parse failed'));
+        reject(new Error(e?.message || `Upload parse failed (${xhr.status})`));
       }
     };
-    xhr.onerror = () => reject(new Error('Network error'));
+    xhr.onerror = () => reject(new Error('Network error — check your connection'));
     xhr.ontimeout = () => reject(new Error('Upload timed out'));
 
     const fd = new FormData();
     fd.append('car_id', opts.carId);
     fd.append('section', opts.section);
     if (opts.subsection) fd.append('subsection', opts.subsection);
-    if (opts.width) fd.append('width', String(opts.width));
+    if (opts.width)  fd.append('width', String(opts.width));
     if (opts.height) fd.append('height', String(opts.height));
-    fd.append('file', {
-      uri: opts.fullUri,
-      type: 'image/jpeg',
-      name: opts.filename || 'photo.jpg',
-    } as any);
-    if (opts.thumbUri) {
-      fd.append('thumb', {
-        uri: opts.thumbUri,
-        type: 'image/jpeg',
-        name: 'thumb.jpg',
-      } as any);
+    if (filePart.__webBlob) {
+      fd.append('file', filePart.__webBlob, filePart.__webName);
+    } else {
+      fd.append('file', filePart as any);
+    }
+    if (thumbPart) {
+      if (thumbPart.__webBlob) {
+        fd.append('thumb', thumbPart.__webBlob, thumbPart.__webName);
+      } else {
+        fd.append('thumb', thumbPart as any);
+      }
     }
     xhr.send(fd as any);
   });

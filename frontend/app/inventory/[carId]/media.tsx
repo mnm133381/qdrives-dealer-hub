@@ -96,7 +96,9 @@ export default function MediaManager() {
       let aid = auctionId;
       if (!aid) {
         try {
-          const all: any[] = await api.auctions();
+          // Operator-scoped fetch — includes drafts (the marketplace
+          // filter would strip them out).
+          const all: any[] = await api.auctions(undefined, 'me');
           const match = all.find((x) => x?.car?.id === carId || x?.car_id === carId);
           if (match) aid = match.id;
           if (aid) setAuctionId(aid);

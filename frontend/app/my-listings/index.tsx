@@ -41,7 +41,11 @@ export default function MyListings() {
 
   const load = useCallback(async () => {
     try {
-      const all: any[] = await api.auctions();
+      // Use the operator-scoped variant which INCLUDES drafts. Without
+      // `seller_id=me` the marketplace filter strips drafts and the
+      // "Drafts" tab is permanently empty, even right after the
+      // operator taps "Save draft & upload photos" on the Sell screen.
+      const all: any[] = await api.auctions(undefined, 'me');
       setAuctions(all.filter((a) => a.seller_id === dealer?.id));
     } catch {} finally {
       setLoading(false);

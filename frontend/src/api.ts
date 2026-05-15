@@ -109,7 +109,12 @@ export const api = {
       { method: 'POST', body: JSON.stringify(payload) },
     ),
 
-  auctions: (status?: string) => request(`/auctions${status ? `?status_filter=${status}` : ''}`),
+  auctions: (status?: string, seller_id?: string) => {
+    const qs: string[] = [];
+    if (status) qs.push(`status_filter=${encodeURIComponent(status)}`);
+    if (seller_id) qs.push(`seller_id=${encodeURIComponent(seller_id)}`);
+    return request(`/auctions${qs.length ? `?${qs.join('&')}` : ''}`);
+  },
   auction: (id: string) => request(`/auctions/${id}`),
   // Place a bid. `idempotency_key` (optional, recommended) is a
   // client-generated UUID — when supplied, retries from the bid retry

@@ -982,12 +982,54 @@ def marketplace_query() -> Dict[str, Any]:
 
 
 @api.get("/auctions")
-async def list_auctions(status_filter: Optional[str] = None, limit: int = 50):
-    # Phase 2C hygiene — public marketplace must NEVER surface archived,
-    # withdrawn, hidden, settled, dispute, or settlement-pipeline
-    # inventory. Use marketplace_query() so this filter stays in lockstep
-    # with /market/pulse and /dashboard/stats.
-    base_query = marketplace_query()
+async def list_auctions(
+    status_filter: Optional[str] = None,
+    limit: int = 50,
+    seller_id: Optional[str] = None,
+    request: Request = None,
+):
+    """Public marketplace listing — Phase 2C hygiene drops archived /
+    withdrawn / draft / settlement-pipeline auctions.
+
+    OPERATOR ESCAPE HATCH: `?seller_id=me` returns the OPERATOR'S OWN
+    auctions including drafts (bypasses the marketplace filter). This is
+    what powers the operator's my-listings → Drafts tab so a freshly
+    created draft is immediately visible and can be opened to upload
+    media + launch. Non-operator callers attempting `seller_id=me` are
+    silently fallback'd to the marketplace filter (no privacy leak).
+    """
+    show_drafts_for_me = False
+    me_dealer_id = None
+    if seller_id == "me":
+        # Resolve the caller via bearer token. We do NOT depend on
+        # get_current_dealer at the route signature so anonymous callers
+        # can still hit /auctions (used by the public marketplace).
+        try:
+            auth = (request.headers.get("authorization") or "") if request else ""
+            if auth.lower().startswith("bearer "):
+                token = auth.split(None, 1)[1].strip()
+                payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+                me_dealer_id = payload.get("sub")
+                me = await db.dealers.find_one({"id": me_dealer_id}, {"_id": 0, "role": 1})
+                if me and me.get("role") in ("admin", "super_admin", "operations_admin", "inspection_admin"):
+                    show_drafts_for_me = True
+        except Exception:
+            show_drafts_for_me = False  # malformed token → fall through to public
+
+    if show_drafts_for_me and me_dealer_id:
+        # Operator viewing their own pipeline — include drafts but still
+        # exclude soft-deleted records (archived/withdrawn) to keep the
+        # list clean.
+        base_query = {
+            "seller_id": me_dealer_id,
+            "status": {"$nin": ["archived", "withdrawn", "cancelled"]},
+        }
+    else:
+        # Phase 2C hygiene — public marketplace must NEVER surface
+        # archived, withdrawn, hidden, settled, dispute, or settlement-
+        # pipeline inventory. Use marketplace_query() so this filter
+        # stays in lockstep with /market/pulse and /dashboard/stats.
+        base_query = marketplace_query()
     cursor = db.auctions.find(base_query).sort("start_time", -1).limit(limit)
     auctions = await cursor.to_list(limit)
     enriched = [await _enrich_auction(a) for a in auctions]

@@ -80,6 +80,13 @@ export default function MediaManager() {
     ready: boolean; issues: string[]; media_count: number; featured_count: number; min_photos_required: number;
   } | null>(null);
   const [launching, setLaunching] = useState(false);
+  // Custom confirm modal — needed because:
+  //   • Alert.alert(title, msg, [buttons]) is a no-op on React Native Web
+  //   • window.confirm() is BLOCKED in cross-origin iframes on mobile
+  //     Safari / WebView (e.g. the Emergent IDE preview iframe).
+  // A real Modal renders in ALL environments and is the only reliable
+  // way to confirm the launch.
+  const [showLaunchConfirm, setShowLaunchConfirm] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -327,40 +334,16 @@ export default function MediaManager() {
     if (!readiness?.ready) {
       const reason = readiness?.issues?.[0] || 'Upload required media before launching';
       console.warn('[media.launch] not ready', { issues: readiness?.issues });
-      // Just toast — Alert.alert(title, msg) without buttons works on
-      // web, but the toast is more reliable + less noisy.
       toast.show(`Not ready: ${reason}`, 'error');
       return;
     }
 
-    const confirmText = `${readiness.media_count} photos · ${readiness.featured_count} featured. Make this auction LIVE and visible to all dealers?`;
-
-    // Cross-platform confirmation. On web we use the browser confirm
-    // (which RN-Web's Alert does NOT polyfill for button arrays). On
-    // native we use Alert.alert which DOES show buttons correctly.
-    let confirmed = false;
-    if (Platform.OS === 'web') {
-      // eslint-disable-next-line no-alert
-      confirmed = typeof window !== 'undefined' && typeof window.confirm === 'function'
-        ? window.confirm(confirmText)
-        : true; // SSR or test env — just proceed
-    } else {
-      confirmed = await new Promise<boolean>((resolve) => {
-        Alert.alert(
-          'Launch this auction?',
-          confirmText,
-          [
-            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-            { text: 'Launch now', style: 'destructive', onPress: () => resolve(true) },
-          ],
-          { cancelable: true, onDismiss: () => resolve(false) },
-        );
-      });
-    }
-    console.log('[media.launch] confirm result =', confirmed);
-    if (!confirmed) return;
-
-    await performLaunch();
+    // Open the custom Modal confirm. Works in ALL environments —
+    // native, normal web, AND cross-origin iframes (Emergent IDE
+    // preview) where `Alert.alert` and `window.confirm` are silently
+    // suppressed.
+    console.log('[media.launch] opening confirm modal');
+    setShowLaunchConfirm(true);
   };
 
   // --- Derived state ---
@@ -598,6 +581,61 @@ export default function MediaManager() {
         </View>
       )}
 
+      {/* Launch confirmation Modal — works in all environments
+       *   (native, web, iframe-in-iframe).  Replaces Alert.alert /
+       *   window.confirm which silently fail in Emergent IDE preview. */}
+      <Modal
+        visible={showLaunchConfirm}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowLaunchConfirm(false)}
+      >
+        <Pressable
+          style={styles.backdrop}
+          onPress={() => !launching && setShowLaunchConfirm(false)}
+        >
+          <Pressable style={styles.launchSheet}>
+            <View style={styles.launchSheetRocketWrap}>
+              <Rocket size={26} color={colors.red} />
+            </View>
+            <Text style={styles.launchSheetTitle}>Launch this auction?</Text>
+            <Text style={styles.launchSheetBody}>
+              {readiness?.media_count ?? 0} photos uploaded · {readiness?.featured_count ?? 0} featured.
+              {'\n\n'}
+              Once launched, this listing becomes visible to all verified dealers and the live timer starts.
+            </Text>
+            <View style={styles.launchSheetActions}>
+              <TouchableOpacity
+                onPress={() => setShowLaunchConfirm(false)}
+                disabled={launching}
+                style={styles.launchSheetCancel}
+                testID="launch-confirm-cancel"
+              >
+                <Text style={styles.launchSheetCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={async () => {
+                  setShowLaunchConfirm(false);
+                  await performLaunch();
+                }}
+                disabled={launching}
+                style={styles.launchSheetConfirm}
+                testID="launch-confirm-go"
+              >
+                {launching ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Rocket size={15} color="#fff" />
+                    <Text style={styles.launchSheetConfirmText}>Launch now</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       {/* Move-to-section sheet */}
       <Modal visible={!!moveTarget} transparent animationType="fade" onRequestClose={() => setMoveTarget(null)}>
         <Pressable style={styles.backdrop} onPress={() => setMoveTarget(null)}>
@@ -740,4 +778,48 @@ const styles = StyleSheet.create({
   },
   launchFabDisabled: { backgroundColor: '#3F2828', shadowOpacity: 0 },
   launchFabText: { color: '#fff', fontSize: 15, fontWeight: '900', letterSpacing: 0.4 },
+
+  // Custom launch-confirm modal (Alert.alert is a no-op on RN-Web and
+  // window.confirm is blocked inside cross-origin iframes — a real
+  // Modal is the only sheet that renders reliably in every env).
+  launchSheet: {
+    backgroundColor: colors.bgElevated,
+    borderRadius: radii.lg,
+    padding: 22,
+    marginHorizontal: 24,
+    borderWidth: 1,
+    borderColor: colors.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.35, shadowRadius: 24, elevation: 12,
+  },
+  launchSheetRocketWrap: {
+    alignSelf: 'flex-start',
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: 'rgba(220,38,38,0.12)',
+    alignItems: 'center', justifyContent: 'center',
+    marginBottom: 14,
+    borderWidth: 1, borderColor: 'rgba(220,38,38,0.35)',
+  },
+  launchSheetTitle: {
+    color: colors.textPrimary,
+    fontSize: 19, fontWeight: '900', letterSpacing: -0.4,
+    marginBottom: 8,
+  },
+  launchSheetBody: {
+    color: colors.textChrome,
+    fontSize: 13.5, lineHeight: 19, fontWeight: '500',
+    marginBottom: 22,
+  },
+  launchSheetActions: { flexDirection: 'row', gap: 10 },
+  launchSheetCancel: {
+    flex: 1, paddingVertical: 14, borderRadius: radii.md,
+    borderWidth: 1, borderColor: colors.border,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  launchSheetCancelText: { color: colors.textChrome, fontSize: 14, fontWeight: '800' },
+  launchSheetConfirm: {
+    flex: 1.4, paddingVertical: 14, borderRadius: radii.md,
+    backgroundColor: colors.red,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+  },
+  launchSheetConfirmText: { color: '#fff', fontSize: 14, fontWeight: '900', letterSpacing: 0.3 },
 });

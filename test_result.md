@@ -7335,11 +7335,11 @@ backend:
 backend:
   - task: "GET /auctions?seller_id=me operator escape hatch"
     implemented: true
-    working: false
+    working: true
     file: "backend/server.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: false
         agent: "testing"
@@ -7366,4 +7366,37 @@ backend:
           (db.auctions.find({seller_id: f2a53eb2…, status: draft})
           → 1 match for the test's auction_id), so this is purely a
           handler-side bug, not a write-path bug.
+      - working: true
+        agent: "testing"
+        comment: |
+          [RUN 41 — QUICK RETEST AFTER JWT_ALG → JWT_ALGO FIX] PASS 6/6.
+          Test script: /app/test_step4_retest.py (httpx, public ingress
+          https://qdrives-dealer-hub.preview.emergentagent.com/api).
+          Operator +918977986662, DEV_BYPASS_OTP=true, OTP=123456.
+
+          Step-by-step results:
+            ✅ POST /api/auth/operator/verify-otp → HTTP 200, token minted,
+               dealer.id=f2a53eb2-697e-4655-9dcc-7bc89e20a4da.
+            ✅ POST /api/cars (minimal valid payload: Maruti Suzuki Swift
+               VXi 2021, MH12RT4421, ₹4.25L start / ₹4.80L reserve,
+               60-min duration, no launch_immediately) → HTTP 200,
+               auction.id=f9d37a93-5af4-49bb-8a21-c342dccf2f9e,
+               auction.status="draft" (correct default).
+            ✅ GET /api/auctions?seller_id=me (Bearer operator token) →
+               HTTP 200, response IS a list (13 items, all owned by the
+               operator). The newly-created draft id IS present in the
+               response AND its status is "draft". Other operator-owned
+               auctions (live, ended, etc.) also surface — exactly what
+               the escape-hatch was designed to do.
+            ✅ GET /api/auctions (no Authorization header, anonymous) →
+               HTTP 200, 8 items, NONE of which is the newly-created
+               draft (draft id absent from the anon list). Marketplace
+               privacy filter is intact — drafts do NOT leak to the
+               public marketplace.
+
+          Confirms the 1-char fix at server.py:1011 (JWT_ALG → JWT_ALGO)
+          resolves the regression cleanly. Operator drafts now flow into
+          the my-listings → Drafts tab as intended, and public
+          marketplace listings remain draft-free. No regressions
+          observed in adjacent endpoints during the run.
 

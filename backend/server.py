@@ -1008,7 +1008,7 @@ async def list_auctions(
             auth = (request.headers.get("authorization") or "") if request else ""
             if auth.lower().startswith("bearer "):
                 token = auth.split(None, 1)[1].strip()
-                payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+                payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
                 me_dealer_id = payload.get("sub")
                 me = await db.dealers.find_one({"id": me_dealer_id}, {"_id": 0, "role": 1})
                 if me and me.get("role") in ("admin", "super_admin", "operations_admin", "inspection_admin"):

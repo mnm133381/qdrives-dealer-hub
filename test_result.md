@@ -7400,3 +7400,148 @@ backend:
           marketplace listings remain draft-free. No regressions
           observed in adjacent endpoints during the run.
 
+
+
+backend:
+  - task: "7-day auction duration option (end-to-end)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          [RUN 42 — 7-DAY AUCTION DURATION E2E — 12/12 PASS]
+          Test script: /app/backend_test_7day.py (httpx, no curl).
+          Target: http://localhost:8001/api
+          Operator: +918977986662 (super_admin via ADMIN_PHONES).
+          DEV_BYPASS_OTP=true · OTP=123456 (confirmed in /app/backend/.env).
+
+          ✅ TEST 1 · POST /api/cars duration_minutes=10080 → HTTP 200,
+             auction.status="draft", end_time - start_time = 7.00d exactly.
+             auction_id=f7e6d0d5-f65c-4bc5-b70a-a2b30766097e.
+
+          ✅ TEST 2 — Pydantic Field bounds (CarCreateReq.duration_minutes
+             at server.py:338  `ge=5, le=14 * 24 * 60`):
+             • 2a duration_minutes=4   → HTTP 422
+               detail.type="greater_than_equal", ctx.ge=5.
+             • 2b duration_minutes=20161 → HTTP 422
+               detail.type="less_than_equal", ctx.le=20160.
+             • 2c duration_minutes=20160 → HTTP 200, draft, end-start=14.00d.
+               Upper boundary inclusive — exactly the 14-day ceiling.
+
+          ✅ TEST 3 · Launch a 7-day draft.
+             Uploaded 3 exterior JPEGs + flipped 1 to featured →
+             POST /admin/auctions/{aid}/launch {} → HTTP 200,
+             auction.status="live", end_time - start_time = 604,800.0 s
+             (|delta - 7d| = 0.0 s, well within the 60-s round-trip tol).
+             launched_at populated; start_time bumped to now() at launch.
+
+          ✅ TEST 4 · /launch with duration_minutes override.
+             • 4a New 60-min draft + 3 media + featured →
+               /launch {"duration_minutes":10080} → HTTP 200,
+               end-start = 604,800.0 s (override wins; original 60 min ignored).
+             • 4b /launch {"duration_minutes":1}     → HTTP 422 (≥5).
+             • 4c /launch {"duration_minutes":30000} → HTTP 422 (≤20160).
+             AuctionLaunchReq.duration_minutes Field at server.py:1425 has
+             the same `ge=5, le=14*24*60` constraints, and Pydantic
+             validation fires BEFORE any handler-side state checks (so
+             422 returns even on an unready draft, which is the spec).
+
+          ✅ TEST 5 · GET /api/auctions/{7day_id} (auth) →
+             seconds_remaining = 604,799 (int, positive,
+             |604,799 - 604,800| = 1 s, well under the 60-s tol).
+             No int overflow / clamp — _enrich_auction at server.py:952
+             computes `max(0, int((end_dt - now).total_seconds()))`,
+             which handles 7-day windows cleanly.
+
+          ✅ TEST 6 · GET /api/auctions/{7day_id}/snapshot (auth) →
+             HTTP 200. Response keys ["auction", "bids", "seq",
+             "server_ns"]. auction.end_time = 2026-05-23T14:19:42Z
+             (7 days out, properly serialized). seq = 0 (no bids yet,
+             but present and an int — bid_seq exposed correctly).
+
+          ✅ TEST 7 · Dealer marketplace surface (anonymous).
+             GET /api/auctions (no Authorization) → HTTP 200, 11 items,
+             the 7-day auction IS present in the list. Sort check:
+             start_time DESC monotonically holds across all 11 items
+             (verified by pairwise comparison) — 7-day auction
+             interleaves correctly with shorter-duration live auctions
+             based on its start_time. No status filter regression.
+
+          ✅ TEST 8 · Regression — short-duration (30-min) auction.
+             Fresh draft duration_minutes=30 → 3 media + featured →
+             /launch {} → HTTP 200, live, end-start = 1,800 s exactly.
+             Existing short-window flow unaffected by the new ceiling.
+
+          ===== ANSWER TO REVIEW =====
+          ✅ ALL 12 ASSERTIONS PASS.
+          7-day auction duration option works end-to-end on
+          http://localhost:8001/api as designed:
+            • CarCreateReq accepts duration_minutes up to 20,160 (14 days)
+              with new Pydantic ge=5/le=20160 Field constraints.
+            • AuctionLaunchReq honours the same bounds for override.
+            • Drafts persist the long window; /launch applies the
+              override or preserves the original; status flips to live
+              atomically.
+            • seconds_remaining and snapshot expose the long window
+              without overflow / clamping.
+            • Marketplace listing + start_time DESC sort are intact.
+            • 30-min and other short-duration auctions remain regression-
+              free.
+          No backend bugs found in this surface. No action required.
+
+metadata:
+  created_by: "testing"
+  version: "1.39"
+  test_sequence: 42
+  run_ui: false
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      [RUN 42 — 7-day auction duration E2E — 12/12 PASS]
+      Test script: /app/backend_test_7day.py (httpx only, no curl).
+      Target: http://localhost:8001/api · Operator +918977986662
+      (super_admin) · DEV_BYPASS_OTP=true · OTP=123456.
+
+      Results (PASS/FAIL · HTTP · key fields):
+        ✅ Test 1  · POST /cars duration_minutes=10080 → 200, draft,
+                    end-start=7.00d (auction f7e6d0d5).
+        ✅ Test 2a · duration_minutes=4 → 422 (ge=5).
+        ✅ Test 2b · duration_minutes=20161 → 422 (le=20160).
+        ✅ Test 2c · duration_minutes=20160 → 200, draft,
+                    end-start=14.00d (boundary inclusive).
+        ✅ Test 3  · /launch {} on 7-day ready draft → 200, live,
+                    end-start=604,800.0s (|Δ - 7d|=0.0s ≤60s tol).
+        ✅ Test 4a · /launch {duration_minutes:10080} override 60-min
+                    draft → 200, end-start=604,800.0s.
+        ✅ Test 4b · /launch {duration_minutes:1}  → 422.
+        ✅ Test 4c · /launch {duration_minutes:30000} → 422.
+        ✅ Test 5  · GET /auctions/{7day_id} seconds_remaining=604,799
+                    (int, positive, within 1s of 7d — no overflow).
+        ✅ Test 6  · GET /auctions/{7day_id}/snapshot → 200,
+                    {auction.end_time, bids, seq, server_ns} present.
+        ✅ Test 7  · GET /auctions (anon) → 200, 7-day id present,
+                    start_time DESC sort monotonic across all 11 items.
+        ✅ Test 8  · 30-min auction regression: /launch → 200, live,
+                    end-start=1,800s exactly.
+
+      No backend bugs found on this surface. The new Pydantic Field
+      constraints (ge=5, le=14*24*60) on both CarCreateReq and
+      AuctionLaunchReq enforce the 5-min lower bound and the 14-day
+      upper bound (20,160 min) inclusively. _enrich_auction handles
+      week-long countdowns without int clamp/overflow. Marketplace
+      sort by start_time DESC remains intact for mixed-duration
+      listings.
+
+      Main agent: please summarise & finish — no action items.

@@ -331,7 +331,11 @@ class CarCreateReq(BaseModel):
     starting_bid: int
     images: List[str] = []
     description: Optional[str] = ""
-    duration_minutes: int = 60
+    # 5 min ≤ duration ≤ 14 days. 14 days is the marketplace ceiling so
+    # the "7 Days" UI option (10080 min) has clear headroom. The lower
+    # bound prevents a typo (e.g. `1`) from producing an instant-end
+    # auction the moment it launches.
+    duration_minutes: int = Field(default=60, ge=5, le=14 * 24 * 60)
     # Pre-launch workflow flag. Default False → auction is created as a
     # DRAFT (status="draft") so operators can upload media + organise
     # the gallery BEFORE launching to dealers. Set True only for legacy
@@ -1416,7 +1420,9 @@ class AuctionLaunchReq(BaseModel):
     # Optional override of the duration set at draft creation. If omitted
     # the existing start/end_time on the doc is preserved (but start_time
     # is bumped to now() so the countdown is accurate at launch moment).
-    duration_minutes: Optional[int] = None
+    # Bounded to 5 min ≤ d ≤ 14 days — mirrors CarCreateReq so a 7-day
+    # marketplace listing fits comfortably with headroom.
+    duration_minutes: Optional[int] = Field(default=None, ge=5, le=14 * 24 * 60)
 
 
 @api.post("/admin/auctions/{auction_id}/launch")

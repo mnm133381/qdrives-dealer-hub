@@ -921,14 +921,25 @@ export default function Sell() {
             <Text style={styles.sectionTitle}>Auction duration</Text>
           </View>
           <View style={styles.durRow}>
-            {[30, 60, 120, 240].map((d) => (
+            {/* Duration pills — 30/60/120/240 minutes + 7-day marathon
+             *   listing for long-form vehicle distribution (e.g. fleet
+             *   liquidation). Backend caps at 14 days via Pydantic
+             *   Field(le=14*24*60); 7d gives clear headroom. */}
+            {[
+              { value: 30,    label: '30 min'  },
+              { value: 60,    label: '60 min'  },
+              { value: 120,   label: '2 hours' },
+              { value: 240,   label: '4 hours' },
+              { value: 10080, label: '7 days'  },
+            ].map(({ value: d, label }) => (
               <TouchableOpacity
                 key={d}
                 onPress={() => u('duration_minutes', d)}
                 style={[styles.durPill, form.duration_minutes === d && styles.durPillActive]}
+                testID={`sell-duration-${d}`}
               >
                 <Clock size={12} color={form.duration_minutes === d ? colors.red : colors.textChrome} />
-                <Text style={[styles.durText, form.duration_minutes === d && { color: colors.red }]}>{d} min</Text>
+                <Text style={[styles.durText, form.duration_minutes === d && { color: colors.red }]}>{label}</Text>
               </TouchableOpacity>
             ))}
           </View>

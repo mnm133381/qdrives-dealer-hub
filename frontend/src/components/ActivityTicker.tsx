@@ -26,7 +26,7 @@ export function ActivityTicker({ items }: { items: Item[] }) {
     return (
       <View style={styles.wrap}>
         <View style={styles.left}><Activity size={12} color={colors.textMuted} /><Text style={styles.label}>NETWORK</Text></View>
-        <Text style={styles.body}>Live dealer activity will appear here</Text>
+        <Text style={styles.body}>Live bidder activity will appear here</Text>
       </View>
     );
   }

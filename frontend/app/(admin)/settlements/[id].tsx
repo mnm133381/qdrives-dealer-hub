@@ -36,14 +36,14 @@ import { useToast } from '../../../src/toast';
 const STATE_META: Record<string, { label: string; tint: string; sub?: string }> = {
   auction_won:                  { label: 'AUCTION WON',                tint: colors.silver,  sub: 'Auto-advancing to operator queue' },
   awaiting_operator_review:     { label: 'AWAITING OPERATOR REVIEW',   tint: colors.warning, sub: 'Operator must request the 5% deposit to proceed' },
-  deposit_requested:            { label: 'DEPOSIT REQUESTED',          tint: colors.warning, sub: 'Dealer to upload proof of payment' },
+  deposit_requested:            { label: 'DEPOSIT REQUESTED',          tint: colors.warning, sub: 'Buyer to upload proof of payment' },
   deposit_under_verification:   { label: 'DEPOSIT UNDER VERIFICATION', tint: colors.warning, sub: 'Operator to verify proof or reject' },
   deposit_verified:             { label: 'DEPOSIT VERIFIED',           tint: colors.success, sub: 'Operator to schedule physical visit' },
   visit_scheduled:              { label: 'VISIT SCHEDULED',            tint: colors.info,    sub: 'Awaiting on-site inspection' },
   inspection_completed:         { label: 'INSPECTION COMPLETED',       tint: colors.info,    sub: 'Choose: refund OR request full payment' },
   refund_approved:              { label: 'REFUND APPROVED',            tint: colors.warning, sub: 'Operator to mark refund as completed' },
   refund_completed:             { label: 'REFUND COMPLETED',           tint: colors.silver,  sub: 'Terminal · deposit refunded' },
-  full_payment_requested:       { label: 'FULL PAYMENT REQUESTED',     tint: colors.warning, sub: 'Awaiting balance payment from dealer' },
+  full_payment_requested:       { label: 'FULL PAYMENT REQUESTED',     tint: colors.warning, sub: 'Awaiting balance payment from buyer' },
   full_payment_received:        { label: 'FULL PAYMENT RECEIVED',      tint: colors.success, sub: 'Operator to mark vehicle as delivered' },
   vehicle_delivered:            { label: 'VEHICLE DELIVERED',          tint: colors.success, sub: 'Final close pending' },
   completed:                    { label: 'COMPLETED',                  tint: colors.success, sub: 'Terminal · deal closed' },
@@ -251,7 +251,7 @@ export default function SettlementDetail() {
         {/* Deposit instructions / proof */}
         {data.deposit_instructions && (
           <View style={styles.section}>
-            <Text style={styles.sectionLabel}>DEPOSIT INSTRUCTIONS (DEALER-VISIBLE)</Text>
+            <Text style={styles.sectionLabel}>DEPOSIT INSTRUCTIONS (BUYER-VISIBLE)</Text>
             <View style={styles.instructionsCard}>
               <Text style={styles.instructionsText}>{data.deposit_instructions}</Text>
               {data.deposit_deadline_at && (
@@ -263,7 +263,7 @@ export default function SettlementDetail() {
 
         {data.deposit_proof && (
           <View style={styles.section}>
-            <Text style={styles.sectionLabel}>DEPOSIT PROOF (DEALER UPLOAD)</Text>
+            <Text style={styles.sectionLabel}>DEPOSIT PROOF (BUYER UPLOAD)</Text>
             <View style={styles.proofCard}>
               <View style={styles.proofIcon}>
                 <FileImage size={14} color={colors.silver} />
@@ -348,7 +348,7 @@ export default function SettlementDetail() {
           <MessagesPanel
             messages={data.dealer_messages || []}
             onAdd={async (text) => {
-              try { await api.adminSettlementDealerMessage(id!, text); await load(); toast.show('Message sent to dealer', 'success'); }
+              try { await api.adminSettlementDealerMessage(id!, text); await load(); toast.show('Message sent to buyer', 'success'); }
               catch (e: any) { toast.show(e.message || 'Failed', 'error'); throw e; }
             }}
           />
@@ -495,7 +495,7 @@ function MessagesPanel({ messages, onAdd }: { messages: any[]; onAdd: (t: string
       <View style={styles.composerRow}>
         <TextInput
           value={text} onChangeText={setText} multiline
-          placeholder="Message visible to dealer…"
+          placeholder="Message visible to buyer…"
           placeholderTextColor={colors.textMuted}
           style={styles.composer}
         />
@@ -504,7 +504,7 @@ function MessagesPanel({ messages, onAdd }: { messages: any[]; onAdd: (t: string
         </TouchableOpacity>
       </View>
       {messages.length === 0 ? (
-        <View style={styles.emptyBox}><Text style={styles.emptyText}>No dealer-visible messages yet.</Text></View>
+        <View style={styles.emptyBox}><Text style={styles.emptyText}>No buyer-visible messages yet.</Text></View>
       ) : (
         messages.slice().reverse().map((m: any, i: number) => (
           <View key={m.id || i} style={styles.msgCard}>
@@ -570,7 +570,7 @@ function ActionModal({
                   <Field label="Deadline (hours)">
                     <TextInput value={deadlineHours} onChangeText={setDeadlineHours} keyboardType="numeric" style={styles.input} />
                   </Field>
-                  <Field label="Instructions for dealer (visible)">
+                  <Field label="Instructions for buyer (visible)">
                     <TextInput multiline value={instructions} onChangeText={setInstructions} style={[styles.input, { minHeight: 80 }]} placeholder="Pay 5% to QD-CURRENT-AC ..." placeholderTextColor={colors.textMuted} />
                   </Field>
                 </>
@@ -586,7 +586,7 @@ function ActionModal({
                   <Field label="Window end (ISO)">
                     <TextInput value={windowEnd} onChangeText={setWindowEnd} placeholder="2025-06-15T18:00" placeholderTextColor={colors.textMuted} style={styles.input} />
                   </Field>
-                  <Field label="Instructions for dealer">
+                  <Field label="Instructions for buyer">
                     <TextInput multiline value={instructions} onChangeText={setInstructions} placeholder="Bring originals, photo ID..." placeholderTextColor={colors.textMuted} style={[styles.input, { minHeight: 60 }]} />
                   </Field>
                 </>
@@ -596,7 +596,7 @@ function ActionModal({
                   <Field label="Balance amount (₹)">
                     <TextInput value={amount} onChangeText={setAmount} keyboardType="numeric" style={styles.input} />
                   </Field>
-                  <Field label="Instructions for dealer">
+                  <Field label="Instructions for buyer">
                     <TextInput multiline value={instructions} onChangeText={setInstructions} placeholder="Pay balance to QD account ..." placeholderTextColor={colors.textMuted} style={[styles.input, { minHeight: 80 }]} />
                   </Field>
                 </>

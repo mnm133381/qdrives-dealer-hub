@@ -78,7 +78,7 @@ export default function AdminReputation() {
 
   return (
     <View style={s.root}>
-      <AdminHeader title="REPUTATION" subtitle="DEALER TRUST CONSOLE" />
+      <AdminHeader title="REPUTATION" subtitle="BUYER TRUST CONSOLE" />
 
       {/* Tier rail */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false}
@@ -106,7 +106,7 @@ export default function AdminReputation() {
             </TouchableOpacity>
           ))}
         </View>
-        <TextInput value={q} onChangeText={setQ} placeholder="Search dealer"
+        <TextInput value={q} onChangeText={setQ} placeholder="Search buyer"
           placeholderTextColor={colors.textMuted}
           style={s.search} returnKeyType="search" />
       </View>
@@ -123,7 +123,7 @@ export default function AdminReputation() {
           <View style={[s.row, s.headRow]}>
             <Text style={[s.colScore, s.headTxt]}>SCORE</Text>
             <Text style={[s.colTier, s.headTxt]}>TIER</Text>
-            <Text style={[s.colDealer, s.headTxt]}>DEALER</Text>
+            <Text style={[s.colDealer, s.headTxt]}>BUYER</Text>
             <Text style={[s.colMeta, s.headTxt, { textAlign: 'right' }]}>EVENTS</Text>
           </View>
           {filtered.map(r => (
@@ -171,7 +171,7 @@ export default function AdminReputation() {
             </TouchableOpacity>
           ))}
           {filtered.length === 0 && !loading && (
-            <View style={s.center}><Text style={s.emptyTxt}>No dealers match the filter.</Text></View>
+            <View style={s.center}><Text style={s.emptyTxt}>No buyers match the filter.</Text></View>
           )}
           <View style={{ height: 80 }} />
         </ScrollView>

@@ -973,7 +973,7 @@ export default function Sell() {
         <Text style={styles.legalNote}>
           We save this as a <Text style={{ color: colors.textChrome, fontWeight: '800' }}>Draft</Text> first.
           Upload exterior/interior/damage photos in the next screen, then tap{' '}
-          <Text style={{ color: colors.red, fontWeight: '800' }}>Launch Auction</Text> to publish it to verified dealers.
+          <Text style={{ color: colors.red, fontWeight: '800' }}>Launch Auction</Text> to publish it to verified buyers.
         </Text>
       </ScrollView>
     </KeyboardAvoidingView>

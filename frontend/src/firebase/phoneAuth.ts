@@ -5,35 +5,15 @@
  *   - phoneAuth.web.ts     →  Web preview     (uses firebase JS SDK + reCAPTCHA)
  *
  * This file exists purely so TypeScript can resolve the API shape
- * regardless of platform during type-checking.
+ * regardless of platform during type-checking. The actual types and
+ * `PhoneAuthError` class live in `./phoneAuth.shared` to avoid a
+ * platform-vs-base import cycle (Metro resolves `./phoneAuth` to the
+ * platform variant first, so re-exporting from that path was recursive
+ * and blew up the bundle).
  */
-export interface PhoneOtpHandle {
-  // Opaque platform-specific handle returned by sendOtp().
-  readonly _kind: 'native' | 'web';
-}
-
-export interface PhoneAuthApi {
-  /**
-   * Trigger an SMS OTP delivery. On web this also lazily mounts an
-   * invisible reCAPTCHA into the DOM. The returned handle must be
-   * passed to confirmOtp().
-   */
-  sendOtp(phoneE164: string): Promise<PhoneOtpHandle>;
-  /** Verify the SMS code and return a Firebase ID token for backend exchange. */
-  confirmOtp(handle: PhoneOtpHandle, code: string): Promise<string>;
-  /** True if Firebase phone auth is operational on this platform. */
-  isAvailable(): boolean;
-  /** Sign the current Firebase user out (called after backend issues our JWT). */
-  signOut(): Promise<void>;
-}
-
-export class PhoneAuthError extends Error {
-  code: string;
-  constructor(code: string, message: string) {
-    super(message);
-    this.code = code;
-  }
-}
+export { PhoneAuthError } from './phoneAuth.shared';
+export type { PhoneOtpHandle, PhoneAuthApi } from './phoneAuth.shared';
+import { PhoneAuthApi, PhoneAuthError } from './phoneAuth.shared';
 
 // Default export gets shadowed by the platform-specific files via
 // Metro's `.native.ts` / `.web.ts` resolution. This stub only runs

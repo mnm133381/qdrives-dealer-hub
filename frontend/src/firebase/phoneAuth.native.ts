@@ -21,7 +21,7 @@
  * unavailable (Expo Go preview), every call throws a clear
  * PhoneAuthError instead of crashing the module load.
  */
-import { PhoneAuthApi, PhoneAuthError, PhoneOtpHandle } from './phoneAuth';
+import { PhoneAuthApi, PhoneAuthError, PhoneOtpHandle } from './phoneAuth.shared';
 
 // Lazy-resolved Firebase SDK. Wrapped in a try/require so the module
 // can still load in environments without the native module (Expo Go).
@@ -130,5 +130,5 @@ export default nativePhoneAuth;
 // resolves the import to this platform-specific file. Without this,
 // `e instanceof PhoneAuthError` throws "Right hand side of instanceof
 // is not an object" because the symbol is undefined at runtime.
-export { PhoneAuthError } from './phoneAuth';
-export type { PhoneOtpHandle, PhoneAuthApi } from './phoneAuth';
+export { PhoneAuthError } from './phoneAuth.shared';
+export type { PhoneOtpHandle, PhoneAuthApi } from './phoneAuth.shared';

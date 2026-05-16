@@ -147,7 +147,7 @@ export default function SellerVehicleDetail() {
               <Users size={16} color={colors.silver} />
               <Text style={styles.mVal}>{a.active_bidder_count || 0}</Text>
             </View>
-            <Text style={styles.mFoot}>dealers tracking</Text>
+            <Text style={styles.mFoot}>buyers tracking</Text>
           </View>
         </View>
 

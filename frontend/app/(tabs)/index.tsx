@@ -108,7 +108,7 @@ export default function Home() {
           <Text style={styles.greet}>{greeting}</Text>
           <View style={styles.dealerRow}>
             <Text style={styles.dealerName} testID="home-dealer-name" numberOfLines={1}>
-              {dealer?.dealership_name || dealer?.full_name || 'Dealer'}
+              {dealer?.dealership_name || dealer?.full_name || 'Buyer'}
             </Text>
             {dealer?.verified && <BadgeCheck size={16} color={colors.success} />}
           </View>

@@ -130,11 +130,11 @@ export default function AdminOpsDashboard() {
   const anomalies = useMemo(() => {
     if (!risk) return [] as any[];
     const out: any[] = [];
-    if ((risk.suspended || []).length) out.push({ key: 'suspended', label: 'Suspended dealers', count: risk.suspended.length, hint: 'Active suspensions on file', tone: 'danger', icon: <ShieldX size={12} color={colors.red} />, route: '/(admin)/dealers?status=suspended' });
+    if ((risk.suspended || []).length) out.push({ key: 'suspended', label: 'Suspended buyers', count: risk.suspended.length, hint: 'Active suspensions on file', tone: 'danger', icon: <ShieldX size={12} color={colors.red} />, route: '/(admin)/dealers?status=suspended' });
     if ((risk.repeat_denied_24h || []).length) out.push({ key: 'denied', label: 'Repeat access denials', count: risk.repeat_denied_24h.length, hint: 'Phones with ≥3 failed attempts · last 24h', tone: 'warn', icon: <BadgeAlert size={12} color={colors.warning} />, route: '/(admin)/security' });
-    if ((risk.abnormal_frequency_1h || []).length) out.push({ key: 'freq', label: 'Abnormal bid frequency', count: risk.abnormal_frequency_1h.length, hint: 'Dealers with ≥50 bids in 1h', tone: 'warn', icon: <TrendingUp size={12} color={colors.warning} />, route: '/(admin)/dealers' });
+    if ((risk.abnormal_frequency_1h || []).length) out.push({ key: 'freq', label: 'Abnormal bid frequency', count: risk.abnormal_frequency_1h.length, hint: 'Buyers with ≥50 bids in 1h', tone: 'warn', icon: <TrendingUp size={12} color={colors.warning} />, route: '/(admin)/dealers' });
     if ((risk.high_value_spikes_24h || []).length) out.push({ key: 'spike', label: 'High-value spike', count: risk.high_value_spikes_24h.length, hint: 'Single bids ≥ ₹50L · last 24h', tone: 'warn', icon: <Banknote size={12} color={colors.warning} />, route: '/(admin)/security' });
-    if ((risk.cancellations_7d || []).length) out.push({ key: 'cancel', label: 'Cancellation pattern', count: risk.cancellations_7d.length, hint: 'Dealers with reversals · last 7d', tone: 'muted', icon: <AlertOctagon size={12} color={colors.silver} />, route: '/(admin)/dealers' });
+    if ((risk.cancellations_7d || []).length) out.push({ key: 'cancel', label: 'Cancellation pattern', count: risk.cancellations_7d.length, hint: 'Buyers with reversals · last 7d', tone: 'muted', icon: <AlertOctagon size={12} color={colors.silver} />, route: '/(admin)/dealers' });
     if ((risk.inactive_high_limit || []).length) out.push({ key: 'inactive', label: 'Inactive high-limit', count: risk.inactive_high_limit.length, hint: 'Limits ≥ ₹10L, no bids in 30d', tone: 'muted', icon: <Users size={12} color={colors.silver} />, route: '/(admin)/dealers' });
     return out;
   }, [risk]);
@@ -338,7 +338,7 @@ export default function AdminOpsDashboard() {
             than rendering 6 zero-tiles that look broken. */}
         <View style={[styles.sectionHead, { marginTop: 18 }]}>
           <Siren size={12} color={colors.textChrome} />
-          <Text style={styles.sectionTitle}>DEALER ANOMALY FEED</Text>
+          <Text style={styles.sectionTitle}>BUYER ANOMALY FEED</Text>
           <Text style={styles.sectionMeta}>
             {anomalies.length === 0 ? 'CLEAN' : `${anomalies.length} ACTIVE`}
           </Text>
@@ -596,7 +596,7 @@ function AuctionRow({ a, now, onTap, onPause, onResume, onExtend, onForceClose, 
         {a.top_bidder ? (
           <View style={styles.bidder}>
             <Text style={styles.bidderLabel}>TOP</Text>
-            <Text style={styles.bidderName} numberOfLines={1}>{a.top_bidder.dealership_name || 'Dealer'}</Text>
+            <Text style={styles.bidderName} numberOfLines={1}>{a.top_bidder.dealership_name || 'Buyer'}</Text>
             <Text style={styles.bidderTrust}>{(a.top_bidder.trust_score ?? 4.5).toFixed(1)}★</Text>
             {a.top_bidder.max_bid_limit && (
               <Text style={styles.bidderCap}>cap {formatINR(a.top_bidder.max_bid_limit)}</Text>

@@ -29,14 +29,14 @@ type Tab = 'audit' | 'denied';
 type Window = '1' | '24' | 'all';
 
 const ACTION_META: Record<string, { label: string; tint: string; icon: any }> = {
-  dealer_login: { label: 'Dealer login', tint: colors.success, icon: ShieldCheck },
+  dealer_login: { label: 'Buyer login', tint: colors.success, icon: ShieldCheck },
   operator_login: { label: 'Operator login', tint: colors.silver, icon: ShieldCheck },
-  dealer_access_denied: { label: 'Dealer denied', tint: colors.red, icon: Ban },
+  dealer_access_denied: { label: 'Buyer denied', tint: colors.red, icon: Ban },
   operator_access_denied: { label: 'Operator denied', tint: colors.red, icon: AlertOctagon },
   allow_list_add: { label: 'Allow-list +', tint: colors.success, icon: UserPlus },
   allow_list_update: { label: 'Allow-list edit', tint: colors.warning, icon: BadgeAlert },
   allow_list_revoke: { label: 'Allow-list revoke', tint: colors.red, icon: UserMinus },
-  dealer_status_change: { label: 'Dealer status', tint: colors.warning, icon: Activity },
+  dealer_status_change: { label: 'Buyer status', tint: colors.warning, icon: Activity },
   max_bid_change: { label: 'Max bid changed', tint: colors.warning, icon: Gavel },
   auction_pause: { label: 'Auction paused', tint: colors.warning, icon: Clock },
   auction_cancel: { label: 'Auction cancelled', tint: colors.red, icon: Ban },
@@ -228,7 +228,7 @@ function DeniedLogins({ data, loading }: any) {
             <View style={{ flex: 1 }}>
               <View style={styles.evTopLine}>
                 <Text style={[styles.deniedKind, { color: isOperator ? colors.warning : colors.red }]}>
-                  {isOperator ? 'OPERATOR' : 'DEALER'}
+                  {isOperator ? 'OPERATOR' : 'BUYER'}
                 </Text>
                 <Text style={styles.evTs}>{ts}</Text>
               </View>

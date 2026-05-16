@@ -80,11 +80,11 @@ type RecentBroadcast = {
 };
 
 const AUDIENCES: { key: string; label: string; sub: string; needsAuction?: boolean }[] = [
-  { key: 'all_verified', label: 'All verified dealers', sub: 'Every approved dealer in the network' },
+  { key: 'all_verified', label: 'All verified buyers', sub: 'Every approved buyer in the network' },
   { key: 'bidders_and_watchers', label: 'Bidders + watchers', sub: 'Everyone engaged with this auction', needsAuction: true },
-  { key: 'bidders', label: 'Bidders only', sub: 'Dealers who already placed a bid', needsAuction: true },
-  { key: 'watchers', label: 'Watchers only', sub: 'Dealers tracking this lot', needsAuction: true },
-  { key: 'specific', label: 'Specific dealers', sub: 'Manually pick recipient list' },
+  { key: 'bidders', label: 'Bidders only', sub: 'Buyers who already placed a bid', needsAuction: true },
+  { key: 'watchers', label: 'Watchers only', sub: 'Buyers tracking this lot', needsAuction: true },
+  { key: 'specific', label: 'Specific buyers', sub: 'Manually pick recipient list' },
 ];
 
 // Tone → icon mapping for templates
@@ -248,7 +248,7 @@ export default function AdminBroadcasts() {
       const list = await api.adminDealers({ status_filter: 'verified' });
       setDealers(list || []);
     } catch (e: any) {
-      toast.show(e.message || 'Failed to load dealers', 'error');
+      toast.show(e.message || 'Failed to load buyers', 'error');
     }
   }, [dealers.length]);
 
@@ -259,7 +259,7 @@ export default function AdminBroadcasts() {
     >
       <AdminHeader
         kicker="LIQUIDITY ACTIVATION"
-        title="Dealer broadcasts"
+        title="Buyer broadcasts"
         sub="Manual marketplace nudges · drive participation, urgency, and bidding velocity"
       />
 
@@ -385,7 +385,7 @@ export default function AdminBroadcasts() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.fieldBtnTitle}>
                   {dealerIds.length === 0
-                    ? 'Pick recipient dealers'
+                    ? 'Pick recipient buyers'
                     : `${dealerIds.length} dealer${dealerIds.length === 1 ? '' : 's'} selected`}
                 </Text>
                 <Text style={styles.fieldBtnSub}>
@@ -666,7 +666,7 @@ function DealerPicker({
       <View style={styles.modalOverlay}>
         <View style={styles.pickerCard}>
           <View style={styles.pickerHead}>
-            <Text style={styles.pickerKicker}>SELECT DEALERS · {picked.length} PICKED</Text>
+            <Text style={styles.pickerKicker}>SELECT BUYERS · {picked.length} PICKED</Text>
             <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
               <X size={16} color={colors.textChrome} />
             </TouchableOpacity>
@@ -676,7 +676,7 @@ function DealerPicker({
             <TextInput
               value={q}
               onChangeText={setQ}
-              placeholder="Search dealership / name / city"
+              placeholder="Search buyership / name / city"
               placeholderTextColor={colors.textMuted}
               style={styles.pickerSearchInput}
             />
@@ -687,7 +687,7 @@ function DealerPicker({
             ItemSeparatorComponent={() => <View style={styles.pickerDivider} />}
             ListEmptyComponent={() => (
               <View style={{ padding: 22, alignItems: 'center' }}>
-                <Text style={styles.pickerEmpty}>No dealers match this search.</Text>
+                <Text style={styles.pickerEmpty}>No buyers match this search.</Text>
               </View>
             )}
             renderItem={({ item }) => {

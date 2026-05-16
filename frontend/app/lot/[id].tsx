@@ -211,7 +211,7 @@ export default function AuctionScreen() {
         if (msg.includes('BID_OUTBID')) {
           toast.show('Outbid before your bid was accepted.', 'error');
         } else if (msg.includes('BID_EXCEEDS_DEALER_LIMIT')) {
-          toast.show('Bid exceeds approved dealer limit.', 'error');
+          toast.show('Bid exceeds your approved bid limit.', 'error');
         } else if (msg.includes('DEALER_PENDING_APPROVAL')) {
           toast.show('Bidding activates after Q Drives approves your account.', 'error');
         } else if (msg.includes('DEALER_ACCOUNT_SUSPENDED')) {
@@ -305,7 +305,7 @@ export default function AuctionScreen() {
             {isLive && (
               <View style={styles.heroViewers}>
                 <Eye size={11} color={colors.textChrome} />
-                <Text style={styles.heroViewersText}>{auction.interested_dealers || 0} dealers watching</Text>
+                <Text style={styles.heroViewersText}>{auction.interested_dealers || 0} bidders watching</Text>
               </View>
             )}
             {galleryUrls.length > 0 && (
@@ -490,7 +490,7 @@ export default function AuctionScreen() {
                 <View style={styles.sellerAvatar}><Text style={styles.bidAvatarText}>{auction.seller.dealership_name?.charAt(0) || 'S'}</Text></View>
                 <View style={{ flex: 1 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Text style={styles.sellerName}>{auction.seller.dealership_name || 'Verified Dealer'}</Text>
+                    <Text style={styles.sellerName}>{auction.seller.dealership_name || 'Verified Seller'}</Text>
                     {auction.seller.verified && <ShieldCheck size={14} color={colors.success} />}
                   </View>
                   <Text style={styles.sellerCity}>{auction.seller.city}</Text>

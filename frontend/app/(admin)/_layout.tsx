@@ -65,7 +65,7 @@ export default function AdminLayout() {
           <View style={styles.launchWrap}><PlusCircle size={28} color={colors.red} fill={colors.red} strokeWidth={2.2} /></View>
         ),
       }} />
-      <Tabs.Screen name="dealers" options={{ title: 'Dealers', tabBarIcon: ({ color, size }) => <Users size={size - 2} color={color} strokeWidth={2.2} /> }} />
+      <Tabs.Screen name="dealers" options={{ title: 'Buyers', tabBarIcon: ({ color, size }) => <Users size={size - 2} color={color} strokeWidth={2.2} /> }} />
       <Tabs.Screen name="settlement" options={{ title: 'Settle', tabBarIcon: ({ color, size }) => <Truck size={size - 2} color={color} strokeWidth={2.2} /> }} />
       <Tabs.Screen name="security" options={{ title: 'Audit', tabBarIcon: ({ color, size }) => <ShieldAlert size={size - 2} color={color} strokeWidth={2.2} /> }} />
       <Tabs.Screen name="profile" options={{ title: 'Admin', tabBarIcon: ({ color, size }) => <ScrollText size={size - 2} color={color} strokeWidth={2.2} /> }} />

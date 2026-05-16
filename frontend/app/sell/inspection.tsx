@@ -73,7 +73,7 @@ export default function InspectionForm() {
         </TouchableOpacity>
         <View style={{ flex: 1, marginLeft: 14 }}>
           <Text style={styles.kicker}>INSPECTION REPORT</Text>
-          <Text style={styles.title}>Build dealer trust</Text>
+          <Text style={styles.title}>Build buyer trust</Text>
         </View>
         <View style={styles.percentPill}>
           <Text style={styles.percentText}>{stats.percent}%</Text>

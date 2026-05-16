@@ -91,7 +91,7 @@ export default function Profile() {
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Account</Text>
-          <Row label="Role" value={isAdmin ? 'Q Drives Admin' : 'Dealer'} valueColor={isAdmin ? colors.red : colors.textPrimary} />
+          <Row label="Role" value={isAdmin ? 'Q Drives Admin' : 'Buyer'} valueColor={isAdmin ? colors.red : colors.textPrimary} />
           {!isAdmin && (
             <Row
               label="Approval"

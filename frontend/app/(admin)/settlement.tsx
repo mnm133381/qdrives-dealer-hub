@@ -41,7 +41,7 @@ type Bucket = {
 const BUCKETS: Bucket[] = [
   { key: 'all', label: 'ALL OPEN', states: [], icon: ClipboardCheck, tint: colors.silver, desc: 'Every non-terminal settlement' },
   { key: 'awaiting_operator_review', label: 'AWAITING REVIEW', states: ['awaiting_operator_review'], icon: ClipboardCheck, tint: colors.warning, desc: 'New wins to action' },
-  { key: 'deposit_requested', label: 'DEPOSIT PENDING', states: ['deposit_requested'], icon: Banknote, tint: colors.warning, desc: 'Dealer to upload proof' },
+  { key: 'deposit_requested', label: 'DEPOSIT PENDING', states: ['deposit_requested'], icon: Banknote, tint: colors.warning, desc: 'Buyer to upload proof' },
   { key: 'deposit_under_verification', label: 'DEPOSIT SUBMITTED', states: ['deposit_under_verification'], icon: Banknote, tint: colors.warning, desc: 'Verify deposit proof' },
   { key: 'deposit_verified', label: 'DEPOSIT VERIFIED', states: ['deposit_verified'], icon: ShieldCheck, tint: colors.success, desc: 'Schedule a visit' },
   { key: 'visit_scheduled', label: 'VISIT SCHEDULED', states: ['visit_scheduled'], icon: MapPin, tint: colors.info, desc: 'Awaiting inspection' },
@@ -56,7 +56,7 @@ const BUCKETS: Bucket[] = [
 const STATE_HINT: Record<string, string> = {
   auction_won: 'auto-advancing',
   awaiting_operator_review: 'request 5% deposit',
-  deposit_requested: 'awaiting dealer proof',
+  deposit_requested: 'awaiting buyer proof',
   deposit_under_verification: 'verify proof',
   deposit_verified: 'schedule visit',
   visit_scheduled: 'awaiting inspection',

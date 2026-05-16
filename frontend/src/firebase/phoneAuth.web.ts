@@ -126,5 +126,5 @@ export default webPhoneAuth;
 // extension; without this re-export, PhoneAuthError is `undefined`
 // at runtime and any `e instanceof PhoneAuthError` check throws the
 // JS engine error "Right hand side of instanceof is not an object").
-export { PhoneAuthError } from './phoneAuth';
-export type { PhoneOtpHandle, PhoneAuthApi } from './phoneAuth';
+export { PhoneAuthError } from './phoneAuth.shared';
+export type { PhoneOtpHandle, PhoneAuthApi } from './phoneAuth.shared';

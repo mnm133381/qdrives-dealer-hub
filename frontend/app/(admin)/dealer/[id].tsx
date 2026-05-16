@@ -41,7 +41,7 @@ export default function DealerDetail() {
       setData(d);
       setMaxBidInput(d?.dealer?.max_bid_limit ? String(d.dealer.max_bid_limit) : '');
     } catch (e: any) {
-      toast.show(e.message || 'Could not load dealer', 'error');
+      toast.show(e.message || 'Could not load buyer', 'error');
     } finally { setLoading(false); }
   }, [id]);
 
@@ -73,8 +73,8 @@ export default function DealerDetail() {
     try {
       // Use the new canonical approve endpoint — captures previous_status,
       // approved_at, approved_by, ip, user-agent in audit.
-      await api.adminApproveDealer(d.id, { note: 'Approved via dealer detail panel' });
-      toast.show('Approved · dealer notified', 'success');
+      await api.adminApproveDealer(d.id, { note: 'Approved via buyer detail panel' });
+      toast.show('Approved · buyer notified', 'success');
       load();
     } catch (e: any) { toast.show(e.message || 'Failed', 'error'); }
     finally { setBusy(false); }
@@ -104,7 +104,7 @@ export default function DealerDetail() {
           <ArrowLeft size={18} color={colors.textPrimary} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
-          <Text style={styles.kicker}>DEALER DETAIL</Text>
+          <Text style={styles.kicker}>BUYER DETAIL</Text>
           <Text style={styles.title} numberOfLines={1}>{d.dealership_name || d.full_name}</Text>
         </View>
         {d.status === 'suspended' || d.suspended ? (

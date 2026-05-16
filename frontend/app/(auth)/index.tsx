@@ -39,9 +39,9 @@ export default function AuthLanding() {
 
         {/* Headline — institutional authority */}
         <Text style={styles.heading}>ENTER THE MARKETPLACE</Text>
-        <Text style={styles.sub}>Verified wholesale auction access for serious dealers.</Text>
+        <Text style={styles.sub}>Verified wholesale auction access for serious buyers.</Text>
 
-        {/* DEALER CARD — visual hero */}
+        {/* BUYER CARD — visual hero */}
         <TouchableOpacity activeOpacity={0.94} onPress={goDealer} style={styles.dealerCard} testID="entry-dealer">
           <ImageBackground
             source={{ uri: 'https://images.unsplash.com/photo-1485291571150-772bcfc10da5?crop=entropy&cs=srgb&fm=jpg&w=1200&q=80' }}
@@ -56,7 +56,7 @@ export default function AuthLanding() {
             <View style={styles.cardHead}>
               <View style={styles.dealerBadge}>
                 <BadgeCheck size={11} color={colors.red} strokeWidth={2.4} />
-                <Text style={styles.dealerBadgeText}>DEALER NETWORK</Text>
+                <Text style={styles.dealerBadgeText}>BUYER NETWORK</Text>
               </View>
               <View style={styles.live}>
                 <View style={styles.liveDot} />
@@ -64,7 +64,7 @@ export default function AuthLanding() {
               </View>
             </View>
 
-            <Text style={styles.dealerTitle}>Dealer Network Access</Text>
+            <Text style={styles.dealerTitle}>Buyer Network Access</Text>
             <Text style={styles.dealerSub}>
               Bid, buy and watch verified inventory from the Q Drives auction floor.
             </Text>
@@ -75,7 +75,7 @@ export default function AuthLanding() {
             </View>
 
             <View style={styles.cardCta}>
-              <Text style={styles.cardCtaText}>Login or register as dealer</Text>
+              <Text style={styles.cardCtaText}>Login or register as buyer</Text>
               <View style={styles.cardCtaArrow}>
                 <ArrowRight size={14} color="#fff" strokeWidth={2.4} />
               </View>
@@ -103,13 +103,13 @@ export default function AuthLanding() {
 
           <Text style={styles.adminTitle}>Admin / Operator Access</Text>
           <Text style={styles.adminSub}>
-            Inventory control, auction operations, dealer approvals, moderation, broadcast and analytics.
+            Inventory control, auction operations, buyer approvals, moderation, broadcast and analytics.
           </Text>
 
           <View style={styles.adminFeatureGrid}>
             <AdminFeature icon={<LayoutDashboard size={11} color={colors.textChrome} />} label="Operations dashboard" />
             <AdminFeature icon={<Zap size={11} color={colors.textChrome} />} label="Launch auctions" />
-            <AdminFeature icon={<Users size={11} color={colors.textChrome} />} label="Dealer approvals" />
+            <AdminFeature icon={<Users size={11} color={colors.textChrome} />} label="Buyer approvals" />
             <AdminFeature icon={<Sparkles size={11} color={colors.textChrome} />} label="Moderation tools" />
           </View>
 
@@ -135,7 +135,7 @@ export default function AuthLanding() {
 
         {/* Legal — quiet, low opacity */}
         <View style={styles.legalRow}>
-          <Text style={styles.legal}>By continuing you agree to Q Drives' dealer terms · privacy · auction policy.</Text>
+          <Text style={styles.legal}>By continuing you agree to Q Drives' buyer terms · privacy · auction policy.</Text>
         </View>
       </ScrollView>
     </View>

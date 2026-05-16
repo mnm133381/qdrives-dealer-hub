@@ -49,7 +49,7 @@ export function LogoLockup({
         source={FULL}
         style={{ width, height }}
         resizeMode="contain"
-        accessibilityLabel="Q Drives — Dealer Auction Platform"
+        accessibilityLabel="Q Drives — Live Auction Marketplace"
       />
     </View>
   );
@@ -79,7 +79,7 @@ export function LogoLockupHorizontal({
         </Text>
         {showSubline && (
           <Text style={[styles.lockupSub, { fontSize: Math.max(8, Math.round(height * 0.20)) }]}>
-            DEALER AUCTION PLATFORM
+            LIVE AUCTION MARKETPLACE
           </Text>
         )}
       </View>

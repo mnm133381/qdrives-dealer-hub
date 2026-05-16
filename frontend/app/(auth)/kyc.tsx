@@ -51,9 +51,9 @@ export default function Kyc() {
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.root}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.header}>
-          <Text style={styles.kicker}>DEALER VERIFICATION</Text>
+          <Text style={styles.kicker}>BUYER VERIFICATION</Text>
           <Text style={styles.title}>Complete your KYC</Text>
-          <Text style={styles.sub}>Verified dealers gain higher trust scores and faster bid approvals.</Text>
+          <Text style={styles.sub}>Verified buyers gain higher trust scores and faster bid approvals.</Text>
         </View>
 
         <View style={styles.steps}>
@@ -85,7 +85,7 @@ export default function Kyc() {
             <Field icon={<FileText size={18} color={colors.textChrome} />} label="PAN number (optional)" value={form.pan_number} onChange={(v) => update('pan_number', v)} placeholder="ABCDE1234F" testID="kyc-pan" autoCapitalize="characters" />
             <View style={styles.trustNote}>
               <BadgeCheck size={18} color={colors.success} />
-              <Text style={styles.trustText}>You'll be marked as a verified dealer instantly in dev mode.</Text>
+              <Text style={styles.trustText}>You'll be marked as a verified buyer instantly in dev mode.</Text>
             </View>
           </View>
         )}

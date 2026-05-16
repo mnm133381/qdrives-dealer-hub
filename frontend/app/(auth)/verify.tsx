@@ -120,8 +120,8 @@ export default function VerifyOtp() {
         setAccessError({
           title: msg.includes('SUSPENDED') ? 'Account suspended.' : 'Access restricted.',
           body: msg.includes('SUSPENDED')
-            ? 'This dealer account has been suspended on the Q Drives network.'
-            : 'Your number is not approved on the Q Drives dealer network.',
+            ? 'This buyer account has been suspended on the Q Drives network.'
+            : 'Your number is not approved on the Q Drives buyer network.',
           hint: 'Please contact Q Drives support.',
         });
       } else if (msg.includes('OPERATOR_ACCESS_DENIED')) {
@@ -179,7 +179,7 @@ export default function VerifyOtp() {
         </View>
         <View style={[styles.rolePill, isAdmin && styles.rolePillAdmin]}>
           <Text style={[styles.rolePillText, isAdmin && styles.rolePillTextAdmin]}>
-            {isAdmin ? 'OPERATOR CONSOLE' : 'DEALER NETWORK'}
+            {isAdmin ? 'OPERATOR CONSOLE' : 'BUYER NETWORK'}
           </Text>
         </View>
       </View>

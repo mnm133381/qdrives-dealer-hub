@@ -57,7 +57,7 @@ export default function AdminDealers() {
       setAllowList(allow as any[]);
       setDealers(dealersResp as any[]);
     } catch (e: any) {
-      toast.show(e.message || 'Could not load dealers', 'error');
+      toast.show(e.message || 'Could not load buyers', 'error');
     } finally { setLoading(false); }
   }, [q]);
 
@@ -95,16 +95,16 @@ export default function AdminDealers() {
     catch (e: any) { toast.show(e.message || 'Failed', 'error'); }
   };
   const onApprove = async (id: string) => {
-    try { await api.adminApproveDealer(id, { note: 'Approved from approval queue' }); toast.show('Approved · dealer notified', 'success'); load(); }
+    try { await api.adminApproveDealer(id, { note: 'Approved from approval queue' }); toast.show('Approved · buyer notified', 'success'); load(); }
     catch (e: any) { toast.show(e.message || 'Failed', 'error'); }
   };
 
   return (
     <View style={styles.root}>
       <AdminHeader
-        kicker="Dealer network"
+        kicker="Buyer network"
         title="Approval queue"
-        sub="Open dealer onboarding · pending dealers cannot bid until approved"
+        sub="Open buyer onboarding · pending buyers cannot bid until approved"
         rightSlot={(
           <TouchableOpacity onPress={() => setShowAdd(true)} style={styles.addBtn} activeOpacity={0.85} testID="admin-add-dealer-btn">
             <UserPlus size={13} color="#fff" />
@@ -204,7 +204,7 @@ function AllowListCards({ items, kind }: { items: any[]; kind: 'invitations' | '
 }
 
 function DealerCards({ items, onSuspend, onReinstate, onApprove, onTap }: any) {
-  if (!items.length) return <View style={styles.empty}><Text style={styles.emptyText}>No dealers here.</Text></View>;
+  if (!items.length) return <View style={styles.empty}><Text style={styles.emptyText}>No buyers here.</Text></View>;
   return (
     <>
       {items.map((d: any) => (
@@ -301,7 +301,7 @@ function AddDealerModal({ visible, onClose, onAdded }: any) {
       onAdded();
       setForm({ phone: '', full_name: '', dealership_name: '', city: '', trust_score: '4.5', max_bid_limit: '', notes: '' });
     } catch (e: any) {
-      toast.show(e.message || 'Failed to add dealer', 'error');
+      toast.show(e.message || 'Failed to add buyer', 'error');
     } finally { setBusy(false); }
   };
 
@@ -313,8 +313,8 @@ function AddDealerModal({ visible, onClose, onAdded }: any) {
             <View style={styles.modalHead}>
               <View style={styles.modalIcon}><UserPlus size={16} color={colors.red} /></View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.modalKicker}>ALLOW-LIST · ADD DEALER</Text>
-                <Text style={styles.modalTitle}>Pre-fill new dealer</Text>
+                <Text style={styles.modalKicker}>ALLOW-LIST · ADD BUYER</Text>
+                <Text style={styles.modalTitle}>Pre-fill new buyer</Text>
               </View>
               <TouchableOpacity onPress={onClose} style={styles.closeBtn}><X size={16} color={colors.textChrome} /></TouchableOpacity>
             </View>

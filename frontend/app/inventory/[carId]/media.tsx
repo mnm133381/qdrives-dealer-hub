@@ -381,7 +381,7 @@ export default function MediaManager() {
             <View style={styles.draftBarTopRow}>
               <View style={[styles.draftPill, readiness.ready ? styles.draftPillReady : styles.draftPillPending]}>
                 <Text style={[styles.draftPillText, readiness.ready ? { color: colors.success } : { color: colors.warning }]}>
-                  {readiness.ready ? '✓ READY TO LAUNCH' : 'DRAFT — NOT VISIBLE TO DEALERS'}
+                  {readiness.ready ? '✓ READY TO LAUNCH' : 'DRAFT — NOT VISIBLE TO BUYERS'}
                 </Text>
               </View>
             </View>

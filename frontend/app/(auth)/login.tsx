@@ -115,12 +115,12 @@ export default function Login() {
             <View style={[styles.brandPill, isAdmin && styles.brandPillAdmin]}>
               {isAdmin && <Lock size={9} color={colors.warning} />}
               <Text style={[styles.brandPillText, isAdmin && styles.brandPillTextAdmin]}>
-                {isAdmin ? 'OPERATOR CONSOLE' : 'DEALER NETWORK'}
+                {isAdmin ? 'OPERATOR CONSOLE' : 'BUYER NETWORK'}
               </Text>
             </View>
           </View>
           <Text style={styles.heroTitle}>
-            {isAdmin ? 'Operator access\nto the auction floor.' : 'The trading floor\nfor serious dealers.'}
+            {isAdmin ? 'Operator access\nto the auction floor.' : 'The trading floor\nfor serious buyers.'}
           </Text>
           <Text style={styles.heroSub}>
             {isAdmin
@@ -133,12 +133,12 @@ export default function Login() {
       <ScrollView style={styles.sheet} contentContainerStyle={styles.sheetContent} keyboardShouldPersistTaps="handled">
         <View style={styles.sheetHandle} />
         <Text style={styles.title} testID={isAdmin ? 'login-operator-title' : 'login-dealer-title'}>
-          {isAdmin ? 'Operator sign-in' : 'Dealer sign-in'}
+          {isAdmin ? 'Operator sign-in' : 'Buyer sign-in'}
         </Text>
         <Text style={styles.subtitle}>
           {isAdmin
             ? 'Restricted to authorised Q Drives operators. Your number is checked against the operator allow-list.'
-            : 'Dealer access available upon mobile verification. Bidding activates after Q Drives approves your account.'}
+            : 'Buyer access available upon mobile verification. Bidding activates after Q Drives approves your account.'}
         </Text>
 
         <View style={styles.inputWrap}>
@@ -192,7 +192,7 @@ export default function Login() {
         </View>
 
         <Text style={styles.legal}>
-          By continuing, you agree to Q Drives' Dealer Terms of Trade and Privacy Policy.{"\n"}
+          By continuing, you agree to Q Drives' Buyer Terms of Trade and Privacy Policy.{"\n"}
           Q Drives is a closed wholesale network — registration is by invitation only.
         </Text>
       </ScrollView>

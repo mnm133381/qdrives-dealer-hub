@@ -124,7 +124,7 @@ export default function AdminReputationDetail() {
           <ChevronLeft size={22} color={colors.text} />
         </TouchableOpacity>
         <View style={{ flex: 1, marginLeft: 8 }}>
-          <Text style={s.headerTitle} numberOfLines={1}>{dealer.name || 'Dealer'}</Text>
+          <Text style={s.headerTitle} numberOfLines={1}>{dealer.name || 'Buyer'}</Text>
           <Text style={s.headerSub}>{dealer.phone}</Text>
         </View>
         <View style={[s.scoreBadge, { borderColor: tierColor }]}>
@@ -243,7 +243,7 @@ export default function AdminReputationDetail() {
                   <Text style={[s.visTxt, noteVis === 'operator' && s.visTxtActive]}>OPERATORS ONLY</Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => setNoteVis('dealer')} style={[s.visTab, noteVis === 'dealer' && s.visTabActive]}>
-                  <Text style={[s.visTxt, noteVis === 'dealer' && s.visTxtActive]}>VISIBLE TO DEALER</Text>
+                  <Text style={[s.visTxt, noteVis === 'dealer' && s.visTxtActive]}>VISIBLE TO BUYER</Text>
                 </TouchableOpacity>
               </View>
               <TextInput value={noteText} onChangeText={setNoteText} placeholder="Note text…"

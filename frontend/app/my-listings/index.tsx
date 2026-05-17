@@ -9,7 +9,7 @@ import { useRouter, useFocusEffect, Redirect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import { firstCarImage } from '../../src/imageUri';
-import { ArrowLeft, FileText, Upload, ChevronRight, ShieldCheck, FileX, Eye, Pause, Play, XCircle, Archive, Lock, Edit3 } from 'lucide-react-native';
+import { ArrowLeft, FileText, Upload, ChevronRight, ShieldCheck, FileX, Eye, Pause, Play, XCircle, Archive, Lock, Edit3, ClipboardEdit } from 'lucide-react-native';
 import { colors, formatINR, maskRegNo, radii } from '../../src/theme';
 import { api, inspectionPdfUrl } from '../../src/api';
 import { useAuth } from '../../src/auth';
@@ -288,6 +288,33 @@ export default function MyListings() {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.mediaLabel}>VEHICLE PHOTOS</Text>
                     <Text style={styles.mediaSub}>Manage gallery, sections, featured & ordering</Text>
+                  </View>
+                  <ChevronRight size={14} color={colors.textMuted} />
+                </TouchableOpacity>
+
+                <View style={styles.divider} />
+
+                {/* ── Edit inspection (post-launch) ─────────────────
+                    Routes to the canonical inspection editor. The
+                    edit screen GETs the full record on mount, PUTs
+                    on save, and the backend broadcasts a WS frame
+                    to every open lot screen so bidders see the
+                    updated grade in real time. */}
+                <TouchableOpacity
+                  onPress={() => router.push({
+                    pathname: '/inventory/[carId]/inspection',
+                    params: { carId: car.id, auctionId: a.id },
+                  } as any)}
+                  style={styles.mediaRow}
+                  activeOpacity={0.85}
+                  testID={`my-listing-${a.id}-edit-inspection`}
+                >
+                  <View style={[styles.mediaIcon, { backgroundColor: 'rgba(16,185,129,0.10)', borderColor: 'rgba(16,185,129,0.35)' }]}>
+                    <ClipboardEdit size={14} color={colors.success} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.mediaLabel}>EDIT INSPECTION</Text>
+                    <Text style={styles.mediaSub}>Re-grade, update accident / tyre / service notes</Text>
                   </View>
                   <ChevronRight size={14} color={colors.textMuted} />
                 </TouchableOpacity>

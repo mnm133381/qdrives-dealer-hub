@@ -8078,6 +8078,66 @@ agent_communication:
         - GET /api/cars/{id}/inspection/history → newest-first array.
         - Each entry has previous_values (null on version 1), new
           _values (full snapshot), diff.changes covering all changed
+  - agent: "main"
+    message: |
+      [RUN 49 — Post-launch inspection edit screen + sell flow
+       tyre/service inputs]
+
+      FRONTEND:
+      • New screen app/inventory/[carId]/inspection.tsx:
+        - GET /api/cars/{id}/inspection on mount → fills the form
+        - Six per-section editors (1-10 chips, completed toggle,
+          per-section notes), Documents (rc/insurance/puc), Photos
+          (count). Top-level free-text: accident_history,
+          tyre_condition, service_history.
+        - Live grade-preview pill in the header recomputes as the
+          operator scores sections (mirror of backend's aggregation
+          ladder — pure UX preview, backend is the truth).
+        - Empty-payload guard: Save button disabled and toast
+          fires if everything would resolve to null.
+        - On save: PUT to /api/cars/{id}/inspection, toast success
+          ("Inspection saved · grade A · v2"), 600ms delay then
+          router.back(). Backend's WS broadcast + auction post-
+          launch flag handled automatically.
+        - Header shows "Version N · Last edited by NAME · DATE"
+          when an existing record is loaded.
+
+      • my-listings entry point:
+        - New "EDIT INSPECTION" row added between VEHICLE PHOTOS
+          and the PDF block. Green clipboard icon. Routes with
+          {carId, auctionId} params. Available on every listing
+          status — operator can re-grade pre-launch, live, or
+          settled cars; backend already wires the post-launch
+          flag based on auction status.
+
+      • Sell flow inspection form (app/sell/inspection.tsx):
+        - New "Tyre & Service notes" card with two TextInputs
+          captures tyre_condition + service_history into the
+          inspection draft via the new setMeta() method on the
+          InspectionContext.
+        - app/(tabs)/sell.tsx launch payload no longer hardcodes
+          null — it now reads draft._tyreCondition and
+          draft._serviceHistory, falling back to null if blank.
+
+      • InspectionContext (src/inspection.tsx):
+        - Draft type now has _tyreCondition / _serviceHistory.
+        - New context method setMeta({ tyreCondition?, serviceHistory? })
+          persists across reloads via AsyncStorage like the rest of
+          the draft.
+
+      Validation:
+        - Live screenshot of the new editor on Honda City shows the
+          canonical inspection fully hydrated (exterior 9, interior
+          9, mechanical 9, tyres 10) with operator note "Mint paint,
+          no dents" preserved. Sticky Save CTA renders correctly on
+          mobile viewport.
+        - No additional backend changes; uses the RUN 48 endpoints
+          unchanged. The 67/67 PASS from RUN 48 v2 remains valid.
+
+      Production posture intact: data-integrity gate still rejects
+      empty PUTs, history audit row still appended on every save,
+      WS broadcast still fires.
+
           fields and sections, actor_id, actor_name, actor_role,
           timestamp.
         - PUT a 3rd time → history length=3.

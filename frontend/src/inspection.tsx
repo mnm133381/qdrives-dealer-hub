@@ -24,7 +24,17 @@ export type SectionState = {
   photoCount?: number;
 };
 
-export type InspectionDraft = Record<SectionKey, SectionState>;
+export type InspectionDraft = Record<SectionKey, SectionState> & {
+  // Top-level free-text fields that are NOT per-section. These map
+  // 1:1 to db.inspections.{tyre_condition, service_history,
+  // accident_history} on the backend. accident_history continues to
+  // be captured at launch-time in sell.tsx (free-text textarea);
+  // tyre_condition and service_history are captured by the
+  // dedicated inputs in app/sell/inspection.tsx so the operator can
+  // fill them while doing the section walk-through.
+  _tyreCondition?: string;
+  _serviceHistory?: string;
+};
 
 export const SECTIONS: { key: SectionKey; label: string; description: string }[] = [
   { key: 'exterior',   label: 'Exterior',          description: 'Paint, body panels, dents and scratches' },
@@ -42,6 +52,8 @@ const EMPTY: InspectionDraft = {
   tyres:      { completed: false },
   documents:  { completed: false, rc: false, insurance: false, puc: false },
   photos:     { completed: false, photoCount: 0 },
+  _tyreCondition: '',
+  _serviceHistory: '',
 };
 
 export type PdfDraft = {
@@ -59,6 +71,9 @@ type Ctx = {
   updateSection: (key: SectionKey, patch: Partial<SectionState>) => void;
   completeSection: (key: SectionKey) => void;
   setPdfDraft: (pdf: PdfDraft) => void;
+  /** Update top-level free-text fields (tyre_condition,
+   *  service_history). Patch is shallow-merged. */
+  setMeta: (patch: { tyreCondition?: string; serviceHistory?: string }) => void;
   reset: () => void;
 };
 
@@ -69,6 +84,7 @@ const InspectionContext = createContext<Ctx>({
   updateSection: () => {},
   completeSection: () => {},
   setPdfDraft: () => {},
+  setMeta: () => {},
   reset: () => {},
 });
 
@@ -118,13 +134,23 @@ export function InspectionProvider({ children }: { children: React.ReactNode }) 
     else storage.removeItem(PDF_KEY).catch(() => {});
   }, []);
 
+  const setMeta = useCallback((patch: { tyreCondition?: string; serviceHistory?: string }) => {
+    setDraft((prev) => {
+      const next: InspectionDraft = { ...prev };
+      if (patch.tyreCondition !== undefined)   next._tyreCondition   = patch.tyreCondition;
+      if (patch.serviceHistory !== undefined)  next._serviceHistory  = patch.serviceHistory;
+      storage.setItem(KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  }, []);
+
   const reset = useCallback(() => {
     persist(EMPTY);
     setPdfDraft(null);
   }, [persist, setPdfDraft]);
 
   return (
-    <InspectionContext.Provider value={{ draft, pdfDraft, loading, updateSection, completeSection, setPdfDraft, reset }}>
+    <InspectionContext.Provider value={{ draft, pdfDraft, loading, updateSection, completeSection, setPdfDraft, setMeta, reset }}>
       {children}
     </InspectionContext.Provider>
   );

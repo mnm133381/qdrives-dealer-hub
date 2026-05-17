@@ -201,7 +201,7 @@ export default function Sell() {
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const { dealer } = useAuth();
-  const { draft, pdfDraft, setPdfDraft, reset: resetInspection } = useInspection();
+  const { draft, pdfDraft, setPdfDraft, setMeta: setInspMeta, reset: resetInspection } = useInspection();
   const inspStats = inspectionStats(draft);
 
   // Admin-only access — non-admin dealers cannot create listings
@@ -521,8 +521,12 @@ export default function Sell() {
         const insPayload = {
           sections: sectionsForApi,
           accident_history: accident_history,
-          tyre_condition:   null,   // not yet captured in the form;
-          service_history:  null,   // both flow through future edit UI
+          // Read from inspection draft (operator captured these on
+          // the inspection step). Empty strings collapse to null
+          // server-side via _normalise_text_field, so leftover blank
+          // inputs never poison the canonical record.
+          tyre_condition:  (draft as any)._tyreCondition  || null,
+          service_history: (draft as any)._serviceHistory || null,
         };
         await api.putInspection(res.car.id, insPayload);
         console.log('[sell.launch] inspection canonicalised on backend');

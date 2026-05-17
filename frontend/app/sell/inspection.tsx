@@ -17,7 +17,7 @@ import { useToast } from '../../src/toast';
 export default function InspectionForm() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { draft, pdfDraft, updateSection, completeSection, setPdfDraft } = useInspection();
+  const { draft, pdfDraft, updateSection, completeSection, setPdfDraft, setMeta } = useInspection();
   const toast = useToast();
   const [expanded, setExpanded] = useState<SectionKey | null>(SECTIONS[0].key);
 
@@ -141,6 +141,48 @@ export default function InspectionForm() {
             </View>
           );
         })}
+
+        {/* ── Top-level free-text inputs ──────────────────────────
+            tyre_condition + service_history live OUTSIDE the per-
+            section state because they're free text labels (not
+            scored 1-10). The operator captures them here so the
+            launch flow can PUT them onto the canonical inspection
+            record alongside the section breakdown. accident_history
+            stays in sell.tsx (it lives next to the AI estimate
+            panel where buyer-critical disclosures are grouped). */}
+        <View style={[styles.sectionCard, { marginTop: 4 }]} testID="insp-meta-card">
+          <View style={styles.sectionHead}>
+            <View style={styles.sectionDot}>
+              <FileText size={14} color={colors.textChrome} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.sectionLabel}>Tyre & Service notes (optional)</Text>
+              <Text style={styles.sectionSub}>One-line summary buyers can scan at a glance</Text>
+            </View>
+          </View>
+          <View style={styles.sectionBody}>
+            <Text style={styles.fieldLabel}>Tyre condition</Text>
+            <TextInput
+              value={(draft as any)._tyreCondition || ''}
+              onChangeText={(v) => setMeta({ tyreCondition: v })}
+              placeholder='e.g. "Excellent · 6 mm tread all round"'
+              placeholderTextColor={colors.textMuted}
+              style={[styles.textarea, { minHeight: 44 }]}
+              maxLength={120}
+              testID="insp-tyre-condition"
+            />
+            <Text style={styles.fieldLabel}>Service history</Text>
+            <TextInput
+              value={(draft as any)._serviceHistory || ''}
+              onChangeText={(v) => setMeta({ serviceHistory: v })}
+              placeholder='e.g. "Authorised dealer — full service every 10K"'
+              placeholderTextColor={colors.textMuted}
+              style={[styles.textarea, { minHeight: 44 }]}
+              maxLength={140}
+              testID="insp-service-history"
+            />
+          </View>
+        </View>
 
         {/* Optional PDF attachment — uploaded on auction launch */}
         <View style={[styles.sectionCard, pdfDraft && styles.sectionDone, { marginTop: 4 }]}>

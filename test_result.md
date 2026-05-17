@@ -8013,6 +8013,54 @@ agent_communication:
       • New amber "Inspection updated — tap to view latest" pill
         renders on every lot where auction.inspection_updated_after
         _launch is true. Tap → light haptic + load(). Backend's WS
+  - agent: "testing"
+    message: |
+      [RUN 48 v2 — 67/67 PASS]
+      After applying the two surgical fixes (list-serialize in
+      /inspection/history + version/updated_by added to _enrich_
+      auction join), every previously-failing assertion flipped to
+      green. No regressions.
+
+      Highlights:
+      • §2 audit trail history endpoint now returns 200 with
+        previous/new values, diff.changes, actor metadata, timestamp.
+      • §3 post-launch flag visible to anon + dealer + reflected in
+        history entry (post_launch=true, auction_status_at_update=
+        "live").
+      • §6 cross-role parity: version + updated_by + updated_by_id
+        present on auction.car.inspection.
+      • §7 WS reconnect snapshot carries latest inspection version.
+
+      DEV_BYPASS_OTP restored to false. Backend restarted. Test
+      sequence complete.
+
+  - agent: "main"
+    message: |
+      [RUN 48 finalisation — UI badge proof + state cleanup]
+      Took a live screenshot of the Honda City lot screen with the
+      auction.inspection_updated_after_launch flag temporarily set.
+      The amber "Inspection updated — tap to view latest" pill renders
+      cleanly between the score cards and the trust strip, with a
+      warning dot, accessible button role, and tap-to-refresh wired
+      to load(). After capturing proof I cleared the test flag so
+      real bidders don't see an artificial alert.
+
+      Production-readiness sweep:
+      • Mongo URL: comes from MONGO_URL env (.env protected — no
+        code-level localhost hardcoding anywhere in /app/backend).
+      • WS production stability: existing resilient WS with
+        seq-ordered reconnect + snapshot resync, verified in §7.
+      • Data integrity: PUT empty payloads now 422
+        INSPECTION_EMPTY_NOT_ALLOWED; partial inspections still
+        allowed (one section completed OR one free-text field set).
+      • Backfill: 4 legacy listings synthesised on first boot;
+        idempotent on subsequent boots.
+      • Audit trail: every PUT writes an immutable history row.
+
+      Status: READY TO PUBLISH. All 6 user requirements satisfied:
+      versioning ✓ · transparency badge ✓ · production hardening ✓ ·
+      data integrity ✓ · migration script ✓ · multi-role E2E ✓.
+
         `inspection_updated` frame also calls load() AND surfaces a
         toast "Inspection details updated — refreshing report" so
         authed bidders watching live get an instant signal.

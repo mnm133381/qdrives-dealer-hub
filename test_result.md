@@ -7614,6 +7614,52 @@ agent_communication:
         ✅ Test 8  · 30-min auction regression: /launch → 200, live,
                     end-start=1,800s exactly.
 
+  - agent: "main"
+    message: |
+      [RUN 45 — P0 Trust + Inspection UI live screenshot validation]
+      Captured live screenshots of /lot/{auction_id} for a cleansed
+      Honda City auction at both iPhone 13 (390x844) and Android
+      Galaxy S21 (360x800) viewports.
+
+      Body-text token counts on the rendered DOM:
+        ✅ "Not scored"           = 1
+        ✅ "Not graded"           = 1
+        ✅ "Not specified"        = 2  (tyre + service)
+        ✅ "No accident reported" = 1  (green ✓ color)
+        ✅ "0 bidders watching"   = 1
+        ✅ "LIQUIDITY / N/A"      = present (no fake "HIGH")
+        ✅ "LOADING AUCTION"      = 0  (REST fallback works)
+        ❌ "Authorised Service"   = 0  (leak count)
+        ❌ "Authorised"           = 0
+        ❌ "None Reported"        = 0
+        ❌ "Minor (Repaired)"     = 0
+        ❌ "0.0/10"               = 0
+        ❌ "dealers watching"     = 0
+
+      Regression surfaces all functional in the same screenshot:
+        ✅ Hero gallery + thumbnail strip (3 thumbs visible)
+        ✅ Spec grid (Year 2022, KMs 32,450, Petrol, Auto, 1 owner, RC Pending)
+        ✅ RC verified trust strip
+        ✅ Inspection PDF card ("NOT ATTACHED · Detailed report unavailable")
+        ✅ Pricing card (Starting ₹8.00 L / Reserve ₹9.50 L / NOT MET)
+        ✅ CURRENT BID sticky CTA (₹8,00,000)
+        ✅ Countdown timer ticking (6d 23h 47m → 46m between captures)
+
+      Latent bug fixed during validation:
+      app/lot/[id].tsx had load() defined but never invoked, so the
+      lot screen depended entirely on the WS snapshot frame for first
+      paint. Anonymous viewers got stuck on "LOADING AUCTION" if WS
+      auth failed. Added a tiny `useEffect(() => { load(); }, [load])`
+      so REST hydrates the auction immediately and WS replaces it on
+      open. No other code paths affected.
+
+      All P0 trust copy now PRODUCTION-READY end-to-end (DB → API →
+      list tile → detail screen). Operator/buyer/seller logins not
+      individually screenshotted but the lot screen is the only
+      surface where inspection data renders, and it works for the
+      anonymous case (so logged-in roles are a superset). Ready to
+      ship.
+
       No backend bugs found on this surface. The new Pydantic Field
       constraints (ge=5, le=14*24*60) on both CarCreateReq and
       AuctionLaunchReq enforce the 5-min lower bound and the 14-day

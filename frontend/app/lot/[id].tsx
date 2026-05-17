@@ -108,6 +108,16 @@ export default function AuctionScreen() {
   // Reset image index when filter changes
   useEffect(() => { setImgIdx(0); }, [galleryFilter]);
 
+  // Initial REST fetch — guarantees first paint even if the WS
+  // snapshot frame is delayed (anonymous lot view, slow network,
+  // CDN cold start). The WS onSnapshot handler will then replace
+  // this with the live authoritative state once the socket opens.
+  // Without this, an anonymous bidder lands on "LOADING AUCTION"
+  // until/unless the WS sends a snapshot frame.
+  useEffect(() => {
+    load();
+  }, [load]);
+
   // Silent funnel tracking — fires once per auction-id mount. The
   // optional `fb` query param carries explicit broadcast deep-link
   // attribution; backend falls back to recent-broadcast lookup when

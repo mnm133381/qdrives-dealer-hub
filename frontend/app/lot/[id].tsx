@@ -39,6 +39,7 @@ import { CountdownTimer } from '../../src/components/CountdownTimer';
 import { LivePulse } from '../../src/components/LivePulse';
 import { InspectionPdfCard } from '../../src/components/InspectionPdfCard';
 import { useToast } from '../../src/toast';
+import { shareAuction } from '../../src/share';
 import { SECTIONS, SECTION_LABELS, SectionKey, absUrl } from '../../src/media';
 
 const { width: SCREEN_W } = Dimensions.get('window');
@@ -358,7 +359,33 @@ export default function AuctionScreen() {
               <TouchableOpacity onPress={toggleWatch} style={styles.iconRound} testID="auction-watch">
                 <Heart size={18} color={watching ? colors.red : colors.textPrimary} fill={watching ? colors.red : 'transparent'} />
               </TouchableOpacity>
-              <TouchableOpacity style={styles.iconRound}>
+              <TouchableOpacity
+                onPress={async () => {
+                  // Share helper opens the OS sheet (WhatsApp / SMS /
+                  // Email / Copy Link / Telegram etc) and falls back
+                  // to clipboard on web / when the sheet errors. We
+                  // ONLY pass public fields — never reserve_price,
+                  // never internal IDs beyond the auction_id that's
+                  // already in the URL.
+                  try {
+                    const title = car ? `${car.year || ''} ${car.make || ''} ${car.model || ''}`.trim() || 'Q Drives auction' : 'Q Drives auction';
+                    const res = await shareAuction({
+                      auctionId: String(id),
+                      title,
+                      currentBid: auction?.current_bid,
+                    });
+                    if (res.dismissed) return;
+                    if (res.copied) toast.show('Link copied to clipboard', 'success');
+                    else if (!res.ok) toast.show(res.error || 'Unable to share', 'error');
+                  } catch (e: any) {
+                    toast.show(e?.message || 'Unable to share', 'error');
+                  }
+                }}
+                style={styles.iconRound}
+                testID="auction-share"
+                accessibilityRole="button"
+                accessibilityLabel="Share auction"
+              >
                 <Share2 size={18} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>

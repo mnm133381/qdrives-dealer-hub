@@ -399,6 +399,35 @@ export default function Sell() {
       return;
     }
 
+    // ── Step 3.5: Compute REAL inspection summary from the operator's
+    // saved draft (NOT random). The dealer-facing vehicle detail page
+    // renders these fields. Scoring rule: average over sections that
+    // the operator actually scored (1-10 each). Unfilled / completed-
+    // without-a-numeric-score sections do NOT pull the average down.
+    // Grade ladder (per product spec):
+    //   9.0 – 10.0 → A
+    //   8.0 – 8.99 → B
+    //   7.0 – 7.99 → C
+    //     < 7.0    → D
+    const scoreEntries = Object.values(insp.draft || {})
+      .map((s: any) => (typeof s?.score === 'number' ? s.score : null))
+      .filter((n): n is number => typeof n === 'number' && isFinite(n) && n > 0);
+    let inspection_score: number | null = null;
+    let condition_grade: string | null = null;
+    if (scoreEntries.length > 0) {
+      const avg = scoreEntries.reduce((a, b) => a + b, 0) / scoreEntries.length;
+      inspection_score = Math.round(avg * 10) / 10;
+      condition_grade =
+        inspection_score >= 9.0 ? 'A' :
+        inspection_score >= 8.0 ? 'B' :
+        inspection_score >= 7.0 ? 'C' : 'D';
+    }
+    // Accident history — only send what the operator entered; backend
+    // stores NULL otherwise so the renderer can show "No accident
+    // reported" instead of any fabricated severity label.
+    const accident_history = safeString(form.notes).match(/accident[^.]*\./i)?.[0] || null;
+    console.log('[sell.launch] inspection summary', { inspection_score, condition_grade, scoreEntries });
+
     // ── Step 4: Build payload + hit the API.
     setCreating(true);
     // safeStringDigits is paranoid — even if a stale draft restored

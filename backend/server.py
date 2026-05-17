@@ -343,6 +343,15 @@ class CarCreateReq(BaseModel):
     # path is: create draft → upload media → set featured → call
     # /api/admin/auctions/{id}/launch.
     launch_immediately: bool = False
+    # ---- Real inspection summary (operator-entered) ----
+    # The dealer-facing vehicle detail page renders THESE fields. If
+    # the operator hasn't filled the inspection report we now persist
+    # them as None (NEVER synthesize). The renderer falls back to
+    # explicit "Not scored" / "Not graded" / "Not specified" copy so
+    # bidders are never shown invented inspection results.
+    inspection_score: Optional[float] = Field(default=None, ge=0.0, le=10.0)
+    condition_grade: Optional[str] = None  # "A" / "B" / "C" / "D"
+    accident_history: Optional[str] = None  # free text from the operator
 
 class PriceEstimateReq(BaseModel):
     make: str
@@ -1325,11 +1334,19 @@ async def create_car(req: CarCreateReq, dealer = Depends(get_current_admin)):
                                        # db.media at read time. An empty array
                                        # is the safe "no photos yet" sentinel.
         "description": req.description or req.notes or "",
-        "inspection_score": round(random.uniform(7.5, 9.4), 1),
-        "condition_grade": random.choice(["A", "A", "B", "B+"]),
-        "tyre_condition": random.choice(["Excellent", "Good", "Average"]),
-        "accident_history": random.choice(["None Reported", "Minor (Repaired)"]),
-        "service_history": random.choice(["Authorised Service", "Multi-Brand Service"]),
+        # ---- Inspection summary (P0 trust fix) ----
+        # Use ONLY the operator-supplied inspection values. NEVER
+        # synthesize. If the operator hasn't filled the inspection yet
+        # we persist None so the renderer can show explicit "Not
+        # scored" / "Not graded" / "Not specified" copy. Bidders must
+        # never be shown invented inspection results.
+        "inspection_score": req.inspection_score,   # float | None
+        "condition_grade":  (req.condition_grade or "").strip().upper() or None,
+        "accident_history": (req.accident_history or "").strip() or None,
+        # Retired RNG fields (kept absent rather than randomised so
+        # downstream consumers can opt into "Not specified" UX).
+        "tyre_condition":   None,
+        "service_history":  None,
         "rc_verified": False,
         "seller_id": dealer["id"],
         "created_at": now_utc(),
@@ -5597,10 +5614,16 @@ async def seed_data():
             **c,
             "images": gallery,
             "description": f"{c['year']} {c['make']} {c['model']} in pristine condition with full service history.",
-            "inspection_score": round(random.uniform(7.6, 9.5), 1),
-            "condition_grade": random.choice(["A", "A", "A+", "B+"]),
-            "tyre_condition": random.choice(["Excellent", "Good"]),
-            "accident_history": random.choice(["None Reported", "None Reported", "Minor (Repaired)"]),
+            # Seeder fleet — pre-graded by Q Drives operations. Real
+            # inspection scores per car are entered by the operator
+            # during draft creation; for the bootstrap catalog we use
+            # explicit per-vehicle data so bidders never see randomised
+            # inspection values.
+            "inspection_score": c.get("inspection_score"),
+            "condition_grade":  c.get("condition_grade"),
+            "tyre_condition":   c.get("tyre_condition"),
+            "accident_history": c.get("accident_history"),
+            "service_history":  c.get("service_history"),
             "service_history": "Authorised Service",
             "rc_verified": True,
             "seller_id": seller_id,

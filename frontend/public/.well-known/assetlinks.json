@@ -1,0 +1,13 @@
+[
+  {
+    "_comment": "Android App Links verification — replace sha256_cert_fingerprints with the SHA-256 of the EAS-signed release APK before publishing to qdrives.app. Until then Android falls back to opening the URL in the browser (which already works because the Expo web app serves /lot/[id] correctly).",
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "app.emergent.qdrivesdealerhub32bd13b5",
+      "sha256_cert_fingerprints": [
+        "REPLACE_WITH_EAS_BUILD_SHA256_FINGERPRINT"
+      ]
+    }
+  }
+]

@@ -61,6 +61,11 @@ export default function AuctionScreen() {
   const [galleryFilter, setGalleryFilter] = useState<SectionKey | 'all'>('all');
   const [zoomOpen, setZoomOpen] = useState(false);
   const [zoomStartIdx, setZoomStartIdx] = useState(0);
+  // Deep-link / shared-URL safety: track distinct load states so
+  // invalid / deleted / expired listing IDs surface a real error UI
+  // instead of a perpetual "LOADING AUCTION" spinner. The error code
+  // drives both the message and the CTA branch (browse vs login).
+  const [loadError, setLoadError] = useState<{ code: 'invalid' | 'not_found' | 'forbidden' | 'network'; message: string } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   // Track-view fires once per mount per auction id.
   const trackedRef = useRef<string | null>(null);
@@ -68,11 +73,20 @@ export default function AuctionScreen() {
   const bidPulse = useSharedValue(1);
   const outbidFlash = useSharedValue(0);
 
+  // Param shape sanity — guards against `/lot/undefined` or
+  // `/lot/null` getting hit when navigation params are dropped.
+  const idValid = typeof id === 'string' && id.length >= 8 && id !== 'undefined' && id !== 'null';
+
   const load = useCallback(async () => {
     if (!id) return;
+    if (!idValid) {
+      setLoadError({ code: 'invalid', message: 'Listing reference is missing or malformed.' });
+      return;
+    }
     try {
       const a: any = await api.auction(id as string);
       setAuction(a);
+      setLoadError(null);
       setBids(a.recent_bids || []);
       // Fetch sectioned media (uses GridFS or external auto-migration)
       if (a?.car?.id) {
@@ -81,13 +95,22 @@ export default function AuctionScreen() {
           setMedia(mm as any[]);
         } catch {}
       }
-      // Check watchlist
+      // Check watchlist (auth-gated — silent fail for anonymous)
       const w: any[] = await api.watchlist().catch(() => []);
       setWatching(!!w.find((x) => x.id === a.id));
     } catch (e: any) {
-      toast.show(e.message || 'Failed to load auction', 'error');
+      const status: number = Number(e?.status) || 0;
+      if (status === 404) {
+        setLoadError({ code: 'not_found', message: 'This listing was removed or never existed.' });
+      } else if (status === 401 || status === 403) {
+        setLoadError({ code: 'forbidden', message: 'You don\'t have access to this listing.' });
+      } else {
+        setLoadError({ code: 'network', message: e?.message || 'Couldn\'t load the listing.' });
+      }
+      // Best-effort toast — non-blocking on the error page render path.
+      try { toast.show(e?.message || 'Failed to load auction', 'error'); } catch {}
     }
-  }, [id, toast]);
+  }, [id, idValid, toast]);
 
   // Derived gallery (filtered by section). Falls back to legacy car.images if
   // /media is empty (e.g. very fresh install before auto-migration ran).
@@ -292,6 +315,44 @@ export default function AuctionScreen() {
 
   const bidPulseStyle = useAnimatedStyle(() => ({ transform: [{ scale: bidPulse.value }] }));
   const flashStyle = useAnimatedStyle(() => ({ opacity: outbidFlash.value }));
+
+  if (loadError) {
+    // Deep-link safety net — explicit page for invalid / deleted /
+    // unauthorised / network-error listing IDs so a shared link never
+    // strands a viewer on an infinite spinner.
+    return (
+      <View style={[styles.root, { paddingTop: insets.top + 6, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 }]}>
+        <View style={{ width: 64, height: 64, borderRadius: 32, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(245,158,11,0.08)', borderColor: 'rgba(245,158,11,0.35)', borderWidth: 1 }}>
+          <AlertTriangle size={28} color={colors.warning} />
+        </View>
+        <Text style={{ color: colors.textPrimary, marginTop: 18, fontSize: 18, fontWeight: '800', letterSpacing: -0.3, textAlign: 'center' }}>
+          {loadError.code === 'not_found'  ? 'Listing unavailable'
+           : loadError.code === 'forbidden' ? 'Access required'
+           : loadError.code === 'invalid'   ? 'Invalid listing link'
+           : 'Couldn\'t load listing'}
+        </Text>
+        <Text style={{ color: colors.textMuted, marginTop: 8, fontSize: 13, textAlign: 'center', lineHeight: 19 }}>
+          {loadError.message}
+        </Text>
+        <TouchableOpacity
+          onPress={() => router.replace('/(tabs)' as any)}
+          style={{ marginTop: 24, paddingHorizontal: 22, paddingVertical: 12, borderRadius: 12, backgroundColor: colors.red }}
+          testID="lot-error-browse"
+        >
+          <Text style={{ color: '#fff', fontWeight: '800', fontSize: 13, letterSpacing: 0.3 }}>Browse marketplace</Text>
+        </TouchableOpacity>
+        {loadError.code === 'network' && (
+          <TouchableOpacity
+            onPress={() => { setLoadError(null); load(); }}
+            style={{ marginTop: 12, paddingHorizontal: 22, paddingVertical: 10 }}
+            testID="lot-error-retry"
+          >
+            <Text style={{ color: colors.textChrome, fontWeight: '700', fontSize: 12, letterSpacing: 0.3 }}>Try again</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    );
+  }
 
   if (!auction) {
     return (

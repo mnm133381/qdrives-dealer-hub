@@ -461,7 +461,12 @@ export default function AuctionScreen() {
           <Spec icon={<Fuel size={14} color={colors.textChrome} />} label="Fuel" value={car.fuel_type} />
           <Spec icon={<Settings2 size={14} color={colors.textChrome} />} label="Trans." value={car.transmission} />
           <Spec icon={<Users size={14} color={colors.textChrome} />} label="Owners" value={`${car.owners}`} />
-          <Spec icon={<ShieldCheck size={14} color={colors.success} />} label="RC" value={car.rc_verified ? 'Verified' : 'Pending'} />
+          {/* RC chip removed per ops feedback — "RC Pending" was
+              confusing buyers who interpreted it as a legal warning
+              rather than an internal verification state. The RC
+              verification status already lives in the trust strip
+              below when verified; no need to surface "Pending" in
+              the spec grid where it adds noise without clarity. */}
         </View>
 
         {/* Score cards — note: MARGIN EST. removed pending real backend
@@ -521,24 +526,21 @@ export default function AuctionScreen() {
           </TouchableOpacity>
         )}
 
-        {/* Trust strip — escrow / settlement copy removed per ops policy
-            (avoid promising commercial guarantees we don't enforce in
-            v1). Keep RC verification + inspection PDF surface. */}
-        <View style={styles.trustStrip}>
-          <View style={styles.trustItem}>
-            <ShieldCheck size={13} color={colors.success} />
-            <Text style={styles.trustItemText}>RC verified</Text>
+        {/* Trust strip — only renders when there is something
+            meaningful to surface. "RC verified" was previously hard-
+            coded regardless of car.rc_verified, which was misleading.
+            The "PDF report" pill that used to live here was a dead
+            visual (no onPress, no link). The real PDF action lives on
+            the InspectionPdfCard inside the Inspection Summary, so
+            the duplicate pill has been removed. */}
+        {car.rc_verified && (
+          <View style={styles.trustStrip}>
+            <View style={styles.trustItem}>
+              <ShieldCheck size={13} color={colors.success} />
+              <Text style={[styles.trustItemText, { color: colors.success }]}>RC verified</Text>
+            </View>
           </View>
-          {auction.inspection_pdf && (
-            <>
-              <View style={styles.trustDivider} />
-              <View style={styles.trustItem}>
-                <ShieldCheck size={13} color={colors.success} />
-                <Text style={[styles.trustItemText, { color: colors.success }]}>PDF report</Text>
-              </View>
-            </>
-          )}
-        </View>
+        )}
 
         {/* Inspection summary (highlights + PDF).
             P0 trust fix: ONLY render values that came from the operator.

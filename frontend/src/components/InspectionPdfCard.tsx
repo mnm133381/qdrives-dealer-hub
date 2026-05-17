@@ -96,18 +96,29 @@ export function InspectionPdfCard({ inspection }: Props) {
           </View>
           <Text style={styles.title} numberOfLines={1}>{inspection.filename || 'inspection.pdf'}</Text>
           <Text style={styles.sizeMeta}>
-            {formatBytes(inspection.size_bytes || 0)} · {(inspection.version || 'v1').toUpperCase()}
+            {/* Version is now an int on the new canonical record but
+                was a string ("v1"/"v2") on legacy PDF uploads. Coerce
+                safely so neither shape crashes the renderer. */}
+            {formatBytes(inspection.size_bytes || 0)} · {
+              typeof inspection.version === 'number'
+                ? `V${inspection.version}`
+                : String(inspection.version || 'v1').toUpperCase()
+            }
           </Text>
         </View>
       </View>
 
-      {/* Metadata strip */}
+      {/* Metadata strip — uploaded date now reads from BOTH the new
+          canonical sub-doc (`uploaded_at`) AND the legacy flat record
+          (`created_at`), so post-migration listings render correctly.
+          Falls back gracefully to the inspection record's updated_at
+          if neither timestamp is on the pdf sub-doc itself. */}
       <View style={styles.metaStrip}>
         <View style={styles.metaItem}>
           <User size={11} color={colors.textMuted} />
           <View>
             <Text style={styles.metaLabel}>UPLOADED BY</Text>
-            <Text style={styles.metaValue} numberOfLines={1}>{inspection.uploader_name || 'Seller'}</Text>
+            <Text style={styles.metaValue} numberOfLines={1}>{inspection.uploader_name || inspection.updated_by || 'Seller'}</Text>
           </View>
         </View>
         <View style={styles.metaDivider} />
@@ -115,7 +126,9 @@ export function InspectionPdfCard({ inspection }: Props) {
           <Calendar size={11} color={colors.textMuted} />
           <View>
             <Text style={styles.metaLabel}>UPLOADED</Text>
-            <Text style={styles.metaValue}>{formatAbsolute(inspection.created_at)}</Text>
+            <Text style={styles.metaValue}>
+              {formatAbsolute(inspection.uploaded_at || inspection.created_at || inspection.updated_at) || '—'}
+            </Text>
           </View>
         </View>
         <View style={styles.metaDivider} />
@@ -123,7 +136,9 @@ export function InspectionPdfCard({ inspection }: Props) {
           <Clock size={11} color={colors.textMuted} />
           <View>
             <Text style={styles.metaLabel}>STATUS</Text>
-            <Text style={[styles.metaValue, { color: colors.success }]}>{formatRelative(inspection.created_at) || 'Active'}</Text>
+            <Text style={[styles.metaValue, { color: colors.success }]}>
+              {formatRelative(inspection.uploaded_at || inspection.created_at || inspection.updated_at) || 'Active'}
+            </Text>
           </View>
         </View>
       </View>

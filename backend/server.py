@@ -224,6 +224,104 @@ async def get_current_super_admin(dealer = Depends(get_current_dealer)) -> Dict[
     return dealer
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Reserve-price privacy (P0 marketplace-integrity invariant)
+# ─────────────────────────────────────────────────────────────────────
+# The exact `reserve_price` is competitive intelligence: if a bidder
+# knows the floor, they bid the floor + 1. The platform therefore
+# strips reserve_price from every payload served to a bidder /
+# anonymous viewer, replacing it with:
+#   • reserve_met  — bool, "did the current bid meet the reserve?"
+#   • has_reserve  — bool, "does this listing have a reserve at all?"
+#
+# Sellers see the reserve on their OWN listings (it's their number).
+# Operators and admins see every reserve everywhere.
+#
+# Both the REST listing endpoints and the WebSocket snapshot/state
+# frames apply this same filter, so reserve never leaks via inspect-
+# network, devtools, or a saved WS frame replay.
+async def get_optional_dealer(
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Optional[Dict[str, Any]]:
+    """Auth-friendly variant of get_current_dealer that returns None
+    for unauthenticated callers instead of 401. Used on read endpoints
+    that are open to anonymous viewers but need to know the caller's
+    role to decide what to redact (e.g. reserve_price)."""
+    if not creds or not creds.credentials:
+        return None
+    try:
+        payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALGO])
+        if payload.get("kind", "access") != "access":
+            return None
+        dealer = await db.dealers.find_one({"id": payload["sub"]}, {"_id": 0})
+        if not dealer:
+            return None
+        token_tv = int(payload.get("tv", 0))
+        if token_tv != int(dealer.get("token_version") or 0):
+            return None
+        return dealer
+    except Exception:
+        return None
+
+
+def _viewer_role(viewer: Optional[Dict[str, Any]]) -> str:
+    """Normalise the caller's role for serializer decisions. Anonymous
+    viewers and dealers are both treated as 'bidder' for reserve
+    visibility — neither should ever see the floor."""
+    if not viewer:
+        return "anonymous"
+    return viewer.get("role") or "dealer"
+
+
+def _can_see_reserve(viewer: Optional[Dict[str, Any]], auction: Dict[str, Any]) -> bool:
+    """True only if the viewer is allowed to see the exact reserve
+    price for THIS auction. Operators always; the seller of the
+    listing for their own auctions. Everyone else: no."""
+    role = _viewer_role(viewer)
+    if role in ("admin", "super_admin", "operations_admin", "inspection_admin"):
+        return True
+    if viewer and viewer.get("id") and viewer["id"] == auction.get("seller_id"):
+        return True
+    return False
+
+
+def _strip_reserve_for_viewer(payload: Dict[str, Any], viewer: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return a defensive shallow copy of `payload` with reserve_price
+    stripped when the viewer is not authorised to see it. Adds the
+    `reserve_met` + `has_reserve` derived flags so the UI can still
+    surface "Reserve met / not met" without leaking the floor.
+
+    NOTE: this is the ONLY place reserve gets stripped — every
+    bidder-facing endpoint (REST + WS) routes through this helper.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    out = dict(payload)
+    current_bid = int(out.get("current_bid") or 0)
+    raw_reserve = out.get("reserve_price")
+    try:
+        raw_reserve_int = int(raw_reserve) if raw_reserve is not None else 0
+    except (TypeError, ValueError):
+        raw_reserve_int = 0
+    has_reserve = raw_reserve_int > 0
+    reserve_met = (current_bid >= raw_reserve_int) if has_reserve else None
+
+    if not _can_see_reserve(viewer, out):
+        # Pop every alias / mirror we know about so the payload never
+        # contains the literal floor for an unauthorised viewer.
+        out.pop("reserve_price", None)
+        # Some legacy code paths nested reserve onto the car block.
+        if isinstance(out.get("car"), dict):
+            car = dict(out["car"])
+            car.pop("reserve_price", None)
+            out["car"] = car
+    # ALWAYS expose the derived flags — even to operators — so the
+    # frontend's render branch is uniform across roles.
+    out["has_reserve"] = has_reserve
+    out["reserve_met"] = reserve_met
+    return out
+
+
 # Permission catalog — single source of truth for what each role can do.
 ROLE_PERMISSIONS: Dict[str, set] = {
     "super_admin": {
@@ -1054,6 +1152,7 @@ async def list_auctions(
     limit: int = 50,
     seller_id: Optional[str] = None,
     request: Request = None,
+    viewer: Optional[Dict[str, Any]] = Depends(get_optional_dealer),
 ):
     """Public marketplace listing — Phase 2C hygiene drops archived /
     withdrawn / draft / settlement-pipeline auctions.
@@ -1102,18 +1201,24 @@ async def list_auctions(
     enriched = [await _enrich_auction(a) for a in auctions]
     if status_filter:
         enriched = [a for a in enriched if a["status"] == status_filter]
-    return enriched
+    # ── Reserve-price privacy (P0) ───────────────────────────────────
+    # Strip reserve_price from every auction object before the
+    # marketplace feed reaches the caller. Operators / sellers see the
+    # real number; bidders + anonymous see only reserve_met /
+    # has_reserve flags. This filter MUST stay co-located with the
+    # serialization step — never trust upstream callers to strip.
+    return [_strip_reserve_for_viewer(a, viewer) for a in enriched]
 
 
 @api.get("/auctions/{auction_id}")
-async def get_auction(auction_id: str):
+async def get_auction(auction_id: str, viewer: Optional[Dict[str, Any]] = Depends(get_optional_dealer)):
     a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
     if not a:
         raise HTTPException(status_code=404, detail="Auction not found")
     enriched = await _enrich_auction(a)
     bids = await db.bids.find({"auction_id": auction_id}, {"_id": 0}).sort("created_at", -1).limit(20).to_list(20)
     enriched["recent_bids"] = [serialize(b) for b in bids]
-    return enriched
+    return _strip_reserve_for_viewer(enriched, viewer)
 
 
 @api.post("/auctions/{auction_id}/bid")
@@ -1672,10 +1777,15 @@ async def get_purchases(dealer = Depends(require_approved_dealer)):
         final_bid = ea.get("current_bid", 0) or 0
         reserve = ea.get("reserve_price", 0) or 0
         if ea["status"] == "ended":
-            ea["reserve_met"] = final_bid >= reserve
-            ea["outcome"] = "won" if ea["reserve_met"] else "reserve_not_met"
+            # Compute reserve_met BEFORE stripping so the outcome
+            # label is correct, then strip the literal reserve.
+            reserve_met = final_bid >= reserve
+            ea = _strip_reserve_for_viewer(ea, dealer)
+            ea["reserve_met"] = reserve_met
+            ea["outcome"] = "won" if reserve_met else "reserve_not_met"
             won.append(ea)
         elif ea["status"] == "live":
+            ea = _strip_reserve_for_viewer(ea, dealer)
             active.append(ea)
     return {"won": won, "active": active}
 
@@ -4492,8 +4602,11 @@ async def auction_snapshot(auction_id: str, dealer = Depends(get_current_dealer)
         {"_id": 0},
     ).sort("created_at", -1).limit(50).to_list(50)
     seq = int(a.get("bid_seq") or 0)
+    # Reserve-price privacy applies to the WS reconnect snapshot too —
+    # bidders MUST NOT see the exact reserve regardless of the
+    # transport (REST vs WS-reconnect-REST).
     return {
-        "auction": jsonable_encoder(enriched),
+        "auction": jsonable_encoder(_strip_reserve_for_viewer(enriched, dealer)),
         "bids": [serialize(b) for b in bids],
         "seq": seq,
         "server_ns": rt.monotonic_ns(),
@@ -4777,9 +4890,14 @@ async def ws_auction(websocket: WebSocket, auction_id: str):
         a = await db.auctions.find_one({"id": auction_id}, {"_id": 0})
         if a:
             ea = await _enrich_auction(a)
+            # Reserve-price privacy — the WS snapshot is the only path
+            # by which reserve could otherwise leak to a bidder via the
+            # auction room subscription. The same _strip_reserve_for
+            # _viewer applies to operators (no-op for them) so the
+            # frame shape is uniform across roles.
             await websocket.send_json({
                 "type": "snapshot",
-                "auction": jsonable_encoder(ea),
+                "auction": jsonable_encoder(_strip_reserve_for_viewer(ea, dealer)),
                 "seq": int(a.get("bid_seq") or 0),
                 "server_ns": rt.monotonic_ns(),
             })

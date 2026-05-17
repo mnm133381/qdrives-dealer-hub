@@ -18,7 +18,11 @@ export function AuctionCard({ auction, onPress, onWatch, watching, testID }: Pro
   const car = auction.car || {};
   const seller = auction.seller || {};
   const isLive = auction.status === 'live';
-  const reserveMet = (auction.current_bid || 0) >= (auction.reserve_price || 0);
+  // Reserve-price privacy: prefer backend-computed flag so bidders
+  // never need the literal reserve_price (which the API now strips).
+  const reserveMet = typeof (auction as any).reserve_met === 'boolean'
+    ? (auction as any).reserve_met
+    : (auction.current_bid || 0) >= (auction.reserve_price || 0);
   const isHot = (auction.total_bids || 0) >= 10;
   const viewerCount = auction.interested_dealers || 0;
 

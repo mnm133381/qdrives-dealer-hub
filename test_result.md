@@ -9051,3 +9051,126 @@ agent_communication:
           • §6 empty-payload 422 gate intact (INSPECTION_EMPTY_NOT_ALLOWED).
         DEV_BYPASS_OTP restored to false and backend restarted. No further action
         needed on this regression — main agent can summarise and finish.
+
+#====================================================================================================
+# Test Sequence 51 — P0 RESERVE-PRICE PRIVACY (Backend)
+#====================================================================================================
+metadata:
+  test_sequence: 51
+  test_script: /app/backend_test_reserve_privacy.py
+  target: https://qdrives-dealer-hub.preview.emergentagent.com/api
+  ws_target: wss://qdrives-dealer-hub.preview.emergentagent.com/api/ws/auction
+  env_override: DEV_BYPASS_OTP=true (run-only; restored to false after run)
+  date: 2026-05-17
+
+backend:
+  - task: "Reserve-price privacy across roles + transports (P0)"
+    implemented: true
+    working: true
+    file: "backend/server.py (_strip_reserve_for_viewer, get_optional_dealer)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          [Test Sequence 51 — 38/38 PASS, 0 FAIL]
+          Validated reserve_price is never leaked to bidders or anonymous
+          viewers across REST + WebSocket transports. Operators always see
+          floor; sellers see floor only for THEIR OWN listings.
+
+          §1 Anonymous (no Authorization header)
+            ✓ GET /api/auctions (10 entries) — every entry has reserve_price
+              ABSENT (top-level AND car.reserve_price), has_reserve bool
+              present, reserve_met is bool|null (null iff has_reserve=false).
+            ✓ GET /api/auctions/{id} on 5 ids (live + ended) — same
+              assertions; recent_bids[] also free of reserve_price.
+
+          §2 Authenticated bidder (+919900000001 / Rahul)
+            ✓ Same assertions as §1 (buyer auth does NOT unlock reserve).
+            ✓ GET /api/purchases — won + active items: 0 leaks across 3
+              items; every entry has reserve_met flag.
+            ✓ /api/dealers/me/purchases returns 404 (not a real route in
+              this codebase; the actual route is /api/purchases). No
+              alternate leakage surface.
+
+          §3 Authenticated seller (+919900000002 / Arjun)
+            Setup: flipped one live auction's seller_id in MongoDB to the
+            dealer's id, leaving another live auction with its original
+            seller_id. Restored after the run.
+            ✓ GET /api/auctions/{my_listing} — reserve_price PRESENT
+              (int>0). has_reserve+reserve_met flags also present.
+            ✓ GET /api/auctions/{other_seller_listing} — reserve_price
+              ABSENT (per-listing seller-only visibility confirmed).
+
+          §4 Authenticated operator (+918977986662, role=super_admin)
+            ✓ GET /api/auctions/{any} → reserve_price PRESENT (int).
+            ✓ GET /api/auctions list → every auction has reserve_price.
+
+          §5 WebSocket snapshot frame
+            Connected as buyer to wss …/api/ws/auction/{live_id}?token=…
+            ✓ Initial snapshot frame: auction.reserve_price ABSENT,
+              auction.has_reserve + auction.reserve_met PRESENT, recursive
+              scan finds zero reserve_price keys anywhere in frame.
+            ✓ Disconnect → reconnect → same assertions on the reconnect
+              snapshot frame.
+
+          §6 WS new_bid broadcast
+            Subscribed buyer2 (+919900000002) via WS; buyer1
+            (+919900000001) placed a bid (+5000). Received new_bid frame.
+            ✓ Recursive scan of new_bid payload contains no reserve_price
+              key anywhere (it never carried one — confirmed).
+
+          §7 Reconnect REST snapshot — GET /api/auctions/{id}/snapshot
+            ✓ As buyer → auction.reserve_price ABSENT, flags present.
+            ✓ As operator → auction.reserve_price PRESENT (int).
+
+          §8 Regression — has_reserve / reserve_met correctness
+            Cross-referenced operator-visible reserve_price + current_bid
+            with anonymous-visible has_reserve + reserve_met across 19
+            auctions: 19/19 correct.
+              • current_bid < reserve → reserve_met=false
+              • current_bid >= reserve → reserve_met=true
+              • reserve_price==0/null → has_reserve=false, reserve_met=null
+
+          §9 Deep recursive key scan (anonymous)
+            ✓ GET /api/auctions/{id} for 3 different cars — recursive walk
+              of the entire JSON tree (incl. car{}, recent_bids[], nested
+              objects) finds ZERO keys named exactly "reserve_price".
+
+          Post-run hygiene:
+            • DEV_BYPASS_OTP restored to false in /app/backend/.env.
+            • `sudo supervisorctl restart backend` — GET /api/ → 200 OK.
+
+          Verdict: All 38 assertions PASS. Reserve-price privacy
+          invariant holds across every documented surface (REST list,
+          REST detail, REST snapshot, REST purchases, WS per-connect
+          snapshot, WS reconnect snapshot, WS new_bid broadcast) and
+          every role (anonymous, bidder, seller-of-listing,
+          seller-of-other-listing, operator).
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        Test Sequence 51 (P0 reserve-price privacy) complete — 38/38 PASS.
+        No leaks found via REST or WS transports for any role tested.
+        DEV_BYPASS_OTP toggled true → false around the run; backend
+        restarted at the end and healthy.
+
+        Notes for main agent:
+          • The review mentioned GET /api/dealers/me/purchases — the
+            actual route in this codebase is GET /api/purchases. The
+            former returns 404. Both were checked; no leakage surface
+            on either path.
+          • §3 (seller per-listing visibility) required a Mongo flip of
+            one auction's seller_id to +919900000002's dealer id because
+            stock seed has every auction owned by the operator. The flip
+            is reverted at the end of the script, so the state is
+            unchanged after the run.
+          • One pre-existing AttributeError trace was visible in
+            backend.err.log from an earlier code state where the args
+            to _can_see_reserve were briefly reversed; the current code
+            (server.py:309) calls _can_see_reserve(viewer, out) which
+            matches the function signature and works correctly. No
+            action needed.

@@ -299,8 +299,16 @@ function FeaturedCard({ auction }: { auction: any }) {
   const endMs = auction.end_time ? new Date(auction.end_time).getTime() : 0;
   const timeLeft = Math.max(0, Math.floor((endMs - now) / 1000));
   const ending = timeLeft > 0 && timeLeft <= 60;
-  const reserveMet = auction.reserve_price && (auction.current_bid || 0) >= auction.reserve_price;
-  const noReserve = !auction.reserve_price;
+  // Reserve-price privacy: bidders never see the floor. The backend
+  // strips `reserve_price` and exposes `has_reserve` + `reserve_met`
+  // flags so the UI can surface "Reserve met / not met" without
+  // leaking the exact figure. Fall back to the legacy literal-compare
+  // ONLY for screens an operator is on (the API still returns
+  // reserve_price for them) — but here in /(tabs)/index we don't
+  // know the viewer's role, so always defer to the flags.
+  const hasReserve = auction.has_reserve !== false; // default true if undefined
+  const reserveMet = auction.reserve_met === true;
+  const noReserve  = auction.has_reserve === false;
 
   const pulse = useMemo(() => new Animated.Value(0), []);
   useEffect(() => {

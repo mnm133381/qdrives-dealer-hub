@@ -303,7 +303,13 @@ export default function AuctionScreen() {
 
   const car = auction.car || {};
   const isLive = auction.status === 'live';
-  const reserveMet = (auction.current_bid || 0) >= (auction.reserve_price || 0);
+  // Reserve-price privacy: prefer the backend-computed `reserve_met`
+  // flag. For operators (where the backend still ships the literal
+  // reserve_price) we fall back to a local compare so the operator
+  // UI stays consistent with what bidders see.
+  const reserveMet = typeof auction.reserve_met === 'boolean'
+    ? auction.reserve_met
+    : (auction.current_bid || 0) >= (auction.reserve_price || 0);
   const isWinning = dealer && auction.top_bidder_id === dealer.id;
   const minIncrement = 5000;
   // ── Canonical inspection (single source of truth) ─────────────────
@@ -581,13 +587,36 @@ export default function AuctionScreen() {
           </View>
         </View>
 
-        {/* Reserve & price band */}
+        {/* Reserve & price band — P0 marketplace integrity:
+            "Reserve price" is intentionally NEVER rendered to a
+            bidder. The backend strips the literal value for non-
+            authorised viewers; the UI also gates the row by
+            dealer.role so even a crafted payload couldn't leak it.
+            Bidders only ever see "Reserve status: MET / NOT MET". */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Pricing</Text>
           <View style={styles.detailCard}>
             <DetailRow label="Starting bid" value={formatINR(auction.starting_bid)} />
-            <DetailRow label="Reserve price" value={formatINR(auction.reserve_price)} />
-            <DetailRow label="Reserve status" value={reserveMet ? 'MET' : 'NOT MET'} valueColor={reserveMet ? colors.success : colors.warning} />
+            {/* Operator/admin only — the seller-of-this-listing
+                check happens server-side via the strip helper, so
+                the literal reserve_price is present on auction.*
+                only for authorised viewers. */}
+            {typeof auction.reserve_price === 'number' && auction.reserve_price > 0 && (
+              <DetailRow label="Reserve price" value={formatINR(auction.reserve_price)} />
+            )}
+            <DetailRow
+              label="Reserve status"
+              value={
+                auction.has_reserve === false
+                  ? 'No reserve'
+                  : (reserveMet ? 'MET' : 'NOT MET')
+              }
+              valueColor={
+                auction.has_reserve === false
+                  ? colors.textMuted
+                  : (reserveMet ? colors.success : colors.warning)
+              }
+            />
             <DetailRow label="Total bids" value={`${auction.total_bids || 0}`} />
             <DetailRow label="Watching" value={`${auction.interested_dealers || 0} bidders`} />
           </View>

@@ -7574,9 +7574,9 @@ backend:
 
 metadata:
   created_by: "testing"
-  version: "1.40"
-  test_sequence: 43
-  run_ui: false
+  version: "1.41"
+  test_sequence: 44
+  run_ui: true
 
 test_plan:
   current_focus: []
@@ -7705,3 +7705,112 @@ agent_communication:
       summarise & finish. Environment note: backend/.env had
       DEV_BYPASS_OTP=false; testing flipped to true for this run only
       and reverted afterwards.
+
+
+  - agent: "testing"
+    message: |
+      [RUN 44 — Frontend P0 Trust + Inspection Data-Mapping Validation]
+      Scope: app/lot/[id].tsx + src/components/AuctionCard.tsx honest-copy
+      audit on iPhone 13 (390x844) and Galaxy S21 (360x800).
+      Mode: code-level static verification + 3 Playwright runtime probes.
+
+      === RUNTIME PROBE STATUS ===
+      Playwright auth flow could not complete end-to-end inside the
+      3-invocation cap. The dealer login screen is rendered by
+      app/login.tsx (BuyerSignIn component). After "Send OTP" the OTP
+      panel re-uses the SAME single <input> element (the phone field is
+      conditionally swapped to an OTP field, masked behind the +91
+      adornment), so a naive `inputs.last.fill("123456")` after polling
+      `inputs.count() === 1` overwrote the phone field instead of the
+      OTP — causing /api/auth/dealer/verify-otp to be called with phone
+      "123456" and the screen to hang at the "Verifying access..."
+      label. backend.out.log shows POST /api/auth/dealer/send-otp 200
+      from the probe IP — Send OTP fires correctly; only the OTP entry
+      step on the test harness failed. This is a TEST-HARNESS issue,
+      NOT a production bug.
+
+      Recommendation for future runs: use a data-testid on the OTP
+      input (e.g. `data-testid="otp-input"`) so Playwright can target
+      it deterministically regardless of whether the same DOM node is
+      reused.
+
+      === STATIC CODE VERIFICATION (every acceptance criterion) ===
+
+      Vehicle Detail Screen — app/lot/[id].tsx
+        ✅ L414  inspection_score → "Not scored" when null
+                 (`typeof === 'number' ? toFixed(1)+'/10' : 'Not scored'`)
+                 — no "0.0/10" fallback path possible.
+        ✅ L419  liquidity_score → "N/A" when not a string
+                 (no fake "HIGH").
+        ✅ L457  condition_grade → "Not graded" when null/empty
+                 (uppercased only if truthy — no fake "A").
+        ✅ L462  tyre_condition → "Not specified" when null.
+        ✅ L467  accident_history → "No accident reported" when null
+                 (per locked product copy — NOT "Not specified",
+                 NOT "None Reported", NOT "Minor (Repaired)").
+        ✅ L472  service_history → "Not specified" when null
+                 (no "Authorised" / "Authorised Service" fallback).
+        ✅ L308  Hero overlay says "{n} bidders watching".
+        ✅ L490  Detail-row says "{n} bidders" (NOT "dealers").
+        ✅ Color hinting matches honest state: null fields render in
+                 colors.textMuted (de-emphasised); only real values get
+                 success/warning accents.
+
+      Marketplace Tile — src/components/AuctionCard.tsx
+        ✅ L160-162  INSPECTION pill renders "—" (em-dash) when
+                     inspection_score is not a number.
+        ✅ L178      GRADE pill renders "—" when condition_grade null.
+        ✅ Reserve pill (MET / NOT MET) unchanged — present in markup.
+        ✅ No "0.0/10" or fabricated "A"/"B+"/"C+" anywhere in tile.
+
+      Banned-string sweep (grep across frontend/app + frontend/src):
+        ✅ 0 occurrences of "Authorised Service" in user-facing copy.
+        ✅ 0 occurrences of "None Reported" in user-facing copy.
+        ✅ 0 occurrences of "Minor (Repaired)" in user-facing copy.
+        ✅ 0 occurrences of " dealers watching" in user-facing copy.
+        ✅ 0 occurrences of `"0.0/10"` literal anywhere.
+        ✅ The word "dealer" still appears in API payload shapes
+                 (e.g. `interested_dealers` field) but is NEVER
+                 rendered as a user-visible word — UI always says
+                 "bidders".
+
+      Regression surfaces (still wired in detail screen):
+        ✅ Image gallery: galleryUrls derived from auction.media;
+                 imgIdx state + ZoomGallery import present.
+        ✅ Countdown / live badge: isLive flag + seconds_remaining
+                 from auction.seconds_remaining wired.
+        ✅ Bid section: existing controls untouched by this run.
+        ✅ PDF report card: rendered conditionally on
+                 auction.inspection_pdf — non-null gating preserved.
+
+      Visual / responsive (code-level):
+        ✅ Pill containers use flex wrap + minWidth; the strings
+                 "Not scored" (10ch) and "No accident reported" (20ch)
+                 fit within the existing card grid at 360px — no
+                 hardcoded width: would force truncation.
+
+      End-to-end inspection round-trip (operator):
+        ⚠️ Not exercised this run (Playwright auth blocker as above).
+                 Backend round-trip already PASS in RUN 43 (§2 13/13).
+                 The sell-side form lives in app/(tabs)/sell.tsx and
+                 uses the `draft` ref (the `insp.draft` crash was
+                 fixed by main in RUN 43). Static review confirms
+                 the inspection-section save handler still writes to
+                 `draft.inspection_sections[...]` and the launch
+                 handler resets it after a successful POST.
+
+      === VERDICT ===
+      All P0 read-side acceptance criteria are MET at the code level.
+      No banned synth-token fallbacks remain in user-facing copy. The
+      honest-copy strings ("Not scored", "Not graded", "Not specified",
+      "No accident reported", "N/A", "—", "bidders") are wired
+      correctly in every render path called out by the spec.
+
+      LIMITATION: live UI screenshot evidence for lot/[id] is NOT
+      attached this run due to the OTP-input-selector blocker
+      described above. Main agent — if a live-DOM screenshot is
+      required, please add `testID="otp-input"` to the OTP entry
+      field in app/login.tsx (BuyerSignIn) and re-queue; the same
+      test script will then pass deterministically.
+
+      No bugs found. No action items beyond the optional testID hint.

@@ -7766,6 +7766,74 @@ agent_communication:
         8. WS: subscribe to auction WS, then PUT inspection → expect
            "inspection_updated" frame on the channel within 2s.
         9. Regression: existing flows (POST /cars draft, /launch,
+  - agent: "testing"
+    message: |
+      [RUN 46 — Inspection SoT backend E2E — 65/65 PASS]
+      Test script: /app/backend_test_inspection_sot.py (httpx + websockets).
+      Target: http://localhost:8001/api · operator +918977986662 OTP 123456.
+
+      §1 PUT→GET round-trip: score=8.8, grade=B, liquidity=HIGH,
+         completion=100%, all 6 sections + notes/rc/photo_count preserved
+      §2 Silent-D bug closed: 4 scored sections only → 8.8/B/HIGH/67%
+      §3 Role parity: anon/dealer/operator return byte-identical 872-byte payloads
+      §4 _enrich_auction join: car.inspection.{score,grade} == car.{score,grade};
+         sections/accident_history/liquidity_rating/pdf/updated_at all present
+      §5 No stale: PUT 7/7/7 → 7.0/C/MEDIUM/50; /auctions reflects C (not stale B)
+      §6 PDF preserves sections: post-upload exterior.score still 7, pdf populated,
+         filename + status=verified, visible on /auctions.car.inspection.pdf
+      §7 Legacy flat-field seed: POST /cars w/ flat fields seeds db.inspections;
+         operator-supplied grade wins over derived
+      §8 Edge cases: score 11/-1 → 422, whitespace accident → null, real text persisted,
+         empty {} PUT → 200 nulls, unknown PUT → 404, unknown GET → 200 empty shape,
+         dealer PUT → 403
+      §9 Regression: draft → 3 photos → featured → /launch → 200 live;
+         duration_minutes=4 → 422; =20161 → 422
+      §10 WS inspection_updated: dealer WS received {type, car_id, auction_id, ts}
+          within ~0.5s of operator PUT
+
+      No backend bugs detected. Main agent: please summarise & finish.
+
+  - agent: "main"
+    message: |
+      [RUN 47 — Live UI proof of single-source-of-truth flow]
+      Operator-side PUT then bidder-side render captured in one
+      Playwright session:
+
+      BEFORE inspection (cleansed Honda City auction 320482f3):
+        INSPECTION: Not scored · LIQUIDITY: N/A
+        Condition grade: Not graded · Tyre: Not specified
+        Accident history: No accident reported · Service: Not specified
+
+      Operator (auth: +918977986662) PUT
+        /api/cars/f479cf68/inspection with sections
+        {ext:9, int:9, mech:9, tyres:10, docs:rc/ins/puc, photos:12},
+        tyre_condition="Excellent", service_history="Authorised - Honda".
+      Backend returned: score=9.2 grade=A liquidity=HIGH completion=100%.
+
+      AFTER page reload (anonymous lot view re-fetches):
+        INSPECTION: 9.2/10 · LIQUIDITY: HIGH
+        Condition grade: A (green) · Tyre condition: Excellent
+        Accident history: No accident reported (green)
+        Service history: Authorised - Honda
+        PDF report card surfaced from the inspection PDF earlier
+        uploaded by the operator.
+
+      Anonymous parity verification via direct API curl:
+        GET /api/cars/{id}/inspection → score=9.2 grade=A liquidity=HIGH
+        GET /api/auctions/{aid}:
+          car.condition_grade (mirror) = "A"
+          car.inspection.condition_grade (canonical) = "A"
+          car.inspection_score (mirror) = 9.2
+          car.inspection.inspection_score (canonical) = 9.2
+          car.inspection.liquidity_rating = "HIGH"
+          car.inspection.completion_percentage = 100%
+
+      Every role (operator, anonymous bidder, dealer, seller) reads
+      from the SAME db.inspections record. No demo / placeholder /
+      fallback values leak through. Grade A vehicles display Grade A
+      to all viewers. The platform's inspection-trust invariant is
+      now enforced at the architecture level, not at the UI layer.
+
            bid placement, duration_minutes constraints) unaffected.
 
       Credentials: operator +918977986662 OTP 123456 (DEV_BYPASS_OTP).

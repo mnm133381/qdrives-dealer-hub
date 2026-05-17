@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions,
-  ActivityIndicator, Modal, Platform,
+  ActivityIndicator, Modal, Platform, AppState,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -116,6 +116,32 @@ export default function AuctionScreen() {
   // until/unless the WS sends a snapshot frame.
   useEffect(() => {
     load();
+  }, [load]);
+
+  // ── Visibility / foreground refetch ─────────────────────────────
+  // Authed bidders receive `inspection_updated` over WS and refetch
+  // immediately. Anonymous viewers (and any bidder whose WS got
+  // rejected) instead get refetched when they return to the tab/app
+  // foreground. Combined with the initial REST mount fetch, this
+  // closes every stale-data window without needing background
+  // polling.
+  useEffect(() => {
+    if (Platform.OS === 'web') {
+      const onVisible = () => {
+        if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+          load();
+        }
+      };
+      if (typeof document !== 'undefined') {
+        document.addEventListener('visibilitychange', onVisible);
+        return () => document.removeEventListener('visibilitychange', onVisible);
+      }
+      return;
+    }
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') load();
+    });
+    return () => sub.remove();
   }, [load]);
 
   // Silent funnel tracking — fires once per auction-id mount. The

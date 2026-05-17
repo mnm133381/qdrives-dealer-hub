@@ -6101,11 +6101,21 @@ async def on_startup():
     # service_history is null at create time). Safe to re-run on every
     # boot; once the DB is clean this matches 0 documents.
     try:
+        # Match only on UNAMBIGUOUS synth markers — strings the old
+        # random.choice seeder produced that no operator would ever
+        # type verbatim. The previous filter included "Excellent"
+        # /"Fair"/"Poor" which are perfectly valid operator tyre
+        # conditions, and wiped legitimate inspection data on every
+        # boot. Now restricted to: the parenthetical "Minor
+        # (Repaired)" accident token, the specific "None Reported"
+        # capitalization, the duplicate-key "Authorised Service"
+        # service token, and the off-ladder "B+"/"C+" grades. These
+        # four are pure synth fingerprints with zero false-positive
+        # risk against operator-entered data.
         synth_filter = {"$or": [
             {"accident_history": {"$in": ["None Reported", "Minor (Repaired)"]}},
-            {"service_history":  {"$in": ["Authorised Service", "Authorised"]}},
+            {"service_history":  {"$in": ["Authorised Service"]}},
             {"condition_grade":  {"$in": ["B+", "C+"]}},
-            {"tyre_condition":   {"$in": ["Excellent", "Fair", "Poor"]}},
         ]}
         res = await db.cars.update_many(synth_filter, {"$set": {
             "inspection_score": None,
@@ -6113,6 +6123,7 @@ async def on_startup():
             "tyre_condition":   None,
             "accident_history": None,
             "service_history":  None,
+            "liquidity_rating": None,
         }})
         if res.modified_count:
             logger.warning("[startup] purged synth inspection data from %d cars", res.modified_count)

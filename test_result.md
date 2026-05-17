@@ -8976,3 +8976,78 @@ agent_communication:
         regression. Inspection versioning / history / post-launch flag
         feature is fully green.
 
+
+
+## RUN 50 — _coerce_version() fix regression (PUT /api/cars/{id}/inspection)
+test_sequence=50. Target: http://localhost:8001/api.
+Test script: /app/backend_test_run50.py
+
+Pre-flight:
+  - Confirmed via MongoDB that legacy car 3d392121-a4b0-4556-814d-166fdcf43d0b
+    had inspections.version == "v1" (string), exactly matching the production
+    bug repro.
+  - DEV_BYPASS_OTP toggled true in /app/backend/.env, backend restarted (sleep 5).
+  - Operator login (+918977986662, OTP 123456) → 200 with role=super_admin.
+    Dealer login (+919900000002, OTP 123456) → 200.
+
+§1 Legacy-version PUT path (the actual bug) — ✅ 9/9
+  - PUT /cars/3d392121-.../inspection with the exact payload from the user's
+    screenshot → 200 (was 500 before the fix).
+  - Response body has version=2 as INTEGER (legacy "v1" coerced to 1, +1).
+  - Backend log confirms: "[inspection.upsert] car=3d392121... version=2
+    score=6.0 grade=D liq=LOW completion=100% post_launch=True".
+  - GET /cars/3d392121-.../inspection → 200, version=2 (int),
+    accident_history="No accidents", tyre_condition="Excellent",
+    service_history="Authorized Dealer" — all reflected.
+
+§2 Numeric-version round-trip — ✅ 6/6
+  - Fresh car 08d960ef-...: PUT #1 → version=1, PUT #2 → version=2,
+    PUT #3 → version=3. All ints. No regression of the RUN 48 happy path.
+
+§3 String-version edge cases — ✅ 4/4
+  Fresh car aecbd47b-.... For each, direct DB write set inspections.version
+  to the raw value, then PUT:
+  - "v999"   → response.version == 1000 ✅
+  - "abc"    → response.version == 1    ✅
+  - null     → response.version == 1    ✅
+  - 5.7      → response.version == 6    ✅ (int(5.7) → 5 → +1 = 6)
+
+§4 History endpoint regression — ✅ 5/5
+  GET /cars/3d392121-.../inspection/history → 200.
+  entries[] non-empty, top row has version=2 (int) and previous_version=1
+  (int — successfully coerced from "v1" at history-write time).
+
+§5 Cross-role parity & WS — ✅ 7/7
+  - Anon GET == operator GET == dealer GET on /cars/3d392121-.../inspection
+    (same version, inspection_score, condition_grade).
+  - Dealer WS subscribe to /api/ws/auction/{auction_id_for_legacy_car}
+    received snapshot frame, then on a triggered PUT received the
+    "inspection_updated" frame within 5s. Backend log line confirms
+    [inspection.upsert] ... version=3 ... post_launch=True (auction is live).
+
+§6 Sanity: empty payload still 422 — ✅ 2/2
+  PUT {} → 422 with detail.code=INSPECTION_EMPTY_NOT_ALLOWED. Gate intact.
+
+### Final result: 37/37 PASS, 0 FAIL.
+
+### Post-run hygiene
+  - DEV_BYPASS_OTP set back to false in /app/backend/.env.
+  - `sudo supervisorctl restart backend` — backend healthy, GET /api/ → 200.
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        RUN 50 complete. The _coerce_version() fix is fully verified end-to-end.
+        37/37 PASS, 0 FAIL.
+          • §1 (the actual production bug): legacy car 3d392121- with inspections.version="v1"
+            now returns 200 on PUT with version=2 (int). Backend log shows the upsert
+            succeeded with no ValueError.
+          • §2 numeric round-trip stays green (1 → 2 → 3 as ints).
+          • §3 edge cases all handled: "v999"→1000, "abc"→1, null→1, 5.7→6.
+          • §4 history endpoint returns 200 on the legacy car with previous_version=1
+            (coerced from "v1") as int.
+          • §5 anon/dealer/operator parity confirmed; WS inspection_updated frame
+            received within 5s of a triggered PUT.
+          • §6 empty-payload 422 gate intact (INSPECTION_EMPTY_NOT_ALLOWED).
+        DEV_BYPASS_OTP restored to false and backend restarted. No further action
+        needed on this regression — main agent can summarise and finish.

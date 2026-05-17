@@ -3910,7 +3910,20 @@ async def upsert_inspection(car_id: str, req: InspectionUpsertReq, dealer = Depe
     now = now_utc()
     existing = await db.inspections.find_one({"car_id": car_id}, {"_id": 0})
     inspection_id = existing.get("id") if existing else str(uuid.uuid4())
-    prev_version  = int((existing or {}).get("version") or 0)
+    # Legacy PDF uploads stored version as a string ("v1"/"v2"). New
+    # canonical records use an auto-incrementing int. Coerce safely
+    # so an int-typed version field is always produced even when the
+    # historical row has "v3" or no version at all.
+    def _coerce_version(raw: Any) -> int:
+        if isinstance(raw, bool):
+            return 0
+        if isinstance(raw, (int, float)):
+            return int(raw)
+        if isinstance(raw, str):
+            digits = "".join(ch for ch in raw if ch.isdigit())
+            return int(digits) if digits else 0
+        return 0
+    prev_version  = _coerce_version((existing or {}).get("version"))
     next_version  = prev_version + 1
 
     # Find the associated auction (if any) so we can flag post-launch

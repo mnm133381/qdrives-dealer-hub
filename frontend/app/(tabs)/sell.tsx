@@ -201,7 +201,7 @@ export default function Sell() {
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const { dealer } = useAuth();
-  const { draft, pdfDraft, setPdfDraft } = useInspection();
+  const { draft, pdfDraft, setPdfDraft, reset: resetInspection } = useInspection();
   const inspStats = inspectionStats(draft);
 
   // Admin-only access — non-admin dealers cannot create listings
@@ -399,17 +399,18 @@ export default function Sell() {
       return;
     }
 
-    // ── Step 3.5: Compute REAL inspection summary from the operator's
-    // saved draft (NOT random). The dealer-facing vehicle detail page
-    // renders these fields. Scoring rule: average over sections that
-    // the operator actually scored (1-10 each). Unfilled / completed-
-    // without-a-numeric-score sections do NOT pull the average down.
-    // Grade ladder (per product spec):
-    //   9.0 – 10.0 → A
-    //   8.0 – 8.99 → B
-    //   7.0 – 7.99 → C
-    //     < 7.0    → D
-    const scoreEntries = Object.values(insp.draft || {})
+    // P0 trust + data-mapping fix:
+    // Compute REAL inspection summary from the operator's saved draft
+    // (sourced from useInspection() above as `draft`). Critically,
+    // sections without a numeric score (e.g. `documents`, `photos`) are
+    // FILTERED OUT — they do not pull the average down to zero. Only
+    // sections the operator actually scored on 1–10 contribute.
+    // If no section was scored we send NULL so the bidder UI surfaces
+    // "Not scored" / "Not graded" instead of any invented number.
+    // Grade ladder (locked product spec):
+    //   9.0 – 10.0 → A     8.0 – 8.99 → B
+    //   7.0 – 7.99 → C       < 7.0    → D
+    const scoreEntries = Object.values(draft || {})
       .map((s: any) => (typeof s?.score === 'number' ? s.score : null))
       .filter((n): n is number => typeof n === 'number' && isFinite(n) && n > 0);
     let inspection_score: number | null = null;
@@ -512,13 +513,19 @@ export default function Sell() {
       console.log('[sell.launch] navigating →', nav.pathname, nav.params);
       router.push(nav as any);
 
-      // Clear form + draft for next listing
+      // Clear form + draft for next listing.
+      // CRITICAL: also reset the inspection draft so the operator's
+      // NEXT car does not silently inherit the previous car's section
+      // scores from AsyncStorage. Without this, every subsequent
+      // listing would be auto-graded with the FIRST car's inspection
+      // — the very class of trust bug we just removed from the backend.
       setForm(EMPTY_FORM);
       setErrors({});
       setTouched(new Set());
       setAiEst(null);
       try { await storage.removeItem(DRAFT_KEY); } catch {}
       setDraftRestored(false);
+      try { resetInspection(); } catch (e) { console.warn('[sell.launch] inspection reset failed', e); }
     } catch (err: any) {
       const elapsed = Date.now() - t0;
       const detail = err?.message || String(err) || 'Unknown error';

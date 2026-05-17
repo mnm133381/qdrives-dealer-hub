@@ -5624,7 +5624,11 @@ async def seed_data():
             "tyre_condition":   c.get("tyre_condition"),
             "accident_history": c.get("accident_history"),
             "service_history":  c.get("service_history"),
-            "service_history": "Authorised Service",
+            # NOTE: do NOT hardcode a fallback like "Authorised Service"
+            # here — that's the exact mock-data class the P0 trust fix
+            # removed. Seed catalog provides explicit per-car values if
+            # operations wants demo cars graded; otherwise None flows
+            # through to the renderer which shows "Not specified".
             "rc_verified": True,
             "seller_id": seller_id,
             "created_at": now,
@@ -5734,6 +5738,32 @@ async def on_startup():
         logger.warning("bid_idempotency index init: %s", exc)
     await seed_data()
     await seed_allow_lists()
+    # ── P0 trust safeguard ────────────────────────────────────────────
+    # One-time / idempotent cleanup of synth-generated inspection fields
+    # left behind by an earlier random.choice() seeder. We detect synth
+    # artifacts by their exact token signature — operator-created cars
+    # via the new code path can NEVER produce these tokens (grade ladder
+    # is locked to A/B/C/D, accident_history is free text or null,
+    # service_history is null at create time). Safe to re-run on every
+    # boot; once the DB is clean this matches 0 documents.
+    try:
+        synth_filter = {"$or": [
+            {"accident_history": {"$in": ["None Reported", "Minor (Repaired)"]}},
+            {"service_history":  {"$in": ["Authorised Service", "Authorised"]}},
+            {"condition_grade":  {"$in": ["B+", "C+"]}},
+            {"tyre_condition":   {"$in": ["Excellent", "Fair", "Poor"]}},
+        ]}
+        res = await db.cars.update_many(synth_filter, {"$set": {
+            "inspection_score": None,
+            "condition_grade":  None,
+            "tyre_condition":   None,
+            "accident_history": None,
+            "service_history":  None,
+        }})
+        if res.modified_count:
+            logger.warning("[startup] purged synth inspection data from %d cars", res.modified_count)
+    except Exception as exc:
+        logger.warning("[startup] synth inspection purge failed: %s", exc)
     # background loops
     asyncio.create_task(auction_scheduler())
 

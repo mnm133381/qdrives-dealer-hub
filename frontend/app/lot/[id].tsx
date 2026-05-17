@@ -403,10 +403,22 @@ export default function AuctionScreen() {
 
         {/* Score cards — note: MARGIN EST. removed pending real backend
             valuation logic (acquisition + reconditioning + fees + resale).
-            Will reintroduce once the calc lives in /api/admin/inventory. */}
+            Will reintroduce once the calc lives in /api/admin/inventory.
+            P0 trust fix: NEVER fabricate inspection score. If the operator
+            did not score the car, surface "Not scored" so bidders are not
+            misled. Likewise LIQUIDITY is data-driven only when the backend
+            supplies it. */}
         <View style={styles.scoreRow}>
-          <ScoreCard label="INSPECTION" value={`${(car.inspection_score || 0).toFixed(1)}/10`} accent={colors.success} />
-          <ScoreCard label="LIQUIDITY" value="HIGH" accent={colors.warning} />
+          <ScoreCard
+            label="INSPECTION"
+            value={typeof car.inspection_score === 'number' ? `${car.inspection_score.toFixed(1)}/10` : 'Not scored'}
+            accent={typeof car.inspection_score === 'number' ? colors.success : colors.textMuted}
+          />
+          <ScoreCard
+            label="LIQUIDITY"
+            value={typeof auction.liquidity_score === 'string' ? auction.liquidity_score : 'N/A'}
+            accent={typeof auction.liquidity_score === 'string' ? colors.warning : colors.textMuted}
+          />
         </View>
 
         {/* Trust strip — escrow / settlement copy removed per ops policy
@@ -428,14 +440,38 @@ export default function AuctionScreen() {
           )}
         </View>
 
-        {/* Inspection summary (highlights + PDF) */}
+        {/* Inspection summary (highlights + PDF).
+            P0 trust fix: ONLY render values that came from the operator.
+            No "A" / "Good" / "Authorised" placeholders — those create the
+            illusion of a real inspection where none exists. When a field
+            is null we surface explicit "Not scored / Not graded / Not
+            specified" copy so bidders can self-select on confidence.
+            Accident history uses the exact copy product locked in:
+            "No accident reported" (not "Minor repaired", not
+            "Not specified"). */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Inspection Summary</Text>
           <View style={styles.detailCard}>
-            <DetailRow label="Condition grade" value={car.condition_grade || 'A'} valueColor={colors.success} />
-            <DetailRow label="Tyre condition" value={car.tyre_condition || 'Good'} />
-            <DetailRow label="Accident history" value={car.accident_history || 'None Reported'} valueColor={(car.accident_history || '').includes('None') ? colors.success : colors.warning} />
-            <DetailRow label="Service history" value={car.service_history || 'Authorised'} />
+            <DetailRow
+              label="Condition grade"
+              value={car.condition_grade ? String(car.condition_grade).toUpperCase() : 'Not graded'}
+              valueColor={car.condition_grade ? colors.success : colors.textMuted}
+            />
+            <DetailRow
+              label="Tyre condition"
+              value={car.tyre_condition || 'Not specified'}
+              valueColor={car.tyre_condition ? undefined : colors.textMuted}
+            />
+            <DetailRow
+              label="Accident history"
+              value={car.accident_history || 'No accident reported'}
+              valueColor={car.accident_history ? colors.warning : colors.success}
+            />
+            <DetailRow
+              label="Service history"
+              value={car.service_history || 'Not specified'}
+              valueColor={car.service_history ? undefined : colors.textMuted}
+            />
           </View>
 
           <View style={{ marginTop: 12 }}>
@@ -451,7 +487,7 @@ export default function AuctionScreen() {
             <DetailRow label="Reserve price" value={formatINR(auction.reserve_price)} />
             <DetailRow label="Reserve status" value={reserveMet ? 'MET' : 'NOT MET'} valueColor={reserveMet ? colors.success : colors.warning} />
             <DetailRow label="Total bids" value={`${auction.total_bids || 0}`} />
-            <DetailRow label="Watching" value={`${auction.interested_dealers || 0} dealers`} />
+            <DetailRow label="Watching" value={`${auction.interested_dealers || 0} bidders`} />
           </View>
         </View>
 

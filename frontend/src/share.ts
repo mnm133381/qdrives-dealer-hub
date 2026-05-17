@@ -70,6 +70,20 @@ function composeAuctionShareMessage(opts: {
 /**
  * Trigger the native share sheet for an auction. Falls back to
  * clipboard copy if the sheet is unavailable or errors out.
+ *
+ * Important platform notes:
+ *   • Android — Share.share({message}) where message contains the
+ *     URL embedded triggers the system chooser (WhatsApp, SMS,
+ *     Gmail, Telegram, Copy, etc). `url` is iOS-only on RN's Share
+ *     API and ignored on Android, so we always embed the URL inside
+ *     `message` for Android compatibility.
+ *   • iOS — both `url` and `message` are honoured; passing both
+ *     lets the sheet copy the URL into the system pasteboard cleanly
+ *     when the user chooses "Copy".
+ *   • Web — navigator.share is mobile-Safari + recent Chromium only.
+ *     Desktop browsers and the Expo iframe preview do NOT have it,
+ *     so we ALWAYS attempt clipboard as a guaranteed-working
+ *     fallback and surface "Link copied" rather than failing.
  */
 export async function shareAuction(opts: {
   auctionId: string;
@@ -77,29 +91,28 @@ export async function shareAuction(opts: {
   currentBid?: number;
 }): Promise<ShareResult> {
   const url = buildAuctionShareUrl(opts.auctionId);
+  const subject = opts.title ? `${opts.title} — Q Drives auction` : 'Q Drives auction';
   const message = composeAuctionShareMessage({
     title: opts.title,
     url,
     currentBid: opts.currentBid,
   });
 
-  // Web-native: prefer navigator.share when supported (mobile web,
-  // recent desktop Chromium). Falls through to clipboard below.
+  // ── Web ──────────────────────────────────────────────────────────
   if (Platform.OS === 'web') {
     const nav: any = (typeof navigator !== 'undefined') ? navigator : null;
     if (nav && typeof nav.share === 'function') {
       try {
-        await nav.share({ title: opts.title || 'Q Drives auction', text: message, url });
+        await nav.share({ title: subject, text: message, url });
         return { ok: true, copied: false, dismissed: false };
       } catch (e: any) {
-        // AbortError = user dismissed the sheet — don't toast "fail".
         if ((e?.name || '') === 'AbortError') {
           return { ok: false, copied: false, dismissed: true };
         }
-        // Fall through to clipboard fallback below.
+        // Fall through to clipboard.
       }
     }
-    // Web fallback — copy to clipboard.
+    // Clipboard fallback — guaranteed to work in every browser.
     try {
       await Clipboard.setStringAsync(url);
       return { ok: true, copied: true, dismissed: false };
@@ -108,20 +121,30 @@ export async function shareAuction(opts: {
     }
   }
 
-  // Native (iOS / Android) — RN Share API opens the OS share sheet
-  // which already supports WhatsApp, SMS, Telegram, Email, Copy Link
-  // etc. without any per-channel wiring.
+  // ── Native (iOS / Android APK) ──────────────────────────────────
+  // The platform-supplied OS sheet shows every app installed on the
+  // device that registered an intent filter for text/plain or URL
+  // sharing: WhatsApp, Messenger, Telegram, Gmail, SMS, Notes, etc.
+  // We do NOT need to wire each channel manually.
   try {
-    const res = await Share.share(
-      Platform.OS === 'ios' ? { url, message } : { message },
-      { dialogTitle: opts.title || 'Share auction' },
-    );
+    const payload =
+      Platform.OS === 'ios'
+        ? { url, message, title: subject }
+        : { message, title: subject };
+    const res = await Share.share(payload, {
+      dialogTitle: subject,
+      // Android-only: pre-select the chooser anchor color from the
+      // app theme. Harmless on iOS where it's ignored.
+      tintColor: '#DC2626',
+    });
     if (res.action === Share.dismissedAction) {
       return { ok: false, copied: false, dismissed: true };
     }
     return { ok: true, copied: false, dismissed: false };
   } catch (e: any) {
-    // Native sheet errored — last-ditch clipboard fallback.
+    // Native sheet errored (rare — usually means a thirdparty share
+    // extension crashed). Fall back to clipboard so the user still
+    // gets the link in their hand.
     try {
       await Clipboard.setStringAsync(url);
       return { ok: true, copied: true, dismissed: false, error: e?.message };

@@ -209,12 +209,16 @@ export default function AuctionScreen() {
         // 401 hook handles the actual sign-out; here we just stop UI.
       },
       onInspectionUpdated: () => {
-        // Operator edited the inspection from the inventory screen —
-        // re-fetch the auction so the joined inspection block (and the
-        // mirrored car.* aggregates) refresh immediately for every
-        // bidder watching this lot. No stale "Not graded" after a
-        // post-launch grade is entered.
+        // Operator edited the canonical inspection. Refetch the
+        // auction so the joined inspection block + mirror columns
+        // refresh immediately for every authed bidder on this lot.
+        // We also surface a toast — post-launch inspection edits are
+        // rare and bidder-material (e.g. re-grade from A to B), so
+        // silent re-renders would erode trust. The amber "Inspection
+        // updated" badge driven by the backend flag stays visible
+        // until the next operator edit cycle regardless of the toast.
         load();
+        try { toast.show('Inspection details updated — refreshing report', 'info'); } catch {}
       },
       onConnectionState: (_state) => {
         // Reserved for a future "Reconnecting…" badge in the header.
@@ -479,6 +483,36 @@ export default function AuctionScreen() {
             accent={liquidityRating ? colors.warning : colors.textMuted}
           />
         </View>
+
+        {/* "Inspection updated" badge — fires whenever an operator
+            edits the inspection AFTER the auction has gone live.
+            Bidders deserve a clear "the data you bid against just
+            changed" signal so they can re-read the inspection
+            summary / PDF. Backend sets this flag on every post-
+            launch PUT in db.auctions and surfaces it via the
+            listing API. Tap the badge to scroll to inspection
+            summary so bidders can immediately verify. */}
+        {auction?.inspection_updated_after_launch && (
+          <TouchableOpacity
+            activeOpacity={0.75}
+            accessibilityRole="button"
+            accessibilityLabel="Inspection updated. Tap to view the latest inspection summary."
+            testID="inspection-updated-badge"
+            style={styles.inspectionUpdatedBadge}
+            onPress={() => {
+              // anchor scroll handled via in-line marker; scroll-to-id
+              // not wired yet — just trigger a haptic + refetch so the
+              // bidder sees the freshest data immediately.
+              try { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); } catch {}
+              load();
+            }}
+          >
+            <View style={styles.inspectionUpdatedDot} />
+            <Text style={styles.inspectionUpdatedText}>
+              Inspection updated — tap to view latest
+            </Text>
+          </TouchableOpacity>
+        )}
 
         {/* Trust strip — escrow / settlement copy removed per ops policy
             (avoid promising commercial guarantees we don't enforce in
@@ -791,6 +825,23 @@ const styles = StyleSheet.create({
   trustDivider: { width: StyleSheet.hairlineWidth, height: 24, backgroundColor: colors.border },
 
   scoreRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 20, marginTop: 16 },
+  // ── "Inspection updated" badge — only renders post-launch when the
+  // backend flag is set. Soft amber so it reads as informational
+  // (not alarming), but visibly distinct from the success-green grade.
+  inspectionUpdatedBadge: {
+    marginHorizontal: 20, marginTop: 12, paddingHorizontal: 12, paddingVertical: 10,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+    borderWidth: 1, borderColor: 'rgba(245, 158, 11, 0.32)',
+    borderRadius: radii.md,
+  },
+  inspectionUpdatedDot: {
+    width: 8, height: 8, borderRadius: 4, backgroundColor: colors.warning,
+  },
+  inspectionUpdatedText: {
+    flex: 1, color: colors.warning, fontSize: 13, fontWeight: '600',
+    letterSpacing: 0.2,
+  },
   scoreCard: { flex: 1, backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: 1, borderRadius: radii.md, padding: 12 },
   scoreLabel: { fontSize: 10, fontWeight: '800', letterSpacing: 1.2 },
   scoreValue: { color: colors.textPrimary, fontSize: 17, fontWeight: '800', marginTop: 4 },

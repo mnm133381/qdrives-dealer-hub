@@ -927,6 +927,8 @@ async def _enrich_auction(a: dict) -> dict:
     # flat fields (car.inspection_score, car.condition_grade etc.) —
     # those remain present only for backward compatibility with
     # screens that haven't been migrated yet.
+    a["inspection_updated_after_launch"] = bool(a.get("inspection_updated_after_launch"))
+    a["inspection_last_updated_at"]      = a.get("inspection_last_updated_at")
     if a["car"] is not None:
         if insp:
             car_block = a["car"]
@@ -3804,11 +3806,71 @@ async def _broadcast_inspection_update(car_id: str) -> None:
         logger.warning("inspection broadcast failed for car=%s: %s", car_id, exc)
 
 
+def _diff_inspection_for_history(prev: Optional[Dict[str, Any]], new: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute a human-readable + machine-parseable diff for the
+    audit log. Returns the set of fields that changed plus their
+    before/after values. Section-level diffs roll up to the section
+    key (no need to log every nested completed/score/notes mutation
+    individually — bidders care about per-section change, not the
+    micro-state)."""
+    prev = prev or {}
+    changed: List[Dict[str, Any]] = []
+    # Top-level scalar fields
+    for field in ("inspection_score", "condition_grade", "tyre_condition",
+                  "accident_history", "service_history", "liquidity_rating",
+                  "completion_percentage"):
+        a, b = prev.get(field), new.get(field)
+        if a != b:
+            changed.append({"field": field, "before": a, "after": b})
+    # Section-level diffs
+    prev_sections = prev.get("sections") or {}
+    new_sections  = new.get("sections")  or {}
+    for k in INSPECTION_SECTION_KEYS:
+        ps, ns = prev_sections.get(k) or {}, new_sections.get(k) or {}
+        if ps != ns:
+            changed.append({
+                "field": f"sections.{k}",
+                "before": {kk: ps.get(kk) for kk in ("completed", "score", "notes", "rc", "insurance", "puc", "photo_count") if kk in ps},
+                "after":  {kk: ns.get(kk) for kk in ("completed", "score", "notes", "rc", "insurance", "puc", "photo_count") if kk in ns},
+            })
+    return {"changes": changed, "field_count": len(changed)}
+
+
+def _payload_is_empty(req: InspectionUpsertReq) -> bool:
+    """Return True if the request would persist a *completely empty*
+    inspection — no completed sections, no scored sections, no text
+    fields. We reject these to satisfy the data-integrity rule
+    "no null inspection saves" while still allowing operators to
+    partially fill the form (any single completed section is enough
+    to pass)."""
+    if _normalise_text_field(req.accident_history): return False
+    if _normalise_text_field(req.tyre_condition):   return False
+    if _normalise_text_field(req.service_history):  return False
+    for s in (req.sections or {}).values():
+        if s.completed: return False
+        if isinstance(s.score, (int, float)) and not isinstance(s.score, bool) and float(s.score) > 0: return False
+        if _normalise_text_field(s.notes):  return False
+    return True
+
+
 @api.put("/cars/{car_id}/inspection")
 async def upsert_inspection(car_id: str, req: InspectionUpsertReq, dealer = Depends(get_current_admin)):
     car = await db.cars.find_one({"id": car_id}, {"_id": 0})
     if not car:
         raise HTTPException(status_code=404, detail="Car not found")
+
+    # ── Data integrity gate: refuse to persist a fully-empty
+    # inspection. Operator must explicitly mark at least one section
+    # completed OR provide at least one free-text field. This stops
+    # accidental wipes (e.g. mis-typed PUT) and stops bidders from
+    # ever seeing a freshly-emptied record. To genuinely reset an
+    # inspection the operator uses DELETE (not yet exposed; future
+    # admin-console feature).
+    if _payload_is_empty(req):
+        raise HTTPException(status_code=422, detail={
+            "code": "INSPECTION_EMPTY_NOT_ALLOWED",
+            "message": "Inspection payload is empty. Set at least one completed section, score, or free-text field.",
+        })
 
     # Whitelist + normalise sections — only accept the 6 known keys.
     incoming_sections: Dict[str, Any] = {}
@@ -3841,6 +3903,14 @@ async def upsert_inspection(car_id: str, req: InspectionUpsertReq, dealer = Depe
     now = now_utc()
     existing = await db.inspections.find_one({"car_id": car_id}, {"_id": 0})
     inspection_id = existing.get("id") if existing else str(uuid.uuid4())
+    prev_version  = int((existing or {}).get("version") or 0)
+    next_version  = prev_version + 1
+
+    # Find the associated auction (if any) so we can flag post-launch
+    # edits. Bidders see a "Inspection updated" badge on every live
+    # auction whose inspection_updated_at > auction.started_at.
+    auction_doc = await db.auctions.find_one({"car_id": car_id}, {"_id": 0, "id": 1, "status": 1, "started_at": 1})
+    is_live_or_ended = bool(auction_doc and auction_doc.get("status") in ("live", "ended", "closed"))
 
     doc: Dict[str, Any] = {
         "id": inspection_id,
@@ -3855,11 +3925,13 @@ async def upsert_inspection(car_id: str, req: InspectionUpsertReq, dealer = Depe
         "liquidity_rating":  derived["liquidity_rating"],
         "completion_percentage": derived["completion_percentage"],
         "sections_completed":    derived["sections_completed"],
-        # PDF metadata is preserved across upserts — the PDF upload
-        # endpoint writes to the SAME inspection doc, never to a
-        # parallel record.
+        # PDF metadata is preserved across upserts.
         "pdf": (existing or {}).get("pdf"),
-        # Audit
+        # ── Versioning / audit fields ──────────────────────────────
+        "version":      next_version,
+        "updated_by":   dealer.get("dealership_name") or dealer.get("full_name") or "Operator",
+        "updated_by_id": dealer["id"],
+        # Legacy aliases kept for back-compat with older clients.
         "uploader_id":   dealer["id"],
         "uploader_name": dealer.get("dealership_name") or dealer.get("full_name") or "Operator",
         "created_at":    (existing or {}).get("created_at") or now,
@@ -3867,12 +3939,70 @@ async def upsert_inspection(car_id: str, req: InspectionUpsertReq, dealer = Depe
     }
     await db.inspections.update_one({"car_id": car_id}, {"$set": doc}, upsert=True)
     await _mirror_inspection_to_car(car_id, doc)
+
+    # ── History append ─────────────────────────────────────────────
+    # Every PUT produces an immutable audit row. The doc carries the
+    # full BEFORE snapshot, the AFTER snapshot, and a diff list so
+    # the admin console can render "Operator X changed grade from
+    # A to B at 14:32 on 2026-05-17" without recomputing.
+    history_entry = {
+        "id":             str(uuid.uuid4()),
+        "car_id":         car_id,
+        "inspection_id":  inspection_id,
+        "version":        next_version,
+        "previous_version": prev_version,
+        "previous_values": {
+            k: (existing or {}).get(k)
+            for k in ("inspection_score", "condition_grade", "tyre_condition",
+                      "accident_history", "service_history", "liquidity_rating",
+                      "completion_percentage", "sections")
+        } if existing else None,
+        "new_values": {
+            "inspection_score": derived["inspection_score"],
+            "condition_grade":  derived["condition_grade"],
+            "tyre_condition":   tyre,
+            "accident_history": accident,
+            "service_history":  service,
+            "liquidity_rating": derived["liquidity_rating"],
+            "completion_percentage": derived["completion_percentage"],
+            "sections":         incoming_sections,
+        },
+        "diff":          _diff_inspection_for_history(existing, doc),
+        "actor_id":      dealer["id"],
+        "actor_name":    dealer.get("dealership_name") or dealer.get("full_name") or "Operator",
+        "actor_role":    dealer.get("role", "operator"),
+        "auction_status_at_update": (auction_doc or {}).get("status"),
+        "post_launch":   is_live_or_ended,
+        "timestamp":     now,
+    }
+    try:
+        await db.inspection_history.insert_one(history_entry)
+    except Exception as exc:
+        # Audit-log write failure must NOT break the operator's edit —
+        # bidder trust is preserved by the inspection doc itself.
+        logger.error("[inspection.history] failed to append for car=%s: %s", car_id, exc)
+
+    # ── Mark auction as "inspection_updated_after_launch" if live ──
+    # The flag drives the orange "Inspection updated" badge on the
+    # bidder lot screen so dealers know to re-read the report.
+    if is_live_or_ended:
+        try:
+            await db.auctions.update_one(
+                {"car_id": car_id},
+                {"$set": {
+                    "inspection_updated_after_launch": True,
+                    "inspection_last_updated_at": now,
+                }}
+            )
+        except Exception as exc:
+            logger.warning("[inspection.flag] post-launch flag write failed for car=%s: %s", car_id, exc)
+
     await _broadcast_inspection_update(car_id)
 
     logger.info(
-        "[inspection.upsert] car=%s score=%s grade=%s liq=%s completion=%s%%",
-        car_id, derived["inspection_score"], derived["condition_grade"],
-        derived["liquidity_rating"], derived["completion_percentage"],
+        "[inspection.upsert] car=%s version=%d score=%s grade=%s liq=%s completion=%s%% post_launch=%s",
+        car_id, next_version, derived["inspection_score"], derived["condition_grade"],
+        derived["liquidity_rating"], derived["completion_percentage"], is_live_or_ended,
     )
     return serialize(doc)
 
@@ -3899,9 +4029,25 @@ async def get_car_inspection(car_id: str):
             "completion_percentage": 0,
             "sections_completed":    [],
             "pdf": None,
+            "version": 0,
+            "updated_by": None,
             "updated_at": None,
         }
     return serialize(insp)
+
+
+@api.get("/cars/{car_id}/inspection/history")
+async def get_car_inspection_history(car_id: str, limit: int = 50):
+    """Returns the append-only audit log of inspection edits for a car.
+    Open read (any role) — transparency is the whole point. The list
+    is newest-first so the lot screen can render a "Recently updated"
+    timeline without client-side sorting."""
+    limit = max(1, min(int(limit or 50), 200))
+    cursor = db.inspection_history.find(
+        {"car_id": car_id}, {"_id": 0}
+    ).sort("timestamp", -1).limit(limit)
+    rows = await cursor.to_list(length=limit)
+    return {"car_id": car_id, "count": len(rows), "entries": serialize(rows)}
 
 
 @api.post("/inspections/upload")
@@ -6129,6 +6275,79 @@ async def on_startup():
             logger.warning("[startup] purged synth inspection data from %d cars", res.modified_count)
     except Exception as exc:
         logger.warning("[startup] synth inspection purge failed: %s", exc)
+
+    # ── Inspection history indexes ────────────────────────────────────
+    try:
+        await db.inspection_history.create_index([("car_id", 1), ("timestamp", -1)])
+        await db.inspection_history.create_index([("timestamp", -1)])
+    except Exception as exc:
+        logger.warning("inspection_history index init failed: %s", exc)
+
+    # ── Legacy listing backfill (single source of truth) ──────────────
+    # Any car that has flat inspection_score / condition_grade /
+    # accident_history baked in BUT no canonical db.inspections record
+    # gets one synthesised here. The backfill is read-mostly: we never
+    # overwrite an existing inspection doc, and we never invent values
+    # that weren't already on the car. Idempotent — after first sweep,
+    # subsequent boots match zero documents.
+    try:
+        backfilled = 0
+        async for c in db.cars.find({
+            "$or": [
+                {"inspection_score": {"$ne": None, "$exists": True}},
+                {"condition_grade":  {"$ne": None, "$exists": True}},
+                {"accident_history": {"$ne": None, "$exists": True}},
+            ]
+        }, {"_id": 0, "id": 1, "inspection_score": 1, "condition_grade": 1,
+            "tyre_condition": 1, "accident_history": 1, "service_history": 1,
+            "liquidity_rating": 1}):
+            cid = c.get("id")
+            if not cid:
+                continue
+            existing = await db.inspections.find_one({"car_id": cid}, {"_id": 0, "id": 1})
+            if existing:
+                continue  # never overwrite an authentic inspection record
+            score_val = c.get("inspection_score")
+            seed_sections = {k: {"completed": False} for k in INSPECTION_SECTION_KEYS}
+            if isinstance(score_val, (int, float)) and score_val and score_val > 0:
+                seed_sections["exterior"] = {"completed": True, "score": float(score_val)}
+            derived = _aggregate_inspection(seed_sections)
+            now = now_utc()
+            insp_doc = {
+                "id":             str(uuid.uuid4()),
+                "car_id":         cid,
+                "sections":       seed_sections,
+                "accident_history": c.get("accident_history"),
+                "tyre_condition":   c.get("tyre_condition"),
+                "service_history":  c.get("service_history"),
+                "inspection_score": score_val if score_val is not None else derived["inspection_score"],
+                "condition_grade":  c.get("condition_grade") or derived["condition_grade"],
+                "liquidity_rating": c.get("liquidity_rating") or derived["liquidity_rating"],
+                "completion_percentage": derived["completion_percentage"],
+                "sections_completed":    derived["sections_completed"],
+                "pdf":           None,
+                "version":       1,
+                "updated_by":    "Legacy migration",
+                "updated_by_id": "system",
+                "uploader_id":   "system",
+                "uploader_name": "Legacy migration",
+                "created_at":    now,
+                "updated_at":    now,
+            }
+            try:
+                await db.inspections.insert_one(insp_doc)
+                backfilled += 1
+            except Exception as ex:
+                # Insert failure is non-fatal — the legacy flat fields
+                # are still rendered via the mirror, so bidders still
+                # see consistent data; only the audit-trail richness
+                # is lost for that one car.
+                logger.warning("[startup.backfill] insert failed for car=%s: %s", cid, ex)
+        if backfilled:
+            logger.warning("[startup] legacy inspection backfill: synthesised %d records", backfilled)
+    except Exception as exc:
+        logger.warning("[startup] legacy backfill failed: %s", exc)
+
     # background loops
     asyncio.create_task(auction_scheduler())
 

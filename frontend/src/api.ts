@@ -197,6 +197,20 @@ export const api = {
   }) => request<any>(`/cars/${carId}/inspection`, {
     method: 'PUT', body: JSON.stringify(payload),
   }),
+  /** Append-only audit trail of inspection edits. Open read — any
+   *  role gets the same transparency feed. */
+  getInspectionHistory: (carId: string, limit = 50) =>
+    request<{
+      car_id: string;
+      count: number;
+      entries: Array<{
+        id: string; version: number; previous_version: number;
+        previous_values: any; new_values: any; diff: { changes: any[]; field_count: number };
+        actor_id: string; actor_name: string; actor_role: string;
+        auction_status_at_update: string | null; post_launch: boolean;
+        timestamp: string;
+      }>;
+    }>(`/cars/${carId}/inspection/history?limit=${limit}`),
 
   // ---- Pre-launch / draft workflow (operator) ----
   launchReadiness: (auctionId: string) =>

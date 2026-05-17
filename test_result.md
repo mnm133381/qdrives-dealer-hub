@@ -7494,6 +7494,85 @@ backend:
               free.
           No backend bugs found in this surface. No action required.
 
+  - task: "Inspection versioning + audit history + post-launch flag + integrity gate (RUN 48)"
+    implemented: true
+    working: false
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: |
+          [RUN 48 — INSPECTION VERSIONING + HISTORY + POST-LAUNCH FLAG —
+           43/48 PASS · 2 P0/P1 backend bugs found]
+          Harness: /app/backend_test_run48.py (httpx + websockets).
+          Target: http://localhost:8001/api.
+          DEV_BYPASS_OTP toggled true for the run, restored to false at end.
+
+          PASSING (architecture is sound):
+            §1 Versioning           10/10 — version auto-increments
+                                          1→2→3, updated_by populated,
+                                          updated_at advances past created_at.
+            §3 Post-launch flag     11/12 — flag flips True when PUT
+                                          lands on a live auction;
+                                          inspection_last_updated_at
+                                          surfaces on /api/auctions/{aid}
+                                          for both anon AND dealer.
+            §4 Data-integrity gate   5/5  — 422 INSPECTION_EMPTY_NOT_ALLOWED
+                                          on truly empty payloads; partial
+                                          payloads (1 completed section OR
+                                          free-text alone) accepted.
+            §5 Backfill idempotency  4/4  — Restart preserves db.inspections
+                                          count (32 → 32); no "legacy
+                                          inspection backfill" log line on
+                                          the most recent boot.
+            §6 Role parity           3/5  — anon/dealer/operator GETs on
+                                          /api/cars/{id}/inspection are
+                                          byte-identical (932 bytes).
+            §7 WS broadcast          3/4  — inspection_updated frame fires
+                                          within 5s of PUT; snapshot frame
+                                          on reconnect.
+            §8 Regression            5/5  — duration_minutes bounds still
+                                          422, bid placement on live works,
+                                          PDF upload preserves sections.
+
+          ❌ P0 BUG #1 — GET /api/cars/{car_id}/inspection/history
+             returns HTTP 500 on every request.
+             File: backend/server.py:4050
+             Code: `"entries": serialize(rows)` — serialize() helper at
+                   line 271 calls `doc.items()` but `rows` is a list of
+                   dicts. Traceback in backend.err.log:
+                       AttributeError: 'list' object has no attribute 'items'
+             Net effect: the entire new audit-trail/transparency feature
+             is unreachable. The audit DATA is being written correctly
+             (verified via backend logs: [inspection.upsert] ... version=3
+             post_launch=True) — only the read path is broken.
+             Fix: change to `"entries": [serialize(r) for r in rows]`
+                  OR use FastAPI's jsonable_encoder.
+             Blocks: §2 (12 history assertions), §3.10 (post_launch in
+                     history), all bidder/dealer transparency views that
+                     consume this endpoint.
+
+          ❌ P1 BUG #2 — GET /api/auctions/{aid}.car.inspection block
+             is missing the new audit fields `version` and `updated_by`.
+             File: backend/server.py:935-959 (_enrich_auction).
+             The canonical inspection doc has them (the flat endpoint
+             GET /api/cars/{id}/inspection returns them — §1.7 passed);
+             the join inside _enrich_auction just doesn't copy them
+             into the car.inspection sub-block.
+             Fix (3-line patch at server.py:935):
+                 "version":        insp.get("version"),
+                 "updated_by":     insp.get("updated_by"),
+                 "updated_by_id":  insp.get("updated_by_id"),
+             Blocks: §6.4, §6.5, and §7.4 (WS reconnect snapshot also
+                     uses _enrich_auction so the version isn't surfaced
+                     to a reconnecting client).
+
+          Once both fixes land, re-run /app/backend_test_run48.py;
+          all 48 assertions should pass.
+
 backend:
   - task: "P0 Trust + Data Mapping fix (synth purge + inspection round-trip)"
     implemented: true
@@ -7897,6 +7976,114 @@ agent_communication:
 
           car.inspection.liquidity_rating = "HIGH"
           car.inspection.completion_percentage = 100%
+
+  - agent: "main"
+    message: |
+      [RUN 48 — Inspection versioning + history + post-launch flag +
+       data-integrity gate + legacy backfill + bidder transparency]
+
+      BACKEND (server.py):
+      • Inspection doc gains: `version` (auto-increment), `updated_by`,
+        `updated_by_id`. Preserves `uploader_id` / `uploader_name`
+        aliases for back-compat.
+      • New collection `db.inspection_history` — every PUT inserts an
+        immutable audit row with: previous_version, previous_values,
+        new_values, diff{changes,field_count}, actor_id, actor_name,
+        actor_role, auction_status_at_update, post_launch, timestamp.
+      • New endpoint GET /api/cars/{car_id}/inspection/history?limit=
+        N (open read, newest-first; defaults to 50, max 200).
+      • Data-integrity gate: PUT with completely empty payload (no
+        completed sections, no scored sections, no text fields) →
+        422 {code: INSPECTION_EMPTY_NOT_ALLOWED}.
+      • Post-launch flag: when an inspection PUT lands on an auction
+        whose status ∈ {live, ended, closed}, db.auctions gets
+        `inspection_updated_after_launch=true` and
+        `inspection_last_updated_at=<now>`. Surfaced on the listing
+        API (GET /api/auctions/{id} and GET /api/auctions).
+      • Startup migration: legacy backfill — for every car with flat
+        inspection fields but no canonical inspection record,
+        synthesise a stable inspection doc using the same aggregation
+        engine. Idempotent. First sweep on this deployment created 4
+        records.
+      • Indexes: db.inspection_history[(car_id, timestamp desc)] +
+        [(timestamp desc)] for global audit views.
+
+      FRONTEND (app/lot/[id].tsx, src/api.ts):
+      • api.getInspectionHistory(carId, limit?) → audit trail client.
+      • New amber "Inspection updated — tap to view latest" pill
+        renders on every lot where auction.inspection_updated_after
+        _launch is true. Tap → light haptic + load(). Backend's WS
+        `inspection_updated` frame also calls load() AND surfaces a
+        toast "Inspection details updated — refreshing report" so
+        authed bidders watching live get an instant signal.
+
+      Please run the comprehensive backend regression (test_sequence
+      =48):
+
+      §1 Versioning
+        - Fresh car, PUT inspection: response.version should equal 1.
+          PUT again with different scores: response.version=2.
+          GET inspection: version persisted; updated_by reflects
+          actor's dealership_name; updated_at advanced.
+
+      §2 History audit trail
+        - GET /api/cars/{id}/inspection/history → newest-first array.
+        - Each entry has previous_values (null on version 1), new
+          _values (full snapshot), diff.changes covering all changed
+          fields and sections, actor_id, actor_name, actor_role,
+          timestamp.
+        - PUT a 3rd time → history length=3.
+        - Limit param honoured (default 50, max 200).
+
+      §3 Post-launch flag
+        - On a NEW car (draft state): PUT inspection → auction stays
+          unflagged.
+        - Launch the auction → status=live.
+        - PUT inspection again → auction.inspection_updated_after
+          _launch=true, inspection_last_updated_at=<now>.
+        - GET /api/auctions/{auction_id} (anon + authed): flag
+          present on payload root.
+        - History entry for the post-launch PUT should have
+          post_launch=true, auction_status_at_update="live".
+
+      §4 Data-integrity gate
+        - PUT with totally empty body {} → 422 INSPECTION_EMPTY_NOT
+          _ALLOWED.
+        - PUT with one completed section but no score → 200 (allowed,
+          partial inspection is fine).
+        - PUT with only accident_history="hit a kerb" → 200 (free
+          text alone counts as content).
+        - PUT with all sections at completed=false AND null text
+          fields AND no scores → 422.
+
+      §5 Legacy backfill idempotency
+        - Re-run backend startup migration (the boot hook). On boot
+          #2 the backfill should match 0 documents (already synthed).
+        - Confirm no over-write: a car that DID have an inspection
+          record before the boot still has its actual data, not the
+          synthesised stub.
+
+      §6 Cross-role parity (regression of RUN 46)
+        - GET /api/cars/{id}/inspection anon == dealer == operator
+          (byte-identical).
+        - GET /api/auctions/{id} surfaces version + updated_by inside
+          car.inspection.
+
+      §7 WS / reconnect
+        - Subscribe dealer WS to /api/ws/auction/{aid}.
+        - PUT inspection → expect "inspection_updated" frame within
+          3s.
+        - Disconnect WS, PUT inspection while disconnected,
+          reconnect → snapshot frame on reconnect should reflect the
+          new inspection values.
+
+      §8 Regression
+        - duration_minutes constraints (5..20160), draft → launch,
+          bid placement, PDF upload preserving sections — all still
+          work.
+
+      Operator phone +918977986662 OTP 123456 (DEV_BYPASS_OTP=true
+      for the duration of the test; revert after).
 
       Every role (operator, anonymous bidder, dealer, seller) reads
       from the SAME db.inspections record. No demo / placeholder /
@@ -8391,3 +8578,215 @@ agent_communication:
       No HARD FAILs. No banned synth tokens. No role-parity
       regressions. The Honda City inspection SoT renders correctly
       across every code path exercised.
+
+  - agent: "testing"
+    message: |
+      [RUN 48 — Inspection versioning + history + post-launch flag + data-integrity gate]
+      test_sequence=48. Target: http://localhost:8001/api.
+      Operator +918977986662 (super_admin) · Dealer +919900000001.
+      DEV_BYPASS_OTP toggled true for the run, reverted to false at end.
+      Test harness: /app/backend_test_run48.py (httpx + websockets).
+
+      ===== RESULTS: 43 PASS / 5 FAIL =====
+
+      === §1 Versioning — 10/10 PASS ===
+        ✅ §1.0  POST /api/cars draft → 200 (car_id=34d21edd, aid=76455166)
+        ✅ §1.1  PUT inspection v1 → 200
+        ✅ §1.2  response.version == 1
+        ✅ §1.3  PUT inspection v2 (score=7) → 200
+        ✅ §1.4  response.version == 2
+        ✅ §1.5  inspection_score == 7.0 (re-derived)
+        ✅ §1.6  GET /api/cars/{id}/inspection → 200
+        ✅ §1.7  GET version == 2 (persisted across upsert)
+        ✅ §1.8  updated_by populated (= operator's full_name/dealership_name)
+        ✅ §1.9  updated_at advanced past created_at
+
+      === §2 Audit trail — 1/2 PASS (CRITICAL BACKEND BUG) ===
+        ❌ §2.1  GET /api/cars/{car_id}/inspection/history → HTTP 500
+                 Body: "Internal Server Error"
+                 ROOT CAUSE (server.py:4050):
+                   return {"car_id": car_id, "count": len(rows),
+                           "entries": serialize(rows)}
+                 `serialize()` (server.py:271) iterates `doc.items()`, but
+                 the caller passes a list of dicts. Stack trace:
+                   AttributeError: 'list' object has no attribute 'items'
+                 NET EFFECT: the entire new audit-trail endpoint is
+                 unreachable; bidder transparency feature is broken.
+                 FIX (one-line):
+                   "entries": [serialize(r) for r in rows]
+                   OR use FastAPI's jsonable_encoder.
+                 Cascading failures: §2.2-§2.19 (history shape, version
+                 sequence, diff/changes, actor metadata, limit honoured)
+                 are all blocked by this bug — none were exercisable.
+                 The underlying audit-log writes ARE functional —
+                 db.inspection_history.insert_one runs every PUT (verified
+                 indirectly via §3.10 attempts and backend logs).
+                 The bug is purely on the read path.
+
+      === §3 Post-launch flag — 11/12 PASS ===
+        ✅ §3.0  draft car (a4667674) + auction (0e6994ee) created
+        ✅ §3.1  PUT inspection on draft → 200
+        ✅ §3.2  inspection_updated_after_launch == False on draft
+        ✅ §3.3  3 photos uploaded via /api/media/upload (real JPEG)
+        ✅ §3.4  POST /cars/{id}/media/featured/{mid} → 200
+        ✅ §3.5  POST /admin/auctions/{aid}/launch (body={duration_minutes:60})
+                 → 200, status=live
+        ✅ §3.6  auction.status == "live"
+        ✅ §3.7  PUT inspection on live auction → 200
+        ✅ §3.8a anon  GET /api/auctions/{aid}.inspection_updated_after_launch == True
+        ✅ §3.8b anon  inspection_last_updated_at present and ISO-formatted
+        ✅ §3.9a dealer GET .inspection_updated_after_launch == True
+        ✅ §3.9b dealer inspection_last_updated_at present
+        ❌ §3.10 GET /api/cars/{car_id}/inspection/history → HTTP 500
+                 (same bug as §2.1 — cannot verify post_launch=True flag
+                 in the history row OR auction_status_at_update=="live").
+                 BACKEND LOG CONFIRMS the row IS being written correctly:
+                   [inspection.upsert] car=a4667674... version=3
+                   score=5.0 ... post_launch=True
+                 So the audit data is captured; only the read endpoint
+                 cannot deserialize it.
+
+      === §4 Data-integrity gate — 5/5 PASS ===
+        ✅ §4.1a PUT empty body {} → 422
+        ✅ §4.1b detail.code == "INSPECTION_EMPTY_NOT_ALLOWED"
+                 with message "Inspection payload is empty. Set at
+                 least one completed section, score, or free-text field."
+        ✅ §4.2  PUT {"sections":{"exterior":{"completed":true}}} → 200
+                 (partial inspection allowed)
+        ✅ §4.3  PUT {"accident_history":"hit a kerb"} → 200
+                 (free-text alone counts as content)
+        ✅ §4.4  PUT {sections all completed=false, accident/tyre/service null}
+                 → 422 INSPECTION_EMPTY_NOT_ALLOWED
+
+      === §5 Legacy backfill idempotency — 4/4 PASS ===
+        ✅ §5.1  db.inspections count BEFORE restart = 32 (read via motor)
+        ✅ §5.2  Restarted backend via sudo supervisorctl restart backend;
+                 count AFTER restart = 32 (unchanged → migration is idempotent)
+        ✅ §5.3  Backend up after restart, GET /api/ → 200
+        ✅ §5.4  Grep of /var/log/supervisor/backend.err.log on the most
+                 recent boot: no "[startup] legacy inspection backfill"
+                 log line (i.e. backfilled 0 documents → not emitted at all).
+
+      === §6 Cross-role parity — 3/5 PASS (2 BACKEND GAPS) ===
+        ✅ §6.1  GET /api/cars/{id}/inspection: anon=200, dealer=200, operator=200
+        ✅ §6.2  anon body == dealer body (932 bytes, byte-identical)
+        ✅ §6.3  anon body == operator body (byte-identical)
+        ❌ §6.4  GET /api/auctions/{aid} → car.inspection.version is MISSING.
+                 insp_keys observed = ['accident_history','car_id',
+                 'completion_percentage','condition_grade','id',
+                 'inspection_score','liquidity_rating','pdf','sections',
+                 'sections_completed','service_history','tyre_condition',
+                 'updated_at']
+                 ROOT CAUSE (server.py:935-959, _enrich_auction):
+                   The joined car_block["inspection"] dict does NOT
+                   include "version" or "updated_by", even though the
+                   review spec §6 requires:
+                   "car.inspection.version + car.inspection.updated_by present".
+                 FIX (3-line patch):
+                   Add to the car_block["inspection"] = {...} dict at
+                   server.py:935: "version": insp.get("version"),
+                                  "updated_by": insp.get("updated_by"),
+                                  "updated_by_id": insp.get("updated_by_id"),
+                 NOTE: GET /api/cars/{id}/inspection DOES include version
+                       (§1.7 passed). The bug is only on the join inside
+                       the auction enrichment path.
+        ❌ §6.5  car.inspection.updated_by is MISSING (same root cause as §6.4)
+
+      === §7 WS broadcast — 3/4 PASS ===
+        ✅ §7.1  Dealer WS to /api/ws/auction/{aid} → snapshot received on connect
+        ✅ §7.2  PUT inspection in parallel → "inspection_updated" frame
+                 received within 5s on the live socket
+        ✅ §7.3  Disconnected, PUT again (version bumped from 3 → 4 in backend logs),
+                 reconnected → fresh snapshot frame received (keys = ['type',
+                 'auction','seq','server_ns'])
+        ❌ §7.4  Snapshot does NOT surface the latest inspection version.
+                 snap_version=None (because car.inspection.version is not
+                 in the snapshot payload — same root cause as §6.4 since
+                 the WS snapshot uses _enrich_auction).
+                 So even though the inspection IS the latest version, a
+                 reconnecting client cannot tell from the snapshot what
+                 version it has. Fix is the same 3-line patch in
+                 _enrich_auction.
+
+      === §8 Regression — 5/5 PASS ===
+        ✅ §8.1a duration_minutes=4 → 422 (under min)
+        ✅ §8.1b duration_minutes=20161 → 422 (over max)
+        ✅ §8.2  Bid placement on live auction (dealer +919900000001
+                 bid current_bid+5000 = 605000) → 200
+                 {"success":true,"bid":{...,"dealer_name":"Apex Premium Mo..."}}
+        ✅ §8.3a Inspection PUT before PDF upload → 200
+        ✅ §8.3b POST /api/inspections/upload (real PDF, 322 bytes) → 200
+        ✅ §8.3c sections preserved across PDF upload
+                 (exterior={'completed':true,'score':8.0,'notes':'no scratches'})
+
+      ===== HTTP CODE SUMMARY =====
+        POST /api/auth/operator/send-otp                          → 200
+        POST /api/auth/operator/verify-otp                        → 200
+        POST /api/auth/dealer/send-otp                            → 200
+        POST /api/auth/dealer/verify-otp                          → 200
+        POST /api/cars                                            → 200, 422 (duration bounds)
+        PUT  /api/cars/{id}/inspection                            → 200, 422 (empty payload)
+        GET  /api/cars/{id}/inspection                            → 200 (anon/dealer/op)
+        GET  /api/cars/{id}/inspection/history                    → 500 (BROKEN)
+        GET  /api/auctions/{aid}                                  → 200 (anon + dealer)
+        POST /api/media/upload                                    → 200
+        POST /api/cars/{id}/media/featured/{mid}                  → 200
+        POST /api/admin/auctions/{aid}/launch                     → 200
+        POST /api/auctions/{aid}/bid                              → 200
+        POST /api/inspections/upload                              → 200
+        WS   /api/ws/auction/{aid}?token=...                      → 101 + snapshot
+                                                                    + inspection_updated frame
+
+      ===== CRITICAL BACKEND BUGS FOUND (RUN 48) =====
+      1. ❌ GET /api/cars/{car_id}/inspection/history → 500 Internal Server Error
+         File: backend/server.py:4050
+         Code: `"entries": serialize(rows)` — serialize() helper only
+               handles a single dict, not a list. The endpoint is
+               completely unreachable. This is the core new feature of
+               RUN 48 and it's broken on every request.
+         Fix:  Replace with `"entries": [serialize(r) for r in rows]`.
+         Severity: P0 (entire transparency feature broken).
+
+      2. ❌ GET /api/auctions/{aid}.car.inspection block missing
+            `version` + `updated_by` keys.
+         File: backend/server.py:935-959 (_enrich_auction join).
+         The canonical inspection block joined onto auction.car.inspection
+         is missing the two NEW audit fields shipped in RUN 48. The flat
+         endpoint GET /api/cars/{id}/inspection exposes them correctly
+         (§1.7 PASS), so the canonical doc has them — the join just
+         doesn't surface them.
+         Fix:  Add "version", "updated_by", "updated_by_id" to the
+               car_block["inspection"] dict literal at server.py:935.
+         Severity: P1 (spec §6 unmet; cascades into §7.4 WS snapshot).
+
+      ===== NON-BLOCKERS / CAVEATS =====
+      • A 429 "Please wait a few seconds before requesting another OTP"
+        appeared once due to back-to-back send-otp calls within the
+        same minute. Resolved by adding a 30s sleep between runs.
+        This is correct rate-limiter behaviour, not a bug.
+      • The §3.10 history check fails ONLY because of bug #1 above.
+        Direct backend log inspection confirms post_launch=True is
+        being written into the history doc by the upsert path:
+          [inspection.upsert] car=a4667674... version=3 ... post_launch=True
+        So the audit DATA is captured; only the read endpoint can't
+        serialize it for transport.
+
+      ===== ENVIRONMENT =====
+      DEV_BYPASS_OTP=true was set in /app/backend/.env for the
+      duration of the run. After the test completed, DEV_BYPASS_OTP
+      was restored to false and backend restarted. Verified post-run:
+        $ grep DEV_BYPASS /app/backend/.env
+        DEV_BYPASS_OTP=false
+        $ curl http://localhost:8001/api/
+        {"service":"Q Drives API","status":"ok"}
+
+      ===== VERDICT =====
+      Architecture is sound (versioning, post-launch flag, integrity gate,
+      backfill idempotency, WS broadcast, regression all pass). The two
+      bugs above are localized, well-understood, and have small, surgical
+      fixes. Once main agent applies them:
+        • Fix bug #1: 1-line change at server.py:4050.
+        • Fix bug #2: 3-line addition at server.py:935.
+      …then §2 (12 history-trail assertions), §3.10, §6.4-5, and §7.4
+      will all pass. Re-run /app/backend_test_run48.py to confirm.
+

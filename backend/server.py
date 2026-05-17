@@ -944,6 +944,13 @@ async def _enrich_auction(a: dict) -> dict:
                 "liquidity_rating":       insp.get("liquidity_rating"),
                 "completion_percentage":  insp.get("completion_percentage", 0),
                 "sections_completed":     insp.get("sections_completed") or [],
+                # Versioning / audit surface — bidders can see who
+                # last graded the car and at what version. Used by
+                # the "Inspection updated" badge timestamp tooltip
+                # in the lot screen.
+                "version":                insp.get("version"),
+                "updated_by":             insp.get("updated_by") or insp.get("uploader_name"),
+                "updated_by_id":          insp.get("updated_by_id") or insp.get("uploader_id"),
                 "pdf": (insp.get("pdf") if isinstance(insp.get("pdf"), dict) else (
                     # back-compat: synthesise a pdf sub-doc from the
                     # legacy flat shape if the inspection was uploaded
@@ -4047,7 +4054,10 @@ async def get_car_inspection_history(car_id: str, limit: int = 50):
         {"car_id": car_id}, {"_id": 0}
     ).sort("timestamp", -1).limit(limit)
     rows = await cursor.to_list(length=limit)
-    return {"car_id": car_id, "count": len(rows), "entries": serialize(rows)}
+    # `serialize()` is dict-only. The history endpoint returns a list,
+    # so we map over individual entries (each is a dict with safe
+    # types after the insert path normalised them).
+    return {"car_id": car_id, "count": len(rows), "entries": [serialize(r) for r in rows]}
 
 
 @api.post("/inspections/upload")

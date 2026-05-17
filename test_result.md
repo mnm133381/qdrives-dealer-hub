@@ -8790,3 +8790,81 @@ agent_communication:
       …then §2 (12 history-trail assertions), §3.10, §6.4-5, and §7.4
       will all pass. Re-run /app/backend_test_run48.py to confirm.
 
+
+## RUN 48 v2 — Re-verification after surgical fixes (testing agent, 2026-05-17)
+
+Test script: /app/backend_test_run48.py (unchanged from RUN 48)
+Target: http://localhost:8001/api
+Operator: +918977986662, Dealer: +919900000001, OTP: 123456
+DEV_BYPASS_OTP toggled true for run, restored to false + backend restarted afterwards.
+
+### Fixes verified
+1. backend/server.py inspection/history endpoint now serialises rows via `[serialize(r) for r in rows]` (list-level fix) — endpoint returns 200 instead of 500.
+2. `_enrich_auction` now exposes `version`, `updated_by`, `updated_by_id` inside `auction.car.inspection` (confirmed in §6.4/§6.5 and §7.4 keys list).
+
+### Result: 67/67 PASS, 0 FAIL (was 55/67 in RUN 48)
+
+Assertions that flipped FAIL → PASS (12 previously blocked + 3 new shape checks):
+
+§2 (audit trail history endpoint, was 1/2 PASS, +12 newly green):
+  - §2.1 history status → HTTP 200 (was 500 / AttributeError)
+  - §2.2 history shape keys == {car_id, count, entries}
+  - §2.3 count == 2
+  - §2.4 entries length == 2
+  - §2.5 entries[0].version == 2
+  - §2.6 entries[0].previous_version == 1
+  - §2.7 entries[0].previous_values not null (8 keys)
+  - §2.8 entries[0].new_values has exactly the 8 expected keys
+    {inspection_score, condition_grade, tyre_condition, accident_history,
+     service_history, liquidity_rating, completion_percentage, sections}
+  - §2.9 diff.changes is non-empty (6 changes recorded)
+  - §2.10 actor_id/name/role all present (super_admin)
+  - §2.11 timestamp ISO-formatted with TZ offset
+  - §2.12–§2.14 entries[1] base-version semantics correct (v=1, prev=0, prev_values=null)
+  - §2.15–§2.19 3rd PUT + limit=1 paging all PASS
+  - §3.10 newest history entry post_launch == True
+  - §3.11 newest history entry auction_status_at_update == 'live'
+
+§6 (cross-role parity in auction join):
+  - §6.4 auction.car.inspection.version present (=2). Keys now include
+    `version`, `updated_by`, `updated_by_id` alongside the existing
+    `inspection_score`, `condition_grade`, `sections`, etc.
+  - §6.5 auction.car.inspection.updated_by present (='Personal')
+
+§7 (WS reconnect snapshot uses _enrich_auction):
+  - §7.4 reconnect snapshot reflects latest inspection version
+    (snap_version=4 == new_version=4) — the snapshot now carries the
+    fresh version inside `auction.car.inspection.version` after a post-
+    launch PUT, confirming _enrich_auction is the source of truth on
+    re-subscribe.
+
+### No regressions
+All previously-green sections remain green:
+  - §1 versioning (9/9)
+  - §3 post-launch flag — anon + dealer GETs (10/10)
+  - §4 data-integrity gate including INSPECTION_EMPTY_NOT_ALLOWED code (5/5)
+  - §5 backfill idempotency — count 37 → 37 after backend restart, no
+    "[startup] legacy inspection backfill" line emitted on most recent boot (4/4)
+  - §6.1–§6.3 byte-identical bodies across anon/dealer/operator GETs (3/3)
+  - §7.1–§7.3 WS snapshot + inspection_updated broadcast (3/3)
+  - §8 regression — duration_minutes bounds, dealer bid on live, PDF
+    upload preserves sections (6/6)
+
+### Post-run hygiene
+  - DEV_BYPASS_OTP=false written back to /app/backend/.env
+  - `sudo supervisorctl restart backend` — backend back up; GET /api/ → 200
+
+agent_communication:
+    - agent: "testing"
+      message: |
+        RUN 48 v2 complete. Both surgical fixes verified end-to-end against
+        the unchanged backend_test_run48.py harness. 12 audit-trail
+        assertions blocked in RUN 48 are now PASS; the version /
+        updated_by / updated_by_id keys are present in
+        auction.car.inspection (both REST join and WS reconnect snapshot).
+        67/67 PASS, 0 FAIL. DEV_BYPASS_OTP restored to false and backend
+        restarted. No regressions detected across §1, §3 anon/dealer paths,
+        §4 integrity, §5 backfill idempotency, §7 WS broadcast, or §8
+        regression. Inspection versioning / history / post-launch flag
+        feature is fully green.
+

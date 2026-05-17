@@ -489,6 +489,47 @@ export default function Sell() {
         console.warn('[sell.launch] unexpected status', res.auction.status);
       }
 
+      // ── P0 SOURCE-OF-TRUTH SYNC ──────────────────────────────────
+      // Push the full per-section breakdown to the canonical
+      // db.inspections record so every role (operator / seller /
+      // buyer / bidder) reads identical data. The car was just
+      // created with aggregated values via create_car's legacy path;
+      // this PUT now overwrites those aggregates with values derived
+      // from the actual section scores plus per-section notes.
+      // Failure does NOT block the launch — the car already has
+      // baseline aggregates from create_car. Operator can retry
+      // later from the inspection edit screen.
+      try {
+        const sectionsForApi: Record<string, any> = {};
+        for (const [k, v] of Object.entries(draft || {})) {
+          const s: any = v || {};
+          const out: any = { completed: Boolean(s.completed) };
+          if (typeof s.score === 'number' && isFinite(s.score) && s.score > 0) {
+            out.score = s.score;
+          }
+          if (typeof s.notes === 'string' && s.notes.trim()) out.notes = s.notes.trim();
+          if (k === 'documents') {
+            out.rc        = Boolean(s.rc);
+            out.insurance = Boolean(s.insurance);
+            out.puc       = Boolean(s.puc);
+          }
+          if (k === 'photos' && typeof s.photoCount === 'number') {
+            out.photo_count = s.photoCount;
+          }
+          sectionsForApi[k] = out;
+        }
+        const insPayload = {
+          sections: sectionsForApi,
+          accident_history: accident_history,
+          tyre_condition:   null,   // not yet captured in the form;
+          service_history:  null,   // both flow through future edit UI
+        };
+        await api.putInspection(res.car.id, insPayload);
+        console.log('[sell.launch] inspection canonicalised on backend');
+      } catch (insErr: any) {
+        console.error('[sell.launch] inspection PUT failed (non-blocking)', insErr);
+      }
+
       // Attach inspection PDF (if drafted in this session) to the new car
       if (pdfDraft && res?.car?.id) {
         try {

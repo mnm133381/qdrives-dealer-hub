@@ -182,6 +182,14 @@ export default function AuctionScreen() {
         // Auth bumped server-side — bounce to login. Auth provider's
         // 401 hook handles the actual sign-out; here we just stop UI.
       },
+      onInspectionUpdated: () => {
+        // Operator edited the inspection from the inventory screen —
+        // re-fetch the auction so the joined inspection block (and the
+        // mirrored car.* aggregates) refresh immediately for every
+        // bidder watching this lot. No stale "Not graded" after a
+        // post-launch grade is entered.
+        load();
+      },
       onConnectionState: (_state) => {
         // Reserved for a future "Reconnecting…" badge in the header.
       },
@@ -268,6 +276,21 @@ export default function AuctionScreen() {
   const reserveMet = (auction.current_bid || 0) >= (auction.reserve_price || 0);
   const isWinning = dealer && auction.top_bidder_id === dealer.id;
   const minIncrement = 5000;
+  // ── Canonical inspection (single source of truth) ─────────────────
+  // Prefer the joined inspection object served by _enrich_auction.
+  // Fall back to legacy flat car.* columns only if the join is missing
+  // (older backends / partially-migrated docs). Once every lot screen
+  // is on this contract we can delete the fallbacks.
+  const insp = (car.inspection || {}) as any;
+  const inspectionScore = (typeof insp.inspection_score === 'number')
+    ? insp.inspection_score
+    : (typeof car.inspection_score === 'number' ? car.inspection_score : null);
+  const conditionGrade = insp.condition_grade ?? car.condition_grade ?? null;
+  const liquidityRating = insp.liquidity_rating ?? null;
+  const tyreCondition = insp.tyre_condition ?? car.tyre_condition ?? null;
+  const accidentHistory = insp.accident_history ?? car.accident_history ?? null;
+  const serviceHistory = insp.service_history ?? car.service_history ?? null;
+  const inspectionPdf = insp.pdf || auction.inspection_pdf || null;
   const nextBid1 = (auction.current_bid || 0) + minIncrement;
   const nextBid2 = (auction.current_bid || 0) + minIncrement * 4;
   const nextBid3 = (auction.current_bid || 0) + minIncrement * 10;
@@ -421,13 +444,13 @@ export default function AuctionScreen() {
         <View style={styles.scoreRow}>
           <ScoreCard
             label="INSPECTION"
-            value={typeof car.inspection_score === 'number' ? `${car.inspection_score.toFixed(1)}/10` : 'Not scored'}
-            accent={typeof car.inspection_score === 'number' ? colors.success : colors.textMuted}
+            value={typeof inspectionScore === 'number' ? `${inspectionScore.toFixed(1)}/10` : 'Not scored'}
+            accent={typeof inspectionScore === 'number' ? colors.success : colors.textMuted}
           />
           <ScoreCard
             label="LIQUIDITY"
-            value={typeof auction.liquidity_score === 'string' ? auction.liquidity_score : 'N/A'}
-            accent={typeof auction.liquidity_score === 'string' ? colors.warning : colors.textMuted}
+            value={liquidityRating || 'N/A'}
+            accent={liquidityRating ? colors.warning : colors.textMuted}
           />
         </View>
 
@@ -464,28 +487,28 @@ export default function AuctionScreen() {
           <View style={styles.detailCard}>
             <DetailRow
               label="Condition grade"
-              value={car.condition_grade ? String(car.condition_grade).toUpperCase() : 'Not graded'}
-              valueColor={car.condition_grade ? colors.success : colors.textMuted}
+              value={conditionGrade ? String(conditionGrade).toUpperCase() : 'Not graded'}
+              valueColor={conditionGrade ? colors.success : colors.textMuted}
             />
             <DetailRow
               label="Tyre condition"
-              value={car.tyre_condition || 'Not specified'}
-              valueColor={car.tyre_condition ? undefined : colors.textMuted}
+              value={tyreCondition || 'Not specified'}
+              valueColor={tyreCondition ? undefined : colors.textMuted}
             />
             <DetailRow
               label="Accident history"
-              value={car.accident_history || 'No accident reported'}
-              valueColor={car.accident_history ? colors.warning : colors.success}
+              value={accidentHistory || 'No accident reported'}
+              valueColor={accidentHistory ? colors.warning : colors.success}
             />
             <DetailRow
               label="Service history"
-              value={car.service_history || 'Not specified'}
-              valueColor={car.service_history ? undefined : colors.textMuted}
+              value={serviceHistory || 'Not specified'}
+              valueColor={serviceHistory ? undefined : colors.textMuted}
             />
           </View>
 
           <View style={{ marginTop: 12 }}>
-            <InspectionPdfCard inspection={auction.inspection_pdf} />
+            <InspectionPdfCard inspection={inspectionPdf} />
           </View>
         </View>
 

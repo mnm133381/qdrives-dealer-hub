@@ -920,6 +920,51 @@ async def _enrich_auction(a: dict) -> dict:
     a["car"] = serialize(car) if car else None
     a["seller"] = {"id": seller.get("id"), "dealership_name": seller.get("dealership_name", ""), "city": seller.get("city", ""), "verified": seller.get("verified", False)} if seller else None
     a["inspection_pdf"] = serialize(insp) if insp else None
+
+    # ── Canonical inspection block joined onto auction.car.inspection
+    # Every role (operator, seller, buyer, anonymous) sees the SAME
+    # values. The frontend should prefer this block over the legacy
+    # flat fields (car.inspection_score, car.condition_grade etc.) —
+    # those remain present only for backward compatibility with
+    # screens that haven't been migrated yet.
+    if a["car"] is not None:
+        if insp:
+            car_block = a["car"]
+            car_block["inspection"] = {
+                "id":                     insp.get("id"),
+                "car_id":                 insp.get("car_id"),
+                "sections":               insp.get("sections") or {},
+                "accident_history":       insp.get("accident_history"),
+                "tyre_condition":         insp.get("tyre_condition"),
+                "service_history":        insp.get("service_history"),
+                "inspection_score":       insp.get("inspection_score"),
+                "condition_grade":        insp.get("condition_grade"),
+                "liquidity_rating":       insp.get("liquidity_rating"),
+                "completion_percentage":  insp.get("completion_percentage", 0),
+                "sections_completed":     insp.get("sections_completed") or [],
+                "pdf": (insp.get("pdf") if isinstance(insp.get("pdf"), dict) else (
+                    # back-compat: synthesise a pdf sub-doc from the
+                    # legacy flat shape if the inspection was uploaded
+                    # before the architecture change.
+                    {
+                        "filename":    insp.get("filename"),
+                        "size_bytes": insp.get("size_bytes"),
+                        "gridfs_id": insp.get("gridfs_id"),
+                        "status":     insp.get("status"),
+                    } if insp.get("gridfs_id") else None
+                )),
+                "updated_at":             insp.get("updated_at") or insp.get("created_at"),
+            }
+        else:
+            # Stable empty shape so the frontend never has to null-guard.
+            a["car"]["inspection"] = {
+                "id": None, "car_id": (car or {}).get("id"),
+                "sections": {k: {"completed": False} for k in INSPECTION_SECTION_KEYS},
+                "accident_history": None, "tyre_condition": None, "service_history": None,
+                "inspection_score": None, "condition_grade": None, "liquidity_rating": None,
+                "completion_percentage": 0, "sections_completed": [],
+                "pdf": None, "updated_at": None,
+            }
     # compute live state — explicit lifecycle states win over time-based
     # logic. Critical: this list MUST include every operator-managed and
     # terminal state, otherwise enrichment will resurrect archived /
@@ -1385,6 +1430,52 @@ async def create_car(req: CarCreateReq, dealer = Depends(get_current_admin)):
         "hidden_from_settlement": False,
     }
     await db.auctions.insert_one(dict(auction))
+
+    # ── Seed canonical inspection record so db.inspections is ALWAYS
+    # the single source of truth, even when the legacy create_car
+    # path supplied flat aggregates instead of a full section
+    # breakdown. The PUT /api/cars/{id}/inspection endpoint is the
+    # preferred path going forward; this short-circuit only fires
+    # when at least one inspection field was sent through create_car.
+    if (
+        req.inspection_score is not None
+        or (req.condition_grade or "").strip()
+        or (req.accident_history or "").strip()
+    ):
+        # If a score was given but no per-section breakdown, fabricate
+        # a single "overall" pseudo-section so the aggregator round-
+        # trips the same score. Real operators will quickly overwrite
+        # this via PUT /inspection with the actual breakdown.
+        score_val = float(req.inspection_score) if isinstance(req.inspection_score, (int, float)) else None
+        seed_sections: Dict[str, Any] = {k: {"completed": False} for k in INSPECTION_SECTION_KEYS}
+        if score_val and score_val > 0:
+            seed_sections["exterior"] = {"completed": True, "score": score_val}
+        derived = _aggregate_inspection(seed_sections)
+        # When the operator explicitly supplied a grade, honour it
+        # verbatim — the spec lets the operator override the derived
+        # grade for non-standard fleets (e.g. heritage / showpiece).
+        explicit_grade = (req.condition_grade or "").strip().upper() or None
+        now = now_utc()
+        insp_doc = {
+            "id": str(uuid.uuid4()),
+            "car_id": car_id,
+            "sections": seed_sections,
+            "accident_history": _normalise_text_field(req.accident_history),
+            "tyre_condition":   None,
+            "service_history":  None,
+            "inspection_score": derived["inspection_score"] if derived["inspection_score"] is not None else score_val,
+            "condition_grade":  explicit_grade or derived["condition_grade"],
+            "liquidity_rating": derived["liquidity_rating"],
+            "completion_percentage": derived["completion_percentage"],
+            "sections_completed":    derived["sections_completed"],
+            "pdf": None,
+            "uploader_id":   dealer["id"],
+            "uploader_name": dealer.get("dealership_name") or dealer.get("full_name") or "Operator",
+            "created_at": now,
+            "updated_at": now,
+        }
+        await db.inspections.update_one({"car_id": car_id}, {"$set": insp_doc}, upsert=True)
+        await _mirror_inspection_to_car(car_id, insp_doc)
 
     await db.dealers.update_one({"id": dealer["id"]}, {"$inc": {"total_listed": 1}})
     return {"car": serialize(car), "auction": await _enrich_auction(auction)}
@@ -3584,6 +3675,235 @@ async def ai_price_estimate(req: PriceEstimateReq):
 # ---------- Inspection PDF Endpoints ----------
 MAX_PDF_BYTES = 10 * 1024 * 1024  # 10 MB
 
+
+# ─────────────────────────────────────────────────────────────────────
+# Canonical Inspection Object
+# ─────────────────────────────────────────────────────────────────────
+# db.inspections is the SINGLE SOURCE OF TRUTH for per-car inspection
+# data. Operator writes here via PUT /api/cars/{id}/inspection. All
+# roles (operator / seller / buyer / bidder / anonymous) read the same
+# record via GET /api/cars/{id}/inspection or via the joined
+# `auction.car.inspection` block on _enrich_auction.
+#
+# Aggregated fields (inspection_score / condition_grade /
+# liquidity_rating / completion_percentage / sections_completed) are
+# computed by the aggregation engine on every PUT and mirrored to the
+# `cars` collection so the existing listing API surfaces remain
+# backward-compatible. The mirror is a one-way write: cars.*
+# inspection columns are NEVER edited by hand anywhere else in the
+# codebase.
+INSPECTION_SECTION_KEYS = ["exterior", "interior", "mechanical", "tyres", "documents", "photos"]
+GRADE_LADDER = [(9.0, "A"), (8.0, "B"), (7.0, "C"), (0.0, "D")]
+LIQUIDITY_LADDER = [(8.5, "HIGH"), (7.0, "MEDIUM"), (0.0, "LOW")]
+
+
+class InspectionSection(BaseModel):
+    completed: bool = False
+    score: Optional[float] = Field(default=None, ge=0.0, le=10.0)
+    notes: Optional[str] = None
+    # documents-only flags
+    rc: Optional[bool] = None
+    insurance: Optional[bool] = None
+    puc: Optional[bool] = None
+    # photos-only counter
+    photo_count: Optional[int] = Field(default=None, ge=0)
+
+
+class InspectionUpsertReq(BaseModel):
+    sections: Dict[str, InspectionSection] = Field(default_factory=dict)
+    accident_history: Optional[str] = None
+    tyre_condition: Optional[str] = None
+    service_history: Optional[str] = None
+
+
+def _aggregate_inspection(sections: Dict[str, Any]) -> Dict[str, Any]:
+    """Pure aggregation: takes section dict → returns derived metrics.
+
+    Critically, only sections with a numeric `score > 0` contribute to
+    the average. Sections like `documents` and `photos` (which never
+    carry a numeric score) DO NOT pull the average down to zero —
+    that's exactly the "missing optional section silently grades the
+    car a D" bug we're closing.
+    """
+    numeric_scores: List[float] = []
+    for k, v in (sections or {}).items():
+        if not isinstance(v, dict):
+            continue
+        s = v.get("score")
+        if isinstance(s, (int, float)) and not isinstance(s, bool) and float(s) > 0:
+            numeric_scores.append(float(s))
+
+    if numeric_scores:
+        avg = sum(numeric_scores) / len(numeric_scores)
+        score = round(avg, 1)
+        grade = next((g for thr, g in GRADE_LADDER if score >= thr), "D")
+        liquidity = next((l for thr, l in LIQUIDITY_LADDER if score >= thr), "LOW")
+    else:
+        score = None
+        grade = None
+        liquidity = None
+
+    sections_completed = sorted([k for k, v in (sections or {}).items()
+                                  if isinstance(v, dict) and v.get("completed")])
+    total = max(1, len(INSPECTION_SECTION_KEYS))
+    pct = round(len(sections_completed) / total * 100)
+
+    return {
+        "inspection_score": score,
+        "condition_grade": grade,
+        "liquidity_rating": liquidity,
+        "completion_percentage": pct,
+        "sections_completed": sections_completed,
+    }
+
+
+def _normalise_text_field(raw: Optional[str]) -> Optional[str]:
+    """None / empty / whitespace → None. Strip otherwise."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    return s if s else None
+
+
+async def _mirror_inspection_to_car(car_id: str, doc: Dict[str, Any]) -> None:
+    """One-way write: copy aggregated fields onto cars.{car_id} so the
+    legacy /api/cars and /api/auctions surfaces keep working without
+    every consumer having to learn the new join."""
+    await db.cars.update_one(
+        {"id": car_id},
+        {"$set": {
+            "inspection_score":  doc.get("inspection_score"),
+            "condition_grade":   doc.get("condition_grade"),
+            "tyre_condition":    doc.get("tyre_condition"),
+            "accident_history":  doc.get("accident_history"),
+            "service_history":   doc.get("service_history"),
+            "liquidity_rating":  doc.get("liquidity_rating"),
+        }},
+    )
+
+
+async def _broadcast_inspection_update(car_id: str) -> None:
+    """Notify any live WS subscribers that the inspection changed so
+    open lot screens can refetch + redraw. Best-effort; never raises."""
+    try:
+        auction = await db.auctions.find_one({"car_id": car_id}, {"_id": 0, "id": 1})
+        if not auction:
+            return
+        aid = auction["id"]
+        # `manager` is the module-level ConnectionManager singleton
+        # defined at server.py:510. The .broadcast() helper short-
+        # circuits when no one is subscribed, so this is a no-op for
+        # auctions nobody is watching.
+        await manager.broadcast(aid, {
+            "type": "inspection_updated",
+            "auction_id": aid,
+            "car_id": car_id,
+            "ts": now_utc().isoformat(),
+        })
+    except Exception as exc:
+        logger.warning("inspection broadcast failed for car=%s: %s", car_id, exc)
+
+
+@api.put("/cars/{car_id}/inspection")
+async def upsert_inspection(car_id: str, req: InspectionUpsertReq, dealer = Depends(get_current_admin)):
+    car = await db.cars.find_one({"id": car_id}, {"_id": 0})
+    if not car:
+        raise HTTPException(status_code=404, detail="Car not found")
+
+    # Whitelist + normalise sections — only accept the 6 known keys.
+    incoming_sections: Dict[str, Any] = {}
+    for key in INSPECTION_SECTION_KEYS:
+        s = req.sections.get(key) if req.sections else None
+        if s is None:
+            incoming_sections[key] = {"completed": False}
+            continue
+        # Pydantic already validated score range; collapse to plain dict.
+        section_dict: Dict[str, Any] = {
+            "completed": bool(s.completed),
+        }
+        if s.score is not None:
+            section_dict["score"] = float(s.score)
+        if s.notes is not None:
+            section_dict["notes"] = _normalise_text_field(s.notes)
+        if key == "documents":
+            section_dict["rc"] = bool(s.rc) if s.rc is not None else False
+            section_dict["insurance"] = bool(s.insurance) if s.insurance is not None else False
+            section_dict["puc"] = bool(s.puc) if s.puc is not None else False
+        if key == "photos" and s.photo_count is not None:
+            section_dict["photo_count"] = int(s.photo_count)
+        incoming_sections[key] = section_dict
+
+    derived = _aggregate_inspection(incoming_sections)
+    accident = _normalise_text_field(req.accident_history)
+    tyre     = _normalise_text_field(req.tyre_condition)
+    service  = _normalise_text_field(req.service_history)
+
+    now = now_utc()
+    existing = await db.inspections.find_one({"car_id": car_id}, {"_id": 0})
+    inspection_id = existing.get("id") if existing else str(uuid.uuid4())
+
+    doc: Dict[str, Any] = {
+        "id": inspection_id,
+        "car_id": car_id,
+        "sections": incoming_sections,
+        "accident_history": accident,
+        "tyre_condition":   tyre,
+        "service_history":  service,
+        # Derived (aggregation engine output)
+        "inspection_score":  derived["inspection_score"],
+        "condition_grade":   derived["condition_grade"],
+        "liquidity_rating":  derived["liquidity_rating"],
+        "completion_percentage": derived["completion_percentage"],
+        "sections_completed":    derived["sections_completed"],
+        # PDF metadata is preserved across upserts — the PDF upload
+        # endpoint writes to the SAME inspection doc, never to a
+        # parallel record.
+        "pdf": (existing or {}).get("pdf"),
+        # Audit
+        "uploader_id":   dealer["id"],
+        "uploader_name": dealer.get("dealership_name") or dealer.get("full_name") or "Operator",
+        "created_at":    (existing or {}).get("created_at") or now,
+        "updated_at":    now,
+    }
+    await db.inspections.update_one({"car_id": car_id}, {"$set": doc}, upsert=True)
+    await _mirror_inspection_to_car(car_id, doc)
+    await _broadcast_inspection_update(car_id)
+
+    logger.info(
+        "[inspection.upsert] car=%s score=%s grade=%s liq=%s completion=%s%%",
+        car_id, derived["inspection_score"], derived["condition_grade"],
+        derived["liquidity_rating"], derived["completion_percentage"],
+    )
+    return serialize(doc)
+
+
+@api.get("/cars/{car_id}/inspection")
+async def get_car_inspection(car_id: str):
+    """Open read endpoint — any caller (operator, seller, buyer,
+    anonymous bidder) gets the SAME inspection record so the platform
+    can never present different inspection outputs to different roles
+    for the same listing."""
+    insp = await db.inspections.find_one({"car_id": car_id}, {"_id": 0})
+    if not insp:
+        # Return a stable empty shape so the frontend can render
+        # "Not scored" copy without null-guards everywhere.
+        return {
+            "car_id": car_id,
+            "sections": {k: {"completed": False} for k in INSPECTION_SECTION_KEYS},
+            "accident_history": None,
+            "tyre_condition":   None,
+            "service_history":  None,
+            "inspection_score": None,
+            "condition_grade":  None,
+            "liquidity_rating": None,
+            "completion_percentage": 0,
+            "sections_completed":    [],
+            "pdf": None,
+            "updated_at": None,
+        }
+    return serialize(insp)
+
+
 @api.post("/inspections/upload")
 async def upload_inspection_pdf(
     car_id: str = Form(...),
@@ -3617,23 +3937,57 @@ async def upload_inspection_pdf(
         metadata={"car_id": car_id, "uploader_id": dealer["id"], "version": version or "v1"},
     )
 
-    # Replace any existing inspection record for this car (keep latest)
-    inspection = {
-        "id": str(uuid.uuid4()),
-        "car_id": car_id,
-        "uploader_id": dealer["id"],
-        "uploader_name": dealer.get("dealership_name") or dealer.get("full_name") or "Dealer",
-        "filename": safe_name,
-        "size_bytes": len(contents),
-        "version": version or "v1",
-        "status": "verified",
-        "gridfs_id": str(gridfs_id),
-        "created_at": now_utc(),
+    # ── Merge PDF into the canonical inspection doc (do NOT replace).
+    # Prior behaviour blew away the section breakdown every time an
+    # operator uploaded a fresh PDF — that's the architecture bug the
+    # P0 trust correction is closing. We now upsert the `pdf` sub-doc
+    # and leave sections / aggregates untouched. The download endpoint
+    # below resolves the PDF id via either the legacy top-level
+    # `gridfs_id` (back-compat) or the new `pdf.gridfs_id`.
+    now = now_utc()
+    existing = await db.inspections.find_one({"car_id": car_id}, {"_id": 0})
+    inspection_id = (existing or {}).get("id") or str(uuid.uuid4())
+    # Preserve a stable "id" field that points at the PDF when there
+    # is one — the historical /inspections/file/{id} endpoint reads
+    # inspections by id and expects gridfs_id at the top level.
+    pdf_sub = {
+        "filename":      safe_name,
+        "size_bytes":    len(contents),
+        "version":       version or "v1",
+        "status":        "verified",
+        "gridfs_id":     str(gridfs_id),
+        "uploaded_at":   now,
+        "uploader_id":   dealer["id"],
+        "uploader_name": dealer.get("dealership_name") or dealer.get("full_name") or "Operator",
     }
-    await db.inspections.delete_many({"car_id": car_id})
-    await db.inspections.insert_one(dict(inspection))
+    merged: Dict[str, Any] = dict(existing or {})
+    merged.update({
+        "id":            inspection_id,
+        "car_id":        car_id,
+        "pdf":           pdf_sub,
+        # Keep top-level gridfs_id / filename / size_bytes for backward
+        # compatibility with the /inspections/file/{id} streamer and
+        # the InspectionPdfCard frontend component that still reads
+        # the flat shape.
+        "gridfs_id":     str(gridfs_id),
+        "filename":      safe_name,
+        "size_bytes":    len(contents),
+        "version":       version or "v1",
+        "status":        "verified",
+        "uploader_id":   dealer["id"],
+        "uploader_name": dealer.get("dealership_name") or dealer.get("full_name") or "Operator",
+        "created_at":    (existing or {}).get("created_at") or now,
+        "updated_at":    now,
+    })
+    # Default an empty section map if this is the first write for the car
+    # so a stand-alone PDF upload still produces a queryable record.
+    if "sections" not in merged:
+        merged["sections"] = {k: {"completed": False} for k in INSPECTION_SECTION_KEYS}
 
-    return serialize(inspection)
+    await db.inspections.update_one({"car_id": car_id}, {"$set": merged}, upsert=True)
+    await _broadcast_inspection_update(car_id)
+
+    return serialize(merged)
 
 
 @api.get("/inspections/by-car/{car_id}")

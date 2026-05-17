@@ -154,12 +154,18 @@ export function AuctionCard({ auction, onPress, onWatch, watching, testID }: Pro
         </View>
 
         <View style={styles.footerRow}>
+          {/* Canonical inspection — prefer car.inspection.* (joined
+              by _enrich_auction from db.inspections). Fall back to
+              flat car.* for back-compat with not-yet-migrated screens. */}
           <View style={styles.scorePill}>
             <Text style={styles.scoreLabel}>INSPECTION</Text>
             <Text style={styles.scoreVal}>
-              {typeof car.inspection_score === 'number'
-                ? <>{car.inspection_score.toFixed(1)}<Text style={styles.scoreSuffix}>/10</Text></>
-                : '—'}
+              {(() => {
+                const s = (car.inspection?.inspection_score ?? car.inspection_score);
+                return typeof s === 'number'
+                  ? <>{s.toFixed(1)}<Text style={styles.scoreSuffix}>/10</Text></>
+                  : '—';
+              })()}
             </Text>
           </View>
           <View style={[styles.scorePill, reserveMet ? styles.reserveMet : styles.reserveNotMet]}>
@@ -175,7 +181,12 @@ export function AuctionCard({ auction, onPress, onWatch, watching, testID }: Pro
             {/* P0 trust fix: NEVER fabricate "A" for unscored cars.
                 Show em-dash so the marketplace tile honestly reflects
                 that no inspection has been recorded yet. */}
-            <Text style={styles.scoreVal}>{car.condition_grade ? String(car.condition_grade).toUpperCase() : '—'}</Text>
+            <Text style={styles.scoreVal}>
+              {(() => {
+                const g = (car.inspection?.condition_grade ?? car.condition_grade);
+                return g ? String(g).toUpperCase() : '—';
+              })()}
+            </Text>
           </View>
         </View>
       </View>

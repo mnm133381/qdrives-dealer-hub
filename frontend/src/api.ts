@@ -169,6 +169,35 @@ export const api = {
   car: (id: string) => request(`/cars/${id}`),
   createCar: (payload: any) => request('/cars', { method: 'POST', body: JSON.stringify(payload) }),
 
+  // ---- Inspection (canonical) ---------------------------------------
+  // Single source of truth: db.inspections. Every role (operator,
+  // seller, buyer, bidder, anonymous) reads from the SAME endpoint so
+  // the platform can never present different inspection outputs to
+  // different users for the same listing.
+  getInspection: (carId: string) =>
+    request<{
+      car_id: string;
+      sections: Record<string, { completed: boolean; score?: number; notes?: string; rc?: boolean; insurance?: boolean; puc?: boolean; photo_count?: number }>;
+      accident_history: string | null;
+      tyre_condition: string | null;
+      service_history: string | null;
+      inspection_score: number | null;
+      condition_grade: string | null;
+      liquidity_rating: string | null;
+      completion_percentage: number;
+      sections_completed: string[];
+      pdf: { filename?: string; size_bytes?: number; gridfs_id?: string; status?: string; uploaded_at?: string } | null;
+      updated_at: string | null;
+    }>(`/cars/${carId}/inspection`),
+  putInspection: (carId: string, payload: {
+    sections?: Record<string, any>;
+    accident_history?: string | null;
+    tyre_condition?: string | null;
+    service_history?: string | null;
+  }) => request<any>(`/cars/${carId}/inspection`, {
+    method: 'PUT', body: JSON.stringify(payload),
+  }),
+
   // ---- Pre-launch / draft workflow (operator) ----
   launchReadiness: (auctionId: string) =>
     request<{

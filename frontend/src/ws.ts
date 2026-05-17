@@ -51,6 +51,10 @@ export interface AuctionWsHandlers {
   /** Called when connection state changes. UI uses this for the
    *  "reconnecting…" badge. */
   onConnectionState?: (state: 'connecting' | 'open' | 'reconnecting' | 'closed') => void;
+  /** Called when the operator edits the inspection record for this
+   *  car. The handler should refetch the auction so the joined
+   *  inspection block re-renders for every viewer in real time. */
+  onInspectionUpdated?: (frame: { car_id?: string; ts?: string }) => void;
 }
 
 /**
@@ -145,6 +149,15 @@ export function openAuctionWs(auctionId: string, handlers: AuctionWsHandlers): (
     if (msg.type === 'snapshot') {
       lastSeq = Number(msg.seq ?? -1);
       handlers.onSnapshot({ auction: msg.auction, seq: msg.seq, server_ns: msg.server_ns });
+      return;
+    }
+
+    if (msg.type === 'inspection_updated') {
+      // Operator edited the canonical inspection. Notify the screen
+      // so it can refetch and render the new aggregated values. No
+      // seq tracking — inspection updates are independent of the
+      // bid-ordering invariant.
+      try { handlers.onInspectionUpdated?.({ car_id: msg.car_id, ts: msg.ts }); } catch {}
       return;
     }
 

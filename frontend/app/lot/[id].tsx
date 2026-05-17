@@ -474,7 +474,14 @@ export default function AuctionScreen() {
         <View style={styles.scoreRow}>
           <ScoreCard
             label="INSPECTION"
-            value={typeof inspectionScore === 'number' ? `${inspectionScore.toFixed(1)}/10` : 'Not scored'}
+            value={
+              typeof inspectionScore === 'number'
+                // Whole numbers display without the ".0" (e.g. 10/10,
+                // 9/10) — fractional scores keep one decimal place
+                // for precision (e.g. 9.2/10, 8.7/10).
+                ? `${Number.isInteger(inspectionScore) ? inspectionScore : inspectionScore.toFixed(1)}/10`
+                : 'Not scored'
+            }
             accent={typeof inspectionScore === 'number' ? colors.success : colors.textMuted}
           />
           <ScoreCard

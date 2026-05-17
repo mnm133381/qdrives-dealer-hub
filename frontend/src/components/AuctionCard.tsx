@@ -162,9 +162,10 @@ export function AuctionCard({ auction, onPress, onWatch, watching, testID }: Pro
             <Text style={styles.scoreVal}>
               {(() => {
                 const s = (car.inspection?.inspection_score ?? car.inspection_score);
-                return typeof s === 'number'
-                  ? <>{s.toFixed(1)}<Text style={styles.scoreSuffix}>/10</Text></>
-                  : '—';
+                if (typeof s !== 'number') return '—';
+                // Whole numbers without trailing ".0" (10/10 not 10.0/10).
+                const display = Number.isInteger(s) ? String(s) : s.toFixed(1);
+                return <>{display}<Text style={styles.scoreSuffix}>/10</Text></>;
               })()}
             </Text>
           </View>

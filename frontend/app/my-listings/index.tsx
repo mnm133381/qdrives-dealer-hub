@@ -331,7 +331,18 @@ export default function MyListings() {
                         {insp ? 'PDF ATTACHED' : 'NO PDF'}
                       </Text>
                       <Text style={styles.pdfMeta} numberOfLines={1}>
-                        {insp ? `${insp.filename || 'inspection.pdf'} · ${(insp.version || 'v1').toUpperCase()}` : 'Attach a detailed report to boost trust'}
+                        {insp
+                          ? `${insp.filename || 'inspection.pdf'} · ${
+                              // `version` was historically a string ("v1"/"v2"),
+                              // but the canonical inspection now uses a numeric
+                              // auto-incrementing version field. Coerce both
+                              // shapes back to a display string so the row
+                              // never crashes on .toUpperCase() against a number.
+                              typeof insp.version === 'number'
+                                ? `V${insp.version}`
+                                : (String(insp.version || 'v1').toUpperCase())
+                            }`
+                          : 'Attach a detailed report to boost trust'}
                       </Text>
                     </View>
                   </View>

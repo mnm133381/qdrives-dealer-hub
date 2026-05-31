@@ -77,6 +77,14 @@ export default function AuctionScreen() {
   // `/lot/null` getting hit when navigation params are dropped.
   const idValid = typeof id === 'string' && id.length >= 8 && id !== 'undefined' && id !== 'null';
 
+  // Stash toast in a ref so `load` doesn't depend on the (now-memoized
+  // but still potentially churning across provider re-renders) context
+  // value. Without this, a context re-render would invalidate `load`,
+  // re-run the [load]-deps useEffect, and re-fetch the auction in a
+  // tight loop on 404 paths.
+  const toastRef = useRef(toast);
+  useEffect(() => { toastRef.current = toast; }, [toast]);
+
   const load = useCallback(async () => {
     if (!id) return;
     if (!idValid) {
@@ -108,9 +116,9 @@ export default function AuctionScreen() {
         setLoadError({ code: 'network', message: e?.message || 'Couldn\'t load the listing.' });
       }
       // Best-effort toast — non-blocking on the error page render path.
-      try { toast.show(e?.message || 'Failed to load auction', 'error'); } catch {}
+      try { toastRef.current?.show(e?.message || 'Failed to load auction', 'error'); } catch {}
     }
-  }, [id, idValid, toast]);
+  }, [id, idValid]);
 
   // Derived gallery (filtered by section). Falls back to legacy car.images if
   // /media is empty (e.g. very fresh install before auto-migration ran).
@@ -195,6 +203,12 @@ export default function AuctionScreen() {
   // `server_ns`) are additive and old broadcast frames still render.
   useEffect(() => {
     if (!id) return;
+    // Short-circuit: if the initial REST fetch already established the
+    // lot does not exist, skip the WS dial — the backend would just
+    // close it with 403. Keeps the console quiet on the +not-found path.
+    if (loadError && (loadError.code === 'not_found' || loadError.code === 'forbidden' || loadError.code === 'invalid')) {
+      return;
+    }
     const detach = openAuctionWs(id as string, {
       onSnapshot: ({ auction }) => {
         // Server is the source of truth — replace, never merge.
@@ -250,7 +264,7 @@ export default function AuctionScreen() {
     });
     return () => { detach(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [id, loadError?.code]);
 
   const placeBid = async (amount: number) => {
     // Idempotency key — generated once per bid intent. The same key is

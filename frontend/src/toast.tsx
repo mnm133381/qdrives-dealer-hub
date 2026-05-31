@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Animated, Easing } from 'react-native';
 import { CheckCircle2, AlertTriangle, Info } from 'lucide-react-native';
 import { colors, radii } from './theme';
@@ -33,8 +33,14 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const Icon = toast?.kind === 'success' ? CheckCircle2 : toast?.kind === 'error' ? AlertTriangle : Info;
   const accent = toast?.kind === 'success' ? colors.success : toast?.kind === 'error' ? colors.red : colors.info;
 
+  // Memoize the context value so consumer components that depend on it
+  // in their useCallback/useEffect deps don't recreate on every render
+  // of this provider — that previously caused infinite-loop refetches
+  // in the lot screen (load() ↔ toast.show() ↔ re-render cycle).
+  const ctxValue = useMemo<Ctx>(() => ({ show }), [show]);
+
   return (
-    <ToastContext.Provider value={{ show }}>
+    <ToastContext.Provider value={ctxValue}>
       {children}
       {toast && (
         <Animated.View pointerEvents="none" style={[styles.wrap, { opacity, transform: [{ translateY }] }]}>

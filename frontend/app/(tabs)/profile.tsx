@@ -7,6 +7,7 @@ import { colors, radii, formatINR, useTabBottomPad } from '../../src/theme';
 import { useAuth } from '../../src/auth';
 import { TrustCard } from '../../src/components/TrustCard';
 import { PendingApprovalCard } from '../../src/components/PendingApprovalCard';
+import { WebPushToggle } from '../../src/components/WebPushToggle';
 import { api } from '../../src/api';
 import { useToast } from '../../src/toast';
 import { Platform } from 'react-native';
@@ -144,6 +145,10 @@ export default function Profile() {
           <Text style={styles.menuText}>Notifications & alerts</Text>
           <ChevronRight size={16} color={colors.textMuted} />
         </TouchableOpacity>
+
+        {/* PWA-only push opt-in toggle. Renders nothing on native — those
+            users already had OS-level permission flows handled at sign-in. */}
+        <WebPushToggle />
 
         <TouchableOpacity onPress={() => router.push('/(tabs)/watchlist')} style={[styles.menuItem, { marginTop: 8 }]} testID="profile-watchlist">
           <Settings size={18} color={colors.textChrome} />

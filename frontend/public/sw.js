@@ -20,7 +20,7 @@
  * The version string below busts every cache on deploy. Bumping it
  * forces clients to discard old caches on the next activate event.
  */
-const SW_VERSION = 'qdauctions-pwa-v1.0.3';
+const SW_VERSION = 'qdauctions-pwa-v1.1.0';
 const SHELL_CACHE = `${SW_VERSION}-shell`;
 const RUNTIME_CACHE = `${SW_VERSION}-runtime`;
 const API_CACHE = `${SW_VERSION}-api`;

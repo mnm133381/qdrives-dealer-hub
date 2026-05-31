@@ -65,14 +65,16 @@ export default function Root({ children }: PropsWithChildren) {
         <meta property="og:type" content="website" />
         <meta property="og:site_name" content="QD Auctions" />
         <meta property="og:title" content="QD Auctions — Wholesale Used-Car Bidding" />
+        <meta property="og:url" content="https://app.qdrives.co.in/" />
         <meta
           property="og:description"
           content="Live, transparent B2B used-car auctions for dealers. Inspect, bid, win."
         />
-        <meta property="og:image" content="/icons/icon-512.png" />
+        <meta property="og:image" content="https://app.qdrives.co.in/icons/icon-512.png" />
         <meta name="twitter:card" content="summary_large_image" />
         <meta name="twitter:title" content="QD Auctions — Wholesale Used-Car Bidding" />
-        <meta name="twitter:image" content="/icons/icon-512.png" />
+        <meta name="twitter:image" content="https://app.qdrives.co.in/icons/icon-512.png" />
+        <link rel="canonical" href="https://app.qdrives.co.in/" />
 
         {/*
           Disable body scrolling on web to make ScrollView components work correctly.

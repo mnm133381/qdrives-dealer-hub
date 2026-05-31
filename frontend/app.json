@@ -12,6 +12,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "in.qdrives.dealer",
       "associatedDomains": [
+        "applinks:app.qdrives.co.in",
         "applinks:qdrives-dealer-hub.preview.emergentagent.com",
         "applinks:qdrives.app"
       ]
@@ -35,6 +36,11 @@
           "action": "VIEW",
           "autoVerify": true,
           "data": [
+            {
+              "scheme": "https",
+              "host": "app.qdrives.co.in",
+              "pathPrefix": "/lot/"
+            },
             {
               "scheme": "https",
               "host": "qdrives-dealer-hub.preview.emergentagent.com",

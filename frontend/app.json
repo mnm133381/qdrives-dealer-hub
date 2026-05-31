@@ -35,15 +35,33 @@
           "action": "VIEW",
           "autoVerify": true,
           "data": [
-            { "scheme": "https", "host": "qdrives-dealer-hub.preview.emergentagent.com", "pathPrefix": "/lot/" },
-            { "scheme": "https", "host": "qdrives.app", "pathPrefix": "/lot/" }
+            {
+              "scheme": "https",
+              "host": "qdrives-dealer-hub.preview.emergentagent.com",
+              "pathPrefix": "/lot/"
+            },
+            {
+              "scheme": "https",
+              "host": "qdrives.app",
+              "pathPrefix": "/lot/"
+            }
           ],
-          "category": ["BROWSABLE", "DEFAULT"]
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
         },
         {
           "action": "VIEW",
-          "data": [{ "scheme": "qdrives" }],
-          "category": ["BROWSABLE", "DEFAULT"]
+          "data": [
+            {
+              "scheme": "qdrives"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
         }
       ]
     },
@@ -59,7 +77,16 @@
     },
     "web": {
       "bundler": "metro",
-      "favicon": "./assets/brand/qdrives-shield.png"
+      "favicon": "./assets/brand/qdrives-shield.png",
+      "name": "QD Auctions",
+      "shortName": "QD Auctions",
+      "themeColor": "#08080A",
+      "backgroundColor": "#08080A",
+      "display": "standalone",
+      "orientation": "portrait",
+      "lang": "en-IN",
+      "description": "India's trusted B2B wholesale used-car auction platform. Bid live, inspect transparently, settle securely.",
+      "startUrl": "/?utm_source=pwa"
     },
     "plugins": [
       "expo-router",
@@ -68,7 +95,9 @@
       [
         "expo-build-properties",
         {
-          "ios": { "useFrameworks": "static" }
+          "ios": {
+            "useFrameworks": "static"
+          }
         }
       ],
       [
@@ -87,7 +116,8 @@
           "color": "#B91C1C",
           "defaultChannel": "default"
         }
-      ]
+      ],
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": false

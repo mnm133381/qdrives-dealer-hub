@@ -23,7 +23,7 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from pydantic import BaseModel, Field
 
-from push import send_to_dealer, send_to_dealers, is_valid_expo_token
+from push import send_to_dealer, send_to_dealers, is_valid_expo_token, is_likely_fcm_web_token, send_to_dealer_all_channels
 import storage_service
 import media as media_svc
 import realtime as rt
@@ -1812,8 +1812,16 @@ async def unread_count(dealer = Depends(get_current_dealer)):
 @api.post("/notifications/register-token")
 async def register_push_token(req: RegisterPushTokenReq, dealer = Depends(get_current_dealer)):
     token = (req.token or "").strip()
-    if not is_valid_expo_token(token):
-        raise HTTPException(status_code=400, detail="Invalid Expo push token")
+    platform = (req.platform or "unknown").lower()
+    # Accept two token shapes:
+    #   - Expo native tokens          (ExponentPushToken[...])
+    #   - FCM web tokens for the PWA  (long opaque strings, platform='web')
+    if not token:
+        raise HTTPException(status_code=400, detail="Missing push token")
+    is_expo = is_valid_expo_token(token)
+    is_web_fcm = (platform == "web") and is_likely_fcm_web_token(token)
+    if not (is_expo or is_web_fcm):
+        raise HTTPException(status_code=400, detail="Invalid push token")
     # addToSet keeps tokens unique. Track a small per-token meta doc separately
     # in case we want to know platform/last-seen later.
     await db.dealers.update_one(
@@ -1825,7 +1833,8 @@ async def register_push_token(req: RegisterPushTokenReq, dealer = Depends(get_cu
         {"$set": {
             "token": token,
             "dealer_id": dealer["id"],
-            "platform": (req.platform or "unknown"),
+            "platform": platform,
+            "channel": "fcm_web" if is_web_fcm else "expo",
             "updated_at": now_utc(),
         }},
         upsert=True,

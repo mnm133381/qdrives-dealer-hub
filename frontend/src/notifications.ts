@@ -151,9 +151,26 @@ export function detachListeners() {
   initialised = false;
 }
 
-/** Register the device's expo push token with the backend (idempotent). */
+/** Register the device's expo push token with the backend (idempotent).
+ *
+ * On web, we DON'T auto-prompt for notification permission (that would
+ * be an anti-pattern most browsers suppress). Instead, if permission
+ * was already granted in a prior session we silently re-register the
+ * FCM web token \u2014 so the user's existing opt-in keeps working across
+ * sessions. The explicit opt-in UI lives in the profile screen and
+ * uses `enableWebPush()` from `./webPush` directly.
+ */
 export async function registerForPushNotifications(): Promise<string | null> {
-  if (Platform.OS === 'web') return null;
+  if (Platform.OS === 'web') {
+    // Lazy import \u2014 keeps native bundles slim.
+    try {
+      const wp = await import('./webPush');
+      if (wp.isWebPushConfigured() && wp.currentPermission() === 'granted') {
+        return await wp.enableWebPush();
+      }
+    } catch {}
+    return null;
+  }
   attachListeners();
   const token = await getExpoPushToken();
   if (!token) return null;
@@ -170,7 +187,13 @@ export async function registerForPushNotifications(): Promise<string | null> {
 
 /** On sign-out, drop the token from the backend so we stop pushing to this device. */
 export async function unregisterFromPushNotifications(): Promise<void> {
-  if (Platform.OS === 'web') return;
+  if (Platform.OS === 'web') {
+    try {
+      const wp = await import('./webPush');
+      await wp.disableWebPush();
+    } catch {}
+    return;
+  }
   let token: string | null = null;
   try { token = await storage.getItem(LAST_TOKEN_KEY); } catch {}
   if (!token) return;

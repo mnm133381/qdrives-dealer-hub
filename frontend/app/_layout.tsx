@@ -9,6 +9,8 @@ import { AuthProvider } from '../src/auth';
 import { ToastProvider } from '../src/toast';
 import { InspectionProvider } from '../src/inspection';
 import { colors } from '../src/theme';
+import { InstallPrompt } from '../src/components/InstallPrompt';
+import { initPwa } from '../src/pwa';
 
 /**
  * Root layout.
@@ -45,6 +47,12 @@ export default function RootLayout() {
   // button-style call still controls icon contrast (light/dark) on
   // the system nav. Wrapped in try/catch for older devices.
   useEffect(() => {
+    if (Platform.OS === 'web') {
+      // PWA bootstrap: capture beforeinstallprompt, listen for SW
+      // update + deep-link events. Idempotent — safe across remounts.
+      initPwa();
+      return;
+    }
     if (Platform.OS !== 'android') return;
     (async () => {
       try {
@@ -84,6 +92,8 @@ export default function RootLayout() {
                     overrides the file-based route and causes /auction/{id} to
                     redirect to /. Per-screen animations now default from screenOptions. */}
               </Stack>
+              {/* PWA install + update prompts (web only — native renders nothing). */}
+              <InstallPrompt />
             </InspectionProvider>
           </ToastProvider>
         </AuthProvider>
